@@ -14,8 +14,8 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale WebSocket (SYNC-1) |
 | Source of truth | SQLite local store (DB-1) |
-| Current slice | **S001 — Core Pipeline（规格见 docs/SLICES/SLICE_001.md，可开工）** |
-| Last updated | 2026-06-12 (Architect: Claude Fable 5, 初始架构定稿) |
+| Current slice | **S002 — Desktop Service（待 Architect 写规格）** |
+| Last updated | 2026-06-13 (S001 完成并验收；Builder 角色由 Claude Fable 5 兼任，Owner 批准) |
 
 ## Product Constraints（全部 Active）
 
@@ -34,7 +34,7 @@
 
 | Slice | Commit | Files changed | Tests | Result |
 |---|---|---|---|---|
-| （尚无） | — | — | — | — |
+| S001 Core Pipeline | （见 git log: feat: S001） | desktop/clipvault/{core,store,pipeline,obsidian}/** + tests + contracts/vectors/*.json + tools/gen_vectors.py | 32 passed / 0 failed (pytest) | **PASS**（A1–A10 全过） |
 
 ## Current Contracts
 
@@ -57,13 +57,16 @@
 
 | ID | Raised by | Topic | Options | Status |
 |---|---|---|---|---|
-| （尚无） | — | — | — | — |
+| D-001 | Builder | SG-ENTROPY 熵规则会误报 git hash / UUID / base64 图片头（恰为合同要求的负例，合同自相矛盾） | a) 提高熵阈值 b) 增加已知格式排除 | **RULED: MODIFY** — 采用 b，已写入 CONTRACTS §4.2 SG-1.1；阈值不动以保灵敏度 |
+| D-002 | Builder | 环境无 uv | a) 安装 uv b) 改用 venv+pip | **RULED: ACCEPT b** — 验证命令改为 `.venv\Scripts\python -m pytest`；不为自用工具引入额外安装步骤 |
+| D-003 | Builder | S001 白名单外新增 core/ulid.py 与 tools/gen_vectors.py | a) 引第三方 ULID 库 b) 自实现 26 行 ULID + 向量生成器入库 | **RULED: ACCEPT b** — 零运行时依赖；生成器含对实现的自校验，留库便于复现 |
 
 ## Raw Verification Results
 
 | Date | Slice | Command/Test | Result | Notes |
 |---|---|---|---|---|
-| （尚无） | — | — | — | — |
+| 2026-06-13 | S001 | `desktop> .venv\Scripts\python -m pytest -v` | **32 passed, 0 failed** (0.08s, Python 3.11.9, pytest 9.0.3) | 含 22 个 NORM、40 个 CLS、38 个 SG 向量用例；3 个 OBS-1 golden 逐字节比对；core 纯度静态检查 |
+| 2026-06-13 | S001 | `python tools/gen_vectors.py`（含实现自校验） | 100 cases written, 0 mismatches | 向量为两端唯一仲裁，Kotlin 端（S005）须通过同一文件 |
 
 ## Architect Decisions Log
 
@@ -74,4 +77,4 @@
 
 ## Next Slice Candidate
 
-S001（规格已就绪：docs/SLICES/SLICE_001.md）。Builder 从该文件的 Paste Block 开始。
+S002 — Desktop Service：win32 剪切板监听 + 轮询降级、config 加载（CFG-1）、ingest 编排接线（含 Obsidian 写入消费 needs_obsidian）、单实例锁、日志（无正文）、main 入口与开机自启说明。

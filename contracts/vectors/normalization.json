@@ -1,0 +1,112 @@
+[
+  {
+    "raw": "hello world",
+    "normalized": "hello world",
+    "hash": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+  },
+  {
+    "raw": "line1\r\nline2",
+    "normalized": "line1\nline2",
+    "hash": "683376e290829b482c2655745caffa7a1dccfa10afaa62dac2b42dd6c68d0f83"
+  },
+  {
+    "raw": "line1\rline2",
+    "normalized": "line1\nline2",
+    "hash": "683376e290829b482c2655745caffa7a1dccfa10afaa62dac2b42dd6c68d0f83"
+  },
+  {
+    "raw": "mixed\r\nline\rend",
+    "normalized": "mixed\nline\nend",
+    "hash": "383a338133e4f75e40434ea35f1ddb5a56b93f327b47922cafdb65b3f15d3585"
+  },
+  {
+    "raw": "trailing spaces   ",
+    "normalized": "trailing spaces",
+    "hash": "78ff1ca06dcf7a4412322efe0c9bafe2ec07d1fd162d45ab18e9054e51ec1d79"
+  },
+  {
+    "raw": "trailing newline\n",
+    "normalized": "trailing newline",
+    "hash": "065d5a83e34f09cff70b79477aafaf77e3318ffbae97e58d717d34f6f2d67079"
+  },
+  {
+    "raw": "trailing tabs\t\t",
+    "normalized": "trailing tabs",
+    "hash": "9e228201ccac106a23edc232c9e603328bb231307bc5039279299adf2de280b5"
+  },
+  {
+    "raw": "multi trailing \n\t \n",
+    "normalized": "multi trailing",
+    "hash": "97ae7d10f2374a44fe83961b168e1f6a37bc9e982d12f58b80fb0f716751e8ba"
+  },
+  {
+    "raw": "  leading kept",
+    "normalized": "  leading kept",
+    "hash": "20398c37d810056a44ec646e09e670b9d1faabd4b935a78a81744c130bb4c46e"
+  },
+  {
+    "raw": "inner  spaces  kept",
+    "normalized": "inner  spaces  kept",
+    "hash": "aad409ccb99b9b00ada281b4e8f9bb04e1827c6f8eb2d12c3e09624af21052a5"
+  },
+  {
+    "raw": "inner line trailing  \nnext",
+    "normalized": "inner line trailing  \nnext",
+    "hash": "59faed928553134c0ff92060cee62994c7524172f65b87abf9b86ad781aa777b"
+  },
+  {
+    "raw": "Café",
+    "normalized": "Café",
+    "hash": "73473dcc12b763085904a5279d048c4d5b3b008c46f1f32443b99de04aa83a14"
+  },
+  {
+    "raw": "が",
+    "normalized": "が",
+    "hash": "e3b21956ce958d2599e4e122f5395b8bb776552bd4ceae0c6bec80e4f73a2905"
+  },
+  {
+    "raw": "你好，世界",
+    "normalized": "你好，世界",
+    "hash": "46932f1e6ea5216e77f58b1908d72ec9322ed129318c6d4bd4450b5eaab9d7e7"
+  },
+  {
+    "raw": "🚀 launch",
+    "normalized": "🚀 launch",
+    "hash": "774e9f9c8d7adc3890381360c074caaf43e666425669283b086065486e0e2f0a"
+  },
+  {
+    "raw": "👨‍👩‍👧",
+    "normalized": "👨‍👩‍👧",
+    "hash": "cc3baf32248d766570483335ce273f90c99f020f4bc530d05ffe869cd3ac2ae8"
+  },
+  {
+    "raw": "código\r\n",
+    "normalized": "código",
+    "hash": "f1fdbf705ebbeabb13de84afccd2b26e33b517e54e25b77a9140194351824474"
+  },
+  {
+    "raw": "def f():\n\tindent kept",
+    "normalized": "def f():\n\tindent kept",
+    "hash": "56952a7232a6b82bbb5494e8d721dc17e51cc9b52c8f64b685aaf8122db9ca9a"
+  },
+  {
+    "raw": "keep\n\n\ninner blank lines",
+    "normalized": "keep\n\n\ninner blank lines",
+    "hash": "cc018c694e0f3ea0a23ec990622ae4065ba4a6da1d1770ec41a098fce9bad2e9"
+  },
+  {
+    "raw": "CRLF at end\r\n\r\n",
+    "normalized": "CRLF at end",
+    "hash": "0b4ed63a50471d2d9d3f7999a7b1552cab823cd65c1e9284ace074a033221158"
+  },
+  {
+    "raw": "ＡＢＣ１２３",
+    "normalized": "ＡＢＣ１２３",
+    "hash": "17246e55bdaff650b2cff3fcc22773dcad7de157db7c925d2a3f9ceb5a7fa760"
+  },
+  {
+    "raw": "ﬁle ligature",
+    "normalized": "ﬁle ligature",
+    "hash": "9ccde53671d3ae227c32d76cf10ed27692d8aa12eaafb3635c811431ae8fa993"
+  }
+]

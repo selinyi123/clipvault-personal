@@ -89,6 +89,12 @@
 
 整体内容为单 token（无空白），长度 ≥24，字符集 ⊆ `[A-Za-z0-9+/=_\-]`，Shannon 熵 ≥ 3.8 bits/char，且不命中 url/path 形态 → `SG-ENTROPY`。
 
+**SG-1.1 修订（2026-06-13，裁决记录见 HANDOFF D-001）**：以下已知格式的非密钥内容从熵规则中排除（它们是常见剪切板内容，且仅凭形态即可证明不是凭据）：
+- 纯十六进制且长度为 32/40/64（md5 / git sha1 / sha256 摘要）
+- UUID 格式（8-4-4-4-12 hex）
+- 以 `/` 或 `~` 开头的 token（unix 路径形态）
+- 以已知图片 base64 魔数开头：`iVBORw0KGgo`（PNG）、`/9j/`（JPEG）、`R0lGOD`（GIF）
+
 ### 4.3 判定与隔离语义
 
 `verdict = {is_secret, level, reasons[]}`。hard 与 suspect 同等隔离，UI 显示级别与原因。

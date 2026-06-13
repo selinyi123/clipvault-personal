@@ -1,0 +1,13 @@
+[project]
+name = "clipvault-desktop"
+version = "0.1.0"
+description = "ClipVault Personal desktop node"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

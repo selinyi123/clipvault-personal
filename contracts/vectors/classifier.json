@@ -1,0 +1,162 @@
+[
+  {
+    "content": "https://example.com",
+    "expected_type": "url"
+  },
+  {
+    "content": "http://example.com/path?q=1",
+    "expected_type": "url"
+  },
+  {
+    "content": "https://a.com\nhttps://b.com",
+    "expected_type": "url"
+  },
+  {
+    "content": "https://github.com/user/repo/issues/42",
+    "expected_type": "url"
+  },
+  {
+    "content": "  https://example.com",
+    "expected_type": "url"
+  },
+  {
+    "content": "C:\\Users\\Admin\\file.txt",
+    "expected_type": "path"
+  },
+  {
+    "content": "D:\\AI\\CLAUDE CODE",
+    "expected_type": "path"
+  },
+  {
+    "content": "\\\\server\\share\\doc.md",
+    "expected_type": "path"
+  },
+  {
+    "content": "/usr/local/bin/python",
+    "expected_type": "path"
+  },
+  {
+    "content": "~/projects/clipvault",
+    "expected_type": "path"
+  },
+  {
+    "content": "git commit -m \"fix\"",
+    "expected_type": "command"
+  },
+  {
+    "content": "docker compose up -d",
+    "expected_type": "command"
+  },
+  {
+    "content": "$ ls -la",
+    "expected_type": "command"
+  },
+  {
+    "content": "pip install fastapi",
+    "expected_type": "command"
+  },
+  {
+    "content": "adb shell dumpsys battery",
+    "expected_type": "command"
+  },
+  {
+    "content": "> npm run dev",
+    "expected_type": "command"
+  },
+  {
+    "content": "Traceback (most recent call last):\n  File \"app.py\", line 10, in <module>\n    main()\nValueError: boom",
+    "expected_type": "error_log"
+  },
+  {
+    "content": "ERROR foo\nERROR bar",
+    "expected_type": "error_log"
+  },
+  {
+    "content": "Exception in thread main\nFATAL: out of memory",
+    "expected_type": "error_log"
+  },
+  {
+    "content": "java.lang.NullPointerException\n    at com.app.Main.run(Main.java:42)\n    at com.app.Main.main(Main.java:10)",
+    "expected_type": "error_log"
+  },
+  {
+    "content": "[12:01] ERROR db timeout\n[12:02] ERROR retry failed",
+    "expected_type": "error_log"
+  },
+  {
+    "content": "def main():\n    print('hi')\n    return 0",
+    "expected_type": "code"
+  },
+  {
+    "content": "function add(a, b) {\n  return a + b;\n}",
+    "expected_type": "code"
+  },
+  {
+    "content": "#include <stdio.h>\nint main(void) {\n  return 0;\n}",
+    "expected_type": "code"
+  },
+  {
+    "content": "import os\nimport sys\nprint(os.name)",
+    "expected_type": "code"
+  },
+  {
+    "content": "const x = 1;\nlet y = 2;\nvar z = 3;",
+    "expected_type": "code"
+  },
+  {
+    "content": "```python\nprint(1)\n```",
+    "expected_type": "code"
+  },
+  {
+    "content": "你是一个资深架构师，请评审以下方案",
+    "expected_type": "prompt"
+  },
+  {
+    "content": "You are a helpful assistant. Answer concisely.",
+    "expected_type": "prompt"
+  },
+  {
+    "content": "Act as a translator. Translate everything to French.",
+    "expected_type": "prompt"
+  },
+  {
+    "content": "请你扮演面试官，提出五个问题",
+    "expected_type": "prompt"
+  },
+  {
+    "content": "### Instruction\nSummarize the text",
+    "expected_type": "prompt"
+  },
+  {
+    "content": "<system>be terse</system>",
+    "expected_type": "prompt"
+  },
+  {
+    "content": "明天下午三点开会",
+    "expected_type": "text"
+  },
+  {
+    "content": "Buy milk and eggs",
+    "expected_type": "text"
+  },
+  {
+    "content": "ERROR: single occurrence",
+    "expected_type": "text"
+  },
+  {
+    "content": "https://example.com is a great site",
+    "expected_type": "text"
+  },
+  {
+    "content": "gitlab is down",
+    "expected_type": "text"
+  },
+  {
+    "content": "/path with space",
+    "expected_type": "text"
+  },
+  {
+    "content": "x = 1\ny = 2",
+    "expected_type": "text"
+  }
+]
