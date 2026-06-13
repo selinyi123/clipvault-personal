@@ -1,6 +1,11 @@
-"""HTTP server (stdlib, D-006). Binds to 127.0.0.1 and rejects any non-loopback
-client at the handler level (defence in depth alongside the bind address).
-Bearer-token auth for paired devices lands in S006.
+"""HTTP server (stdlib, D-006 + SYNC-2/D-007).
+
+Two trust zones, enforced at the handler regardless of bind address:
+  - management + Web UI routes: loopback-only (127.0.0.1), no auth.
+  - /api/pair and /api/sync/*: reachable from the LAN, protected by a one-time
+    pairing code / bearer token respectively (so paired Android devices can sync).
+Plain single-threaded HTTPServer: the SQLite connection lives on the serving
+thread and is never crossed (S004 lesson).
 """
 
 import json
@@ -25,12 +30,21 @@ _MEMORY_USE_RE = re.compile(r"^/api/memory/([0-9A-Za-z]+)/use$")
 _LOOPBACK = ("127.0.0.1", "::1")
 
 
+def _remote_allowed(route: str) -> bool:
+    """Routes a paired LAN device may reach (auth enforced in the handler)."""
+    return route == "/api/pair" or route.startswith("/api/sync/")
+
+
 def make_handler(api: Api):
     class Handler(BaseHTTPRequestHandler):
         server_version = "ClipVault/0.1"
 
         def _is_loopback(self) -> bool:
             return self.client_address[0] in _LOOPBACK
+
+        def _bearer(self) -> str | None:
+            h = self.headers.get("Authorization", "")
+            return h[7:].strip() if h.startswith("Bearer ") else None
 
         def _send_json(self, code: int, obj) -> None:
             payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -60,21 +74,21 @@ def make_handler(api: Api):
             except (ValueError, UnicodeDecodeError):
                 return {}
 
-        def _guard(self) -> bool:
-            if not self._is_loopback():
-                self._send_json(403, {"error": {"code": "forbidden",
-                                                 "message": "loopback only"}})
-                return False
-            return True
+        def _guard(self, route: str) -> bool:
+            # Sync/pair are auth-gated in the handler; everything else is loopback-only.
+            if _remote_allowed(route) or self._is_loopback():
+                return True
+            self._send_json(403, {"error": {"code": "forbidden", "message": "loopback only"}})
+            return False
 
         def log_message(self, fmt, *args):  # route through our logger, no content
             log.info("%s %s", self.command, urlparse(self.path).path)
 
         def do_GET(self):
-            if not self._guard():
-                return
             parsed = urlparse(self.path)
             route = parsed.path
+            if not self._guard(route):
+                return
             params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
 
             if route in ("/", "/index.html"):
@@ -93,6 +107,10 @@ def make_handler(api: Api):
                 self._send_json(*api.list_memory(params))
             elif route == "/api/suggest":
                 self._send_json(*api.suggest(params))
+            elif route == "/api/pair/code":
+                self._send_json(*api.mint_pair_code())
+            elif route == "/api/sync/pull":
+                self._send_json(*api.sync_pull(self._bearer(), params))
             else:
                 m = _ACTIONS_RE.match(route)
                 if m:
@@ -101,14 +119,20 @@ def make_handler(api: Api):
                     self._send_json(404, {"error": {"code": "not_found", "message": route}})
 
         def do_POST(self):
-            if not self._guard():
-                return
             route = urlparse(self.path).path
+            if not self._guard(route):
+                return
             if route == "/api/clips":
                 self._send_json(*api.create_clip(self._body()))
                 return
             if route == "/api/memory":
                 self._send_json(*api.create_memory(self._body()))
+                return
+            if route == "/api/pair":
+                self._send_json(*api.pair(self._body()))
+                return
+            if route == "/api/sync/push":
+                self._send_json(*api.sync_push(self._bearer(), self._body()))
                 return
             m = _RELEASE_RE.match(route)
             if m:
@@ -125,48 +149,46 @@ def make_handler(api: Api):
             self._send_json(404, {"error": {"code": "not_found", "message": route}})
 
         def do_DELETE(self):
-            if not self._guard():
+            route = urlparse(self.path).path
+            if not self._guard(route):
                 return
-            m = _MEMORY_ID_RE.match(urlparse(self.path).path)
+            m = _MEMORY_ID_RE.match(route)
             if m:
                 self._send_json(*api.delete_memory(m.group(1)))
                 return
-            self._send_json(404, {"error": {"code": "not_found", "message": self.path}})
+            self._send_json(404, {"error": {"code": "not_found", "message": route}})
 
         def do_PATCH(self):
-            if not self._guard():
+            route = urlparse(self.path).path
+            if not self._guard(route):
                 return
-            m = _CLIP_ID_RE.match(urlparse(self.path).path)
+            m = _CLIP_ID_RE.match(route)
             if m:
                 self._send_json(*api.patch_clip(m.group(1), self._body()))
                 return
-            self._send_json(404, {"error": {"code": "not_found", "message": self.path}})
+            self._send_json(404, {"error": {"code": "not_found", "message": route}})
 
     return Handler
 
 
 def build_server(api: Api, host: str = "127.0.0.1", port: int = 8787) -> HTTPServer:
-    # Plain (single-threaded) HTTPServer: requests are handled on the serving
-    # thread, so the SQLite connection owned by `api` is never crossed between
-    # threads. Self-use traffic is trivial; serial handling is plenty.
-    # Self-use safety: never bind to a non-loopback address regardless of config
-    # until paired-device auth exists (S006).
-    bind_host = host if host in _LOOPBACK else "127.0.0.1"
-    return HTTPServer((bind_host, port), make_handler(api))
+    # Binds the configured host so paired LAN devices can sync (SYNC-2). The
+    # management API stays loopback-only via the per-route handler guard, so
+    # exposing the socket does not expose the unauthenticated endpoints.
+    return HTTPServer((host, port), make_handler(api))
 
 
-def serve(config, stop: threading.Event) -> None:
-    """Own the DB connection inside this (serving) thread, then loop.
-    Called as the target of the api daemon thread in main.py."""
+def serve(config, stop: threading.Event, pairing=None) -> None:
+    """Own the DB connection inside this (serving) thread, then loop."""
     from clipvault.service import ClipVaultService
     from clipvault.store import db
 
     conn = db.connect(config.db_path)
-    db.migrate(conn)  # idempotent; makes this thread self-sufficient regardless of caller order
-    api = Api(ClipVaultService(conn, config))
+    db.migrate(conn)  # idempotent; self-sufficient regardless of caller order
+    api = Api(ClipVaultService(conn, config), pairing=pairing)
     httpd = build_server(api, config.host, config.port)
     httpd.timeout = 0.5
-    log.info("api listening on http://127.0.0.1:%d/", httpd.server_address[1])
+    log.info("api listening on %s:%d", config.host, httpd.server_address[1])
     while not stop.is_set():
         httpd.handle_request()
     httpd.server_close()

@@ -84,4 +84,8 @@ def ingest(
         return IngestOutcome(STATUS_NEW, clip, needs_obsidian=False)
 
     backup_queue.enqueue(clip.id, now)
+    # Publish to the sync outbox (gate B inside emit_clip_new skips secrets).
+    # Local captures only; remote-applied clips bypass ingest so there is no echo.
+    from clipvault.sync import engine
+    engine.emit_clip_new(conn, clip, now)
     return IngestOutcome(STATUS_NEW, clip, needs_obsidian=True)

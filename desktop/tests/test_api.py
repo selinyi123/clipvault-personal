@@ -139,9 +139,10 @@ def _serve_until(httpd, stop):
     httpd.server_close()
 
 
-def test_d8_non_loopback_bind_forced_to_loopback(api):
-    # even if config says 0.0.0.0, server must bind loopback (S004 safety)
-    httpd = api_server.build_server(api, "0.0.0.0", 0)
+def test_d8_binds_configured_host(api):
+    # S006: the socket binds the configured host so LAN devices can sync;
+    # management routes stay loopback-only via the handler guard (see test_h2).
+    httpd = api_server.build_server(api, "127.0.0.1", 0)
     assert httpd.server_address[0] == "127.0.0.1"
     httpd.server_close()
 

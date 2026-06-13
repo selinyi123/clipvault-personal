@@ -14,8 +14,8 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale WebSocket (SYNC-1) |
 | Source of truth | SQLite local store (DB-1) |
-| Current slice | **S006 — 双端同步服务端（待开工；D-007 传输方式裁决）** |
-| Last updated | 2026-06-13 (S001–S004 + S007 + S010 + S011 完成并验收；Builder=Claude Fable 5) |
+| Current slice | **S012 桌面加固 + S005 Android（待开工）** |
+| Last updated | 2026-06-13 (S001–S004 + S006 + S007 + S010 + S011 完成；桌面 v1 功能完整；Builder=Claude Fable 5) |
 
 ## Product Constraints（全部 Active）
 
@@ -40,7 +40,8 @@
 | S004 Local API + Web UI | 75eabab | desktop/clipvault/api/**（server/handlers/webui）+ clips_repo/service 扩展 + main 接线 + tests | 69 passed / 0 failed（累计） | **PASS**（D1–D10 全过；live smoke 验证真实 socket 服务，修复跨线程 SQLite bug） |
 | S007 Personal Memory | bfedef2 | memory_repo + memory/importers + models.MemoryItem + api 端点/路由 + webui 词库页 + service.promote_clip + tests | 81 passed / 0 failed（累计） | **PASS**（E1–E9 全过；live smoke 验证 memory CRUD/promote 路由） |
 | S010 Suggestion Engine | ed594e9 | core/suggest（纯）+ config 权重 + clips_repo.suggest_candidates + /api/suggest + /api/memory/{id}/use + tests | 92 passed / 0 failed（累计） | **PASS**（F1–F10 全过；含 SUG-1.1 pinned 硬置顶；live smoke 验证 /api/suggest） |
-| S011 Context Action Engine | （见 git log: feat: S011） | core/actions（纯规则）+ service.promote(kind) + /api/clips/{id}/actions + promote kind + webui chip + tests | 106 passed / 0 failed（累计） | **PASS**（G11-1..6 全过；纯规则无 AI） |
+| S011 Context Action Engine | 3d02733 | core/actions（纯规则）+ service.promote(kind) + /api/clips/{id}/actions + promote kind + webui chip + tests | 106 passed / 0 failed（累计） | **PASS**（G11-1..6 全过；纯规则无 AI） |
+| S006 双端同步服务端 | （见 git log: feat: S006） | sync/{pairing,engine} + outbox_repo/peers_repo + migration 0002 + /api/pair + /api/sync/push,pull + bearer 鉴权 + ingest/patch emit + webui 配对 + tests | 117 passed / 0 failed（累计） | **PASS**（H1–H10 全过；live smoke 验证 pair→push→pull 无回声；HTTP 传输 D-007/SYNC-2） |
 
 > 注：切片顺序按"可在本机充分测试"优先重排——先做桌面/Python 侧（S007→S010→S011→S006→S012），
 > Android 侧（S005/S008/S009）需工具链，置后并单独处理真机验证。
@@ -72,7 +73,7 @@
 | D-004 | Architect | 剪切板监听方案 | a) pywin32 消息窗（ADR-0005 原案）b) ctypes + GetClipboardSequenceNumber 500ms 轮询 | **RULED: MODIFY → b** — 零依赖、消除消息泵脆弱点，500ms 远低于 1s 门禁；已写入 SLICE_002 §2 |
 | D-005 | Builder | PowerShell/Notepad 写的 config.toml 带 UTF-8 BOM，tomllib 解析失败（B8 实测发现） | a) 文档要求无 BOM b) 用 utf-8-sig 读取 | **RULED: ACCEPT b** — 自用舒适度优先，容错真实 Windows 工具链 |
 | D-006 | Architect | S004 Web UI/API 框架 | a) FastAPI+uvicorn（ADR-0005 原案）b) stdlib http.server | **RULED: MODIFY → b** — 单用户 localhost，保持零运行时依赖、规避 pip 代理不稳定；API-1 端点语义不变。单线程 HTTPServer + 连接在服务线程内创建（避免跨线程 SQLite，live smoke 验证发现并修复） |
-| D-007 | Architect | 同步传输（S006，预判） | a) WebSocket（SYNC-1 原案，stdlib 无 WS 服务端）b) HTTP push/pull（POST events + GET since_seq，复用 http.server，零依赖） | **待定（S006 开工时裁决）** — 倾向 b：自用双端，秒级延迟可接受，零依赖 |
+| D-007 | Architect | 同步传输（S006） | a) WebSocket（SYNC-1 原案，stdlib 无 WS 服务端）b) HTTP push/pull | **RULED: MODIFY → b（SYNC-2）** — 复用 http.server 零依赖，自用双端秒级延迟可接受；事件日志语义不变。已写入 CONTRACTS §5。绑定改为配置 host（管理路由仍 handler 层 loopback-only，sync/pair 走 token/code） |
 | D-008 | Architect | SUG-1 pinned 语义：PRODUCT_SPEC 说"永远置顶"但 SUG-1 只给 +3.0 加权，极高频项可越过 | a) 维持加权 b) pinned 作硬置顶层 | **RULED: MODIFY → b** — 已写入 CONTRACTS §11 SUG-1.1；排序键 (pinned,score,last_used) |
 
 ## Raw Verification Results

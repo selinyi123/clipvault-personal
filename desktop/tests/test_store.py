@@ -14,7 +14,7 @@ EXPECTED_TABLES = {
 
 
 def test_a1_migration_from_zero(conn):
-    assert db.schema_version(conn) == 1
+    assert db.schema_version(conn) == 2  # 0001_init + 0002_clip_meta_ts
     names = {
         r[0]
         for r in conn.execute(
@@ -23,10 +23,11 @@ def test_a1_migration_from_zero(conn):
     }
     assert EXPECTED_TABLES <= names
     assert "clips_fts" in names  # fts5 virtual table
+    assert "clip_meta_ts" in names  # added by 0002 (SYNC-2)
 
 
 def test_a1_migration_idempotent(conn):
-    assert db.migrate(conn) == 1  # second run is a no-op
+    assert db.migrate(conn) == 2  # second run is a no-op, returns current version
 
 
 def test_a2_save_clip_full_fields(conn):

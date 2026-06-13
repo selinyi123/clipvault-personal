@@ -113,7 +113,21 @@ is_secret=1 的 clip：
 
 **释放（release）**：用户在 Web UI / App 显式点击"非密钥，释放"→ `is_secret=0, released=1, released_at` 落库 → 重新走 Obsidian/备份/同步管线。释放是唯一出口，且留审计字段。
 
-## 5. 同步协议（SYNC-1）
+## 5. 同步协议（SYNC-2，2026-06-13 D-007 覆盖 SYNC-1 的传输层）
+
+**传输（SYNC-2，已实现）**：HTTP，复用本地 http.server，零依赖。事件日志语义与下文 SYNC-1 完全一致
+（seq 游标续传、(origin,seq)+content_hash 双幂等、clip_meta 字段级 LWW、闸门 B 密钥不进 outbox）。
+端点：
+- `POST /api/pair` `{code, device_id, device_name}` → `{token, server_device}`（PAIR-1，§5.3）
+- `POST /api/sync/push` `{events:[Event...]}` + `Authorization: Bearer <token>` → `{acked_upto}`
+- `GET /api/sync/pull?since_seq=` + Bearer → `{events:[...], next_seq, has_more}`
+- `GET /api/pair/code`（仅 loopback，Web UI 取一次性码）
+鉴权：`/api/sync/*` 需 bearer token（sha256 存 sync_peers）；其余管理路由仅 127.0.0.1。
+LWW 时间戳记于 `clip_meta_ts(content_hash, ts)`（migration 0002）。
+
+---
+
+> 以下 SYNC-1 原 WebSocket 帧定义保留作语义参考；传输已由 SYNC-2 取代，消息体/事件结构沿用。
 
 传输：WebSocket，桌面端点 `ws://{host}:{port}/sync`。文本帧，每帧一个 JSON envelope：
 

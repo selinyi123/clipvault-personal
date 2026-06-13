@@ -15,6 +15,17 @@ header {
 h1 { font-size: 18px; margin: 0; font-weight: 600; }
 .muted { color: var(--muted); font-weight: 400; }
 .status { font-size: 12px; color: var(--muted); }
+.head-right { display: flex; align-items: center; gap: 14px; }
+.ghost {
+  background: var(--panel2); border: 1px solid var(--line); color: var(--fg);
+  padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 12px;
+}
+.ghost:hover { border-color: var(--accent); }
+.pair-banner {
+  margin: 0 20px; padding: 10px 14px; background: var(--panel2);
+  border: 1px solid var(--accent); border-radius: 8px; font-size: 13px;
+  font-family: "Cascadia Code", monospace;
+}
 .tabs { display: flex; gap: 4px; padding: 10px 20px 0; }
 .tabs button {
   background: none; border: none; color: var(--muted); padding: 8px 14px;

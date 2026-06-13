@@ -12,6 +12,9 @@ from clipvault.service import ClipVaultService
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.memory_repo import KINDS as MEMORY_KINDS, MemoryRepo
+from clipvault.store.peers_repo import PeersRepo
+from clipvault.sync import engine as sync_engine
+from clipvault.sync.pairing import Pairing, hash_token
 
 _SUGGEST_WINDOW_DAYS = 30
 
@@ -49,11 +52,13 @@ def _memory_dict(m) -> dict:
 
 
 class Api:
-    def __init__(self, service: ClipVaultService):
+    def __init__(self, service: ClipVaultService, pairing: Pairing | None = None):
         self.service = service
         self.conn = service.conn
         self.clips = ClipsRepo(self.conn)
         self.memory = MemoryRepo(self.conn)
+        self.peers = PeersRepo(self.conn)
+        self.pairing = pairing or Pairing()
 
     def health(self) -> tuple[int, dict]:
         try:
@@ -86,7 +91,8 @@ class Api:
                      "clip": _clip_dict(outcome.clip, redact=outcome.clip.is_secret)}
 
     def patch_clip(self, clip_id: str, body: dict) -> tuple[int, dict]:
-        if self.clips.get(clip_id) is None:
+        clip = self.clips.get(clip_id)
+        if clip is None:
             return 404, {"error": {"code": "not_found", "message": clip_id}}
         applied = {}
         for field in ("pinned", "favorite", "deleted"):
@@ -95,6 +101,9 @@ class Api:
                 applied[field] = bool(body[field])
         if not applied:
             return 400, {"error": {"code": "bad_request", "message": "no settable flag"}}
+        # Emit a clip_meta event so the change propagates to paired devices (SYNC-2).
+        now = _now_iso()
+        sync_engine.emit_clip_meta(self.conn, clip.content_hash, applied, now, now)
         return 200, {"id": clip_id, "applied": applied}
 
     def release_clip(self, clip_id: str) -> tuple[int, dict]:
@@ -181,6 +190,50 @@ class Api:
              "score": round(s, 4)}
             for c, s in ranked
         ]}
+
+    # --- pairing + sync (S006, SYNC-2) ---
+
+    def mint_pair_code(self) -> tuple[int, dict]:
+        """Web UI (loopback) mints a one-time code to show the user."""
+        return 200, {"code": self.pairing.mint_code(), "ttl_seconds": self.pairing.ttl}
+
+    def pair(self, body: dict) -> tuple[int, dict]:
+        code = str(body.get("code", ""))
+        device_id = body.get("device_id")
+        device_name = body.get("device_name", "device")
+        if not device_id:
+            return 400, {"error": {"code": "bad_request", "message": "device_id required"}}
+        token = self.pairing.redeem(code)
+        if token is None:
+            return 403, {"error": {"code": "bad_code", "message": "invalid or expired code"}}
+        self.peers.upsert_pair(device_id, device_name, hash_token(token), _now_iso())
+        return 200, {"token": token, "server_device": self.service.config.device_id}
+
+    def _auth_device(self, token: str | None) -> dict | None:
+        if not token:
+            return None
+        return self.peers.by_token_hash(hash_token(token))
+
+    def sync_push(self, token: str | None, body: dict) -> tuple[int, dict]:
+        peer = self._auth_device(token)
+        if peer is None:
+            return 401, {"error": {"code": "unauthorized", "message": "bad token"}}
+        device_id = peer["device_id"]
+        events = body.get("events", [])
+        acked = sync_engine.apply_push(self.conn, device_id, events, self.service)
+        self.peers.touch_last_seen(device_id, _now_iso())
+        return 200, {"acked_upto": acked}
+
+    def sync_pull(self, token: str | None, params: dict) -> tuple[int, dict]:
+        peer = self._auth_device(token)
+        if peer is None:
+            return 401, {"error": {"code": "unauthorized", "message": "bad token"}}
+        device_id = peer["device_id"]
+        since = int(params.get("since_seq", "0") or "0")
+        result = sync_engine.build_pull(self.conn, since)
+        self.peers.set_my_acked(device_id, since)
+        self.peers.touch_last_seen(device_id, _now_iso())
+        return 200, result
 
     def status(self) -> tuple[int, dict]:
         counts = self.clips.counts()
