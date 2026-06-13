@@ -20,6 +20,7 @@ _CLIP_ID_RE = re.compile(r"^/api/clips/([0-9A-Za-z]+)$")
 _RELEASE_RE = re.compile(r"^/api/clips/([0-9A-Za-z]+)/release$")
 _PROMOTE_RE = re.compile(r"^/api/clips/([0-9A-Za-z]+)/promote$")
 _MEMORY_ID_RE = re.compile(r"^/api/memory/([0-9A-Za-z]+)$")
+_MEMORY_USE_RE = re.compile(r"^/api/memory/([0-9A-Za-z]+)/use$")
 _LOOPBACK = ("127.0.0.1", "::1")
 
 
@@ -89,6 +90,8 @@ def make_handler(api: Api):
                 self._send_json(*api.status())
             elif route == "/api/memory":
                 self._send_json(*api.list_memory(params))
+            elif route == "/api/suggest":
+                self._send_json(*api.suggest(params))
             else:
                 self._send_json(404, {"error": {"code": "not_found", "message": route}})
 
@@ -109,6 +112,10 @@ def make_handler(api: Api):
             m = _PROMOTE_RE.match(route)
             if m:
                 self._send_json(*api.promote_clip(m.group(1)))
+                return
+            m = _MEMORY_USE_RE.match(route)
+            if m:
+                self._send_json(*api.use_memory(m.group(1)))
                 return
             self._send_json(404, {"error": {"code": "not_found", "message": route}})
 

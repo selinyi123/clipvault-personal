@@ -350,7 +350,9 @@ score = 3.0 * pinned
 ```
 
 - query 为空时：match 项记 0，仅按 pinned + 频率/衰减出"最近常用"。
-- 排序：score DESC，平手 last_used_at DESC。默认 half_life_days=14，权重全部可在 config 覆盖。
+- 排序：**SUG-1.1（2026-06-13，D-008）**：pinned 为硬置顶层（PRODUCT_SPEC "pinned 永远置顶"），
+  排序键 = (pinned, score, last_used_at) 全部 DESC。pinned 不再只是 +3.0 加权——极高频项也不得越过
+  pinned 项（ADR-0007"可预期即舒适"）。默认 half_life_days=14，权重全部可在 config 覆盖。
 - 实现：SQL 预筛（LIKE prefix / FTS prefix）→ 取 ≤200 候选 → 内存重排。**IME 端只查本地 Room，不发网络。**
 
 ## 12. 桌面配置（CFG-1，config.toml）

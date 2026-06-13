@@ -66,6 +66,21 @@ class Config:
     port: int = 8787
     log_dir: str = "logs"
     log_retention_days: int = 14
+    # SUG-1 weights (CONTRACTS §11/§12)
+    suggest_half_life_days: float = 14.0
+    suggest_w_pinned: float = 3.0
+    suggest_w_prefix: float = 1.5
+    suggest_w_substr: float = 0.6
+    suggest_w_freq: float = 1.0
+    suggest_w_app: float = 0.5
+
+    def weights(self):
+        from clipvault.core.suggest import Weights
+        return Weights(
+            pinned=self.suggest_w_pinned, prefix=self.suggest_w_prefix,
+            substr=self.suggest_w_substr, freq=self.suggest_w_freq,
+            app=self.suggest_w_app, half_life_days=self.suggest_half_life_days,
+        )
 
 
 def load(path: Path) -> Config:
@@ -108,6 +123,8 @@ def load(path: Path) -> Config:
     type_dirs = dict(DEFAULT_TYPE_DIRS)
     type_dirs.update({k: str(v) for k, v in data.get("obsidian", {}).get("type_dirs", {}).items()})
 
+    sug = data.get("suggest", {})
+
     return Config(
         device_id=device_id,
         device_name=str(device.get("device_name", "desktop-main")),
@@ -123,6 +140,12 @@ def load(path: Path) -> Config:
         port=port,
         log_dir=str(log.get("dir", "logs")),
         log_retention_days=int(log.get("retention_days", 14)),
+        suggest_half_life_days=float(sug.get("half_life_days", 14.0)),
+        suggest_w_pinned=float(sug.get("w_pinned", 3.0)),
+        suggest_w_prefix=float(sug.get("w_prefix", 1.5)),
+        suggest_w_substr=float(sug.get("w_substr", 0.6)),
+        suggest_w_freq=float(sug.get("w_freq", 1.0)),
+        suggest_w_app=float(sug.get("w_app", 0.5)),
     )
 
 

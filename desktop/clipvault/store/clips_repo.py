@@ -185,6 +185,18 @@ class ClipsRepo:
         self.conn.commit()
         return self.get(clip_id)
 
+    def suggest_candidates(self, since_iso: str, limit: int = 200) -> list[Clip]:
+        """High-use recent clips eligible as suggestion candidates (SUG-1):
+        non-secret, non-deleted, favorite OR times_seen>=3, seen since `since_iso`."""
+        rows = self.conn.execute(
+            f"SELECT {_COLUMNS} FROM clips "
+            "WHERE is_secret = 0 AND deleted = 0 AND last_seen_at >= ? "
+            "AND (favorite = 1 OR times_seen >= 3) "
+            "ORDER BY last_seen_at DESC LIMIT ?",
+            (since_iso, limit),
+        ).fetchall()
+        return [_row_to_clip(r) for r in rows]
+
     def counts(self) -> dict:
         total = self.conn.execute(
             "SELECT COUNT(*) FROM clips WHERE deleted = 0"

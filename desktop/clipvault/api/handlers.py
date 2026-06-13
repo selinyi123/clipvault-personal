@@ -3,12 +3,21 @@
 directly unit-testable.
 """
 
+from datetime import datetime, timedelta, timezone
+
 from clipvault import __version__
 from clipvault.core import secret_guard
+from clipvault.core import suggest as suggest_core
 from clipvault.service import ClipVaultService
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.memory_repo import KINDS as MEMORY_KINDS, MemoryRepo
+
+_SUGGEST_WINDOW_DAYS = 30
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _clip_dict(clip, *, redact: bool) -> dict:
@@ -124,6 +133,41 @@ class Api:
         if item is None:
             return 404, {"error": {"code": "not_found_or_secret", "message": clip_id}}
         return 201, {"memory": _memory_dict(item)}
+
+    def use_memory(self, item_id: str) -> tuple[int, dict]:
+        if self.memory.get(item_id) is None:
+            return 404, {"error": {"code": "not_found", "message": item_id}}
+        self.memory.bump_use(item_id, _now_iso())
+        return 200, {"id": item_id, "used": True}
+
+    # --- suggestions (S010, SUG-1) ---
+
+    def suggest(self, params: dict, weights=None) -> tuple[int, dict]:
+        prefix = params.get("prefix", "")
+        app = params.get("app") or None
+        limit = min(int(params.get("limit", "10") or "10"), 50)
+        w = weights or self.service.config.weights()
+        now = datetime.now(timezone.utc)
+        since = (now - timedelta(days=_SUGGEST_WINDOW_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        cands: list[suggest_core.Candidate] = []
+        for m in self.memory.list(limit=500):
+            cands.append(suggest_core.Candidate(
+                id=m.id, kind=m.kind, text=m.text, label=m.label, pinned=m.pinned,
+                use_count=m.use_count, last_used_at=m.last_used_at, origin="memory",
+            ))
+        for c in self.clips.suggest_candidates(since):
+            cands.append(suggest_core.Candidate(
+                id=c.id, kind=c.content_type, text=c.content[:200], pinned=c.pinned,
+                use_count=c.times_seen, last_used_at=c.last_seen_at,
+                source_app=c.source_app, origin="clip",
+            ))
+        ranked = suggest_core.rank(cands, prefix, app, w, now, limit)
+        return 200, {"suggestions": [
+            {"id": c.id, "kind": c.kind, "text": c.text, "origin": c.origin,
+             "score": round(s, 4)}
+            for c, s in ranked
+        ]}
 
     def status(self) -> tuple[int, dict]:
         counts = self.clips.counts()
