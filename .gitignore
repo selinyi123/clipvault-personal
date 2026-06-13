@@ -7,3 +7,10 @@ desktop/logs/
 *.db
 *.db-wal
 *.db-shm
+.toolchain/
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+android/.idea/
+*.iml

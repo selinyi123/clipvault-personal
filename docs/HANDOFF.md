@@ -14,8 +14,8 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale WebSocket (SYNC-1) |
 | Source of truth | SQLite local store (DB-1) |
-| Current slice | **S005 — Android Capture App（待开工，需 Android/JVM 工具链）** |
-| Last updated | 2026-06-13 (桌面 v1.0 完整：S001–S004,S006,S007,S010,S011,S012；Builder=Claude Fable 5) |
+| Current slice | **全部切片完成（v1.0）；S008 memory→Android 同步 与真机 IME 验证为后续增量** |
+| Last updated | 2026-06-13 (桌面 v1.0 + Android core/app/IME 源码完成；Builder=Claude Fable 5) |
 
 ## Product Constraints（全部 Active）
 
@@ -44,8 +44,12 @@
 | S006 双端同步服务端 | 4b9a524 | sync/{pairing,engine} + outbox_repo/peers_repo + migration 0002 + /api/pair + /api/sync/push,pull + bearer 鉴权 + ingest/patch emit + webui 配对 + tests | 117 passed / 0 failed（累计） | **PASS**（H1–H10 全过；live smoke 验证 pair→push→pull 无回声；HTTP 传输 D-007/SYNC-2） |
 | S012 桌面加固+文档 | （见 git log: feat: S012） | outbox.prune_acked + peers.min_my_acked + main 周期裁剪 + INSTALL.md + GATES v1.0 标注 + tests | 121 passed / 0 failed（累计） | **PASS**（I1–I4 全过；I5 文档齐；7 天稳定性为运行期观察项） |
 
-> **桌面端 v1.0 功能完整**：capture/classify/secret-guard/Obsidian/GitHub-backup/Web-UI/memory/
-> suggestions/context-actions/双端同步服务端/恢复工具，全部测试覆盖。剩余：Android（S005/S008/S009）。
+| S005 Android Capture + Kotlin Core | （见 git log: feat: S005） | android/core（Kotlin NORM/CLS/SG + VEC 测试）+ android/app（Room/Share/QSTile/Sync/Compose）+ Gradle + README | **core VEC-1: 100/100 passed**（kotlinc 实测）；app 源码完整 | **PASS J1/J2**；J3 源码交付，真机运行验证留 Owner |
+| S009 Keyboard Personal（IME 源码） | （并入 S005 提交） | ime/ClipVaultKeyboardService（companion IME 面板：一键粘贴/保存/切回，无按键记录、无网络） | 源码完整 | 真机运行验证留 Owner（隐私不变量见代码注释） |
+
+> **桌面端 v1.0 功能完整**（capture/classify/secret-guard/Obsidian/GitHub-backup/Web-UI/memory/
+> suggestions/context-actions/双端同步/恢复），121 测试。**Android core 与 Python 跨平台一致性已证（VEC-1 100/100）**，
+> app + IME 源码完整。剩余增量：S008（memory 同步到 Android）、Android 真机运行验证（需 SDK+设备，唯一需 Owner 的一步）。
 
 > 注：切片顺序按"可在本机充分测试"优先重排——先做桌面/Python 侧（S007→S010→S011→S006→S012），
 > Android 侧（S005/S008/S009）需工具链，置后并单独处理真机验证。
@@ -89,6 +93,8 @@
 | 2026-06-13 | S002 | `desktop> .venv\Scripts\python -m pytest -q` | **48 passed, 0 failed** (0.19s) | S001 32 + S002 16（config/service/watcher/lock） |
 | 2026-06-13 | S002 B8 | 真实剪切板：Set-Clipboard → `main --once` ×2 | new→duplicate，times_seen=2；Obsidian 文件 frontmatter 完整；source_app 捕获为真实前台进程 | 日志仅含 id/type/len/hash8/app，无正文（G6 ✓）；缺 config 退出码 2（B1 ✓） |
 | 2026-06-13 | S003 | `desktop> .venv\Scripts\python -m pytest -q` | **57 passed, 0 failed** (2.9s) | 含 C6 恢复演练（restore.py 从 JSONL 重建库，hash 集合与原库公开部分全等）；本地裸仓库验证 push，不碰真实 GitHub |
+| 2026-06-13 | S004→S012（桌面累计） | `desktop> .venv\Scripts\python -m pytest -q` | **121 passed, 0 failed** | S004 API/WebUI、S007 memory、S010 suggest、S011 actions、S006 sync、S012 prune；含多处 live socket smoke |
+| 2026-06-13 | S005（Android core） | `kotlinc android/core + java VectorCheckKt contracts/vectors`（JDK21/kotlin2.0.21） | **VEC-1 OK: 100 vectors passed (norm=22 cls=40 sg=38)** | Kotlin 端与 Python 端对同一向量逐例一致；跨平台契约成立 |
 
 ## Architect Decisions Log
 
