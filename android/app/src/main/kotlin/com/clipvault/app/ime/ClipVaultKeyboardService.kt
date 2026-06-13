@@ -41,23 +41,65 @@ class ClipVaultKeyboardService : InputMethodService() {
         actions.addView(button("切回键盘") { switchToPreviousInputMethod() })
         root.addView(actions)
 
-        root.addView(TextView(ctx).apply { text = "最近内容（点按粘贴）"; textSize = 12f })
+        // Panel switcher: recent clips + memory categories (词库/Prompt/命令).
+        val tabs = HorizontalScrollView(ctx)
+        val tabRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        tabs.addView(tabRow)
+        root.addView(tabs)
 
-        // Recent clips, newest first; tap to commit into the focused field.
         val scroll = ScrollView(ctx)
         val list = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(list)
         root.addView(scroll, ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(220)))
 
+        // tab -> loader
+        val panels = linkedMapOf<String, () -> Unit>(
+            "最近" to { showClips(list) },
+            "词库" to { showMemory(list, "term") },
+            "短语" to { showMemory(list, "phrase") },
+            "Prompt" to { showMemory(list, "prompt") },
+            "命令" to { showMemory(list, "command") },
+        )
+        panels.forEach { (label, loader) ->
+            tabRow.addView(button(label) { loader() })
+        }
+        showClips(list)   // default panel
+        return root
+    }
+
+    private fun showClips(list: LinearLayout) {
+        val ctx = this
         thread {
             val clips = ClipVaultApp.db(ctx).clips().list("", 0)   // public only; never secrets
             runOnMain {
+                list.removeAllViews()
+                list.addView(TextView(ctx).apply { text = "最近内容（点按粘贴）"; textSize = 12f })
                 clips.take(40).forEach { c -> list.addView(clipButton(c)) }
-                if (clips.isEmpty()) list.addView(TextView(ctx).apply { text = "（暂无内容，先在桌面复制或分享到 ClipVault）" })
+                if (clips.isEmpty()) list.addView(TextView(ctx).apply {
+                    text = "（暂无内容，先在桌面复制或分享到 ClipVault）"
+                })
             }
         }
-        return root
+    }
+
+    private fun showMemory(list: LinearLayout, kind: String) {
+        val ctx = this
+        thread {
+            val items = ClipVaultApp.db(ctx).memory().list(kind)
+            runOnMain {
+                list.removeAllViews()
+                list.addView(TextView(ctx).apply { text = "$kind（点按粘贴）"; textSize = 12f })
+                items.forEach { m ->
+                    list.addView(button(m.text.replace("\n", " ").take(48)) {
+                        currentInputConnection?.commitText(m.text, 1)
+                    })
+                }
+                if (items.isEmpty()) list.addView(TextView(ctx).apply {
+                    text = "（暂无 $kind，可在桌面词库添加并同步）"
+                })
+            }
+        }
     }
 
     private fun clipButton(c: ClipEntity): Button =

@@ -130,12 +130,15 @@ class Api:
             return 400, {"error": {"code": "bad_request", "message": "text required"}}
         item = self.memory.upsert(kind, text, label=body.get("label"),
                                   pinned=bool(body.get("pinned", False)))
+        sync_engine.emit_memory_upsert(self.conn, item, _now_iso())
         return 201, {"memory": _memory_dict(item)}
 
     def delete_memory(self, item_id: str) -> tuple[int, dict]:
-        if self.memory.soft_delete(item_id):
-            return 200, {"id": item_id, "deleted": True}
-        return 404, {"error": {"code": "not_found", "message": item_id}}
+        item = self.memory.get(item_id)
+        if item is None or not self.memory.soft_delete(item_id):
+            return 404, {"error": {"code": "not_found", "message": item_id}}
+        sync_engine.emit_memory_delete(self.conn, item.kind, item.text, _now_iso(), _now_iso())
+        return 200, {"id": item_id, "deleted": True}
 
     def promote_clip(self, clip_id: str, body: dict | None = None) -> tuple[int, dict]:
         kind = (body or {}).get("kind")
@@ -144,6 +147,7 @@ class Api:
         item = self.service.promote_clip(clip_id, kind)
         if item is None:
             return 404, {"error": {"code": "not_found_or_secret", "message": clip_id}}
+        sync_engine.emit_memory_upsert(self.conn, item, _now_iso())
         return 201, {"memory": _memory_dict(item)}
 
     def clip_actions(self, clip_id: str) -> tuple[int, dict]:

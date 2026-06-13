@@ -73,8 +73,37 @@ interface OutboxDao {
     fun clearUpTo(upto: Long)
 }
 
-@Database(entities = [ClipEntity::class, OutboxEntity::class], version = 1, exportSchema = false)
+/** Personal Memory mirror (S008), synced from the desktop for IME panels. */
+@Entity(tableName = "memory", primaryKeys = ["kind", "text"])
+data class MemoryEntity(
+    val kind: String,
+    val text: String,
+    val label: String?,
+    val pinned: Boolean,
+    @ColumnInfo(name = "useCount") val useCount: Int,
+    val source: String,
+    val deleted: Boolean = false,
+)
+
+@Dao
+interface MemoryDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun upsert(m: MemoryEntity)
+
+    @Query("UPDATE memory SET deleted = 1 WHERE kind = :kind AND text = :text")
+    fun softDelete(kind: String, text: String)
+
+    @Query("SELECT * FROM memory WHERE deleted = 0 AND (:kind = '' OR kind = :kind) " +
+        "ORDER BY pinned DESC, useCount DESC LIMIT 100")
+    fun list(kind: String): List<MemoryEntity>
+}
+
+@Database(
+    entities = [ClipEntity::class, OutboxEntity::class, MemoryEntity::class],
+    version = 1, exportSchema = false,
+)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun clips(): ClipDao
     abstract fun outbox(): OutboxDao
+    abstract fun memory(): MemoryDao
 }

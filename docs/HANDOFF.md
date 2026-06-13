@@ -14,8 +14,8 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale WebSocket (SYNC-1) |
 | Source of truth | SQLite local store (DB-1) |
-| Current slice | **全部切片完成（v1.0）；S008 memory→Android 同步 与真机 IME 验证为后续增量** |
-| Last updated | 2026-06-13 (桌面 v1.0 + Android core/app/IME 源码完成；Builder=Claude Fable 5) |
+| Current slice | **全部 12 切片完成（v1.0）。剩余唯一项：Android 真机运行验证（需 SDK+设备，Owner 执行）** |
+| Last updated | 2026-06-13 (S001–S012 全部完成；桌面 128 测试绿 + Android core VEC-1 100/100；Builder=Claude Fable 5) |
 
 ## Product Constraints（全部 Active）
 
@@ -45,7 +45,8 @@
 | S012 桌面加固+文档 | （见 git log: feat: S012） | outbox.prune_acked + peers.min_my_acked + main 周期裁剪 + INSTALL.md + GATES v1.0 标注 + tests | 121 passed / 0 failed（累计） | **PASS**（I1–I4 全过；I5 文档齐；7 天稳定性为运行期观察项） |
 
 | S005 Android Capture + Kotlin Core | （见 git log: feat: S005） | android/core（Kotlin NORM/CLS/SG + VEC 测试）+ android/app（Room/Share/QSTile/Sync/Compose）+ Gradle + README | **core VEC-1: 100/100 passed**（kotlinc 实测）；app 源码完整 | **PASS J1/J2**；J3 源码交付，真机运行验证留 Owner |
-| S009 Keyboard Personal（IME 源码） | （并入 S005 提交） | ime/ClipVaultKeyboardService（companion IME 面板：一键粘贴/保存/切回，无按键记录、无网络） | 源码完整 | 真机运行验证留 Owner（隐私不变量见代码注释） |
+| S009 Keyboard Personal（IME 源码） | （并入 S005 提交） | ime/ClipVaultKeyboardService（companion IME 面板：最近/词库/短语/Prompt/命令，一键粘贴/保存/切回，无按键记录、无网络） | 源码完整 | 真机运行验证留 Owner（隐私不变量见代码注释） |
+| S008 Memory→Android 同步 | （见 git log: feat: S008） | engine emit/apply memory_upsert/delete + handlers/importers emit + Android memory 表/DAO/apply + IME 词库面板 + tests | 128 passed / 0 failed（累计） | **PASS K1–K6,K8**（桌面侧）；K7 Android 源码完整 |
 
 > **桌面端 v1.0 功能完整**（capture/classify/secret-guard/Obsidian/GitHub-backup/Web-UI/memory/
 > suggestions/context-actions/双端同步/恢复），121 测试。**Android core 与 Python 跨平台一致性已证（VEC-1 100/100）**，

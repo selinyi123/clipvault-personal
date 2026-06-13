@@ -80,6 +80,8 @@ object SyncApply {
             when (ev.getString("kind")) {
                 "clip_new" -> applyClipNew(db, ev.getJSONObject("payload"))
                 "clip_meta" -> applyClipMeta(db, ev.getJSONObject("payload"))
+                "memory_upsert" -> applyMemoryUpsert(db, ev.getJSONObject("payload"))
+                "memory_delete" -> applyMemoryDelete(db, ev.getJSONObject("payload"))
             }
         }
     }
@@ -112,5 +114,21 @@ object SyncApply {
         if (patch.optBoolean("deleted", false)) db.clips().softDelete(clip.id)
         // pin/favorite mirroring omitted in the cache UI for brevity; delete is the
         // user-visible one. Full field LWW lives on the desktop (source of truth).
+    }
+
+    private fun applyMemoryUpsert(db: AppDatabase, d: JSONObject) {
+        db.memory().upsert(
+            com.clipvault.app.data.MemoryEntity(
+                kind = d.getString("kind"), text = d.getString("text"),
+                label = if (d.isNull("label")) null else d.optString("label"),
+                pinned = d.optBoolean("pinned", false),
+                useCount = d.optInt("use_count", 0),
+                source = d.optString("source", "manual"),
+            )
+        )
+    }
+
+    private fun applyMemoryDelete(db: AppDatabase, d: JSONObject) {
+        db.memory().softDelete(d.getString("kind"), d.getString("text"))
     }
 }

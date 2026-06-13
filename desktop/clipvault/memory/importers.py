@@ -47,11 +47,18 @@ def from_names(names, kind: str = "term") -> list[tuple[str, str]]:
 
 
 def apply(repo: MemoryRepo, items: list[tuple[str, str]], source: str) -> int:
-    """Upsert candidates; return count of newly created items."""
+    """Upsert candidates; return count of newly created items.
+    Newly-created items are published to peers (S008)."""
+    from datetime import datetime, timezone
+
+    from clipvault.sync import engine
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     created = 0
     for kind, text in items:
         before = repo.by_kind_text(kind, text)
-        repo.upsert(kind, text, source=source)
+        item = repo.upsert(kind, text, source=source)
         if before is None:
             created += 1
+            engine.emit_memory_upsert(repo.conn, item, now)
     return created

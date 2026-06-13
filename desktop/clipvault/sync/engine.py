@@ -44,6 +44,21 @@ def emit_clip_meta(conn, content_hash: str, patch: dict, ts: str, when: str) -> 
     )
 
 
+def emit_memory_upsert(conn, item, when: str) -> int:
+    """Publish a Personal Memory item to peers (S008)."""
+    data = {
+        "kind": item.kind, "text": item.text, "label": item.label,
+        "pinned": item.pinned, "use_count": item.use_count, "source": item.source,
+    }
+    return OutboxRepo(conn).append("memory_upsert", data, when)
+
+
+def emit_memory_delete(conn, kind: str, text: str, ts: str, when: str) -> int:
+    return OutboxRepo(conn).append(
+        "memory_delete", {"kind": kind, "text": text, "ts": ts}, when
+    )
+
+
 # --- meta LWW bookkeeping ---
 
 def _get_meta_ts(conn, content_hash: str) -> str:
@@ -81,6 +96,10 @@ def apply_push(conn, device_id: str, events: list[dict], service) -> int:
             _apply_clip_new(conn, ev["data"], service)
         elif kind == "clip_meta":
             _apply_clip_meta(conn, ev["data"])
+        elif kind == "memory_upsert":
+            _apply_memory_upsert(conn, ev["data"])
+        elif kind == "memory_delete":
+            _apply_memory_delete(conn, ev["data"])
         else:
             log.error("unknown sync event kind=%s", kind)
         if seq == acked + 1:
@@ -121,6 +140,23 @@ def _apply_clip_new(conn, data: dict, service) -> None:
         BackupQueueRepo(conn).enqueue(clip.id, clip.last_seen_at)
     except Exception:
         log.exception("backup enqueue for remote clip failed id=%s", clip.id)
+
+
+def _apply_memory_upsert(conn, data: dict) -> None:
+    from clipvault.store.memory_repo import MemoryRepo
+    MemoryRepo(conn).upsert(
+        data["kind"], data["text"], label=data.get("label"),
+        source=data.get("source", "manual"), pinned=data.get("pinned", False),
+        use_count=data.get("use_count", 0),
+    )
+
+
+def _apply_memory_delete(conn, data: dict) -> None:
+    from clipvault.store.memory_repo import MemoryRepo
+    repo = MemoryRepo(conn)
+    item = repo.by_kind_text(data["kind"], data["text"])
+    if item is not None:
+        repo.soft_delete(item.id)
 
 
 def _apply_clip_meta(conn, data: dict) -> None:
