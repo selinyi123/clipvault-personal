@@ -11,6 +11,7 @@
 | Primary platform | Windows Desktop (Python 3.12) |
 | Mobile platform | Android (Kotlin) |
 | Knowledge base | Obsidian |
+| Repo | github.com/selinyi123/clipvault-personal（**private**），Release **v1.0.0** 含双端安装包 |
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale WebSocket (SYNC-1) |
 | Source of truth | SQLite local store (DB-1) |
@@ -103,6 +104,7 @@
 | Date | Decision |
 |---|---|
 | 2026-06-12 | 初始架构冻结：ADR-0001…0007；CONTRACTS v1；GATES 全版本；ROADMAP S001–S012 |
+| 2026-06-13 | 发布 Release v1.0.0：Desktop exe（PyInstaller 单文件，验证独立运行）+ Android apk（签名 release，apksigner verify OK）。安装包走 GitHub Releases 不入 git。发布中发现仓库被置 PUBLIC，已恢复 PRIVATE（keystore/assets 在 .toolchain gitignored，未入库） |
 | 2026-06-12 | 偏离原 ChatGPT 方案的修正：①GitHub 备份去掉 Markdown 镜像只存 JSONL；②密钥排除出 FTS 索引；③同步明确为事件日志复制；④Android 采集以 Share Target 为主路径（平台限制）；⑤IME 推荐只查本地缓存；⑥新增配对鉴权；⑦原 Slice001 拆为 S001–S004 |
 
 ## Next Slice Candidate
