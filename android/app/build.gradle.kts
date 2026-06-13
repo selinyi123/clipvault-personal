@@ -15,6 +15,28 @@ android {
         versionCode = 1
         versionName = "0.2"
     }
+    // Release signing reads from -P properties (or ~/.gradle), so the keystore
+    // and passwords never live in the repo. Falls back gracefully when unset.
+    signingConfigs {
+        create("release") {
+            val ksPath = (project.findProperty("CV_KEYSTORE") as String?)
+            if (ksPath != null) {
+                storeFile = file(ksPath)
+                storePassword = project.findProperty("CV_KEYSTORE_PASS") as String?
+                keyAlias = (project.findProperty("CV_KEY_ALIAS") as String?) ?: "clipvault"
+                keyPassword = (project.findProperty("CV_KEY_PASS") as String?)
+            }
+        }
+    }
+    buildTypes {
+        release {
+            isMinifyEnabled = false   // no R8 for a self-use app: avoids Room/Compose keep-rule risk
+            if (project.findProperty("CV_KEYSTORE") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+
     buildFeatures { compose = true }   // compiler managed by kotlin.plugin.compose
     kotlinOptions { jvmTarget = "17" }
     compileOptions {

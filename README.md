@@ -1,55 +1,114 @@
 # ClipVault Personal
 
-个人自用的输入法级剪切板知识采集系统（Personal Input-Aware Clipboard Knowledge System）。
+> 个人自用的输入法级剪切板知识采集系统 · Personal Input-Aware Clipboard Knowledge System
 
 ```text
 双端剪切板同步 + Android 输入法快捷面板 + 个人词库/Prompt/命令记忆
 + 续词推荐 + Obsidian 自动入库 + GitHub 私有备份 + Secret Guard
 ```
 
-非商业，单用户。架构师：Claude Fable 5；实现：Codex；最终裁决：Human Owner。
+非商业 · 单用户 · 本地优先。架构师：Claude Fable 5 ｜ 实现：Claude Fable 5（原 Codex 故障接管）｜ 最终裁决：Owner。
 
-## 文档地图（读这些就够了）
+**状态：v1.0** — 桌面端 128 项测试全绿、可独立日用；Android core 与桌面**跨平台一致性已证（VEC-1 100/100）**，
+app 整体编译产出已签名 APK。唯一剩余：Android 真机体验确认（需设备）。
+
+---
+
+## ⬇️ 下载与安装（Releases）
+
+到 [**Releases**](https://github.com/selinyi123/clipvault-personal/releases) 下载安装包：
+
+| 平台 | 文件 | 说明 |
+|---|---|---|
+| Windows 桌面 | `ClipVault-Desktop-v1.0.0.exe` | 单文件,无需安装 Python。双击或命令行运行 |
+| Android | `ClipVault-Android-v1.0.0.apk` | 侧载安装。已签名（self-use 证书） |
+
+### 桌面端
+
+```powershell
+# 首次运行生成 config.toml 模板并退出（提示填 obsidian.vault_path）
+.\ClipVault-Desktop-v1.0.0.exe --config config.toml
+# 填好 vault_path 后再次运行；浏览器打开 http://127.0.0.1:8787/
+```
+
+详见 [docs/INSTALL.md](docs/INSTALL.md)（配置、GitHub 备份仓库、配对、开机自启、恢复、隐私）。
+
+### Android
+
+侧载 APK → 系统设置启用 “ClipVault” 输入法 → 桌面 Web UI 点「配对设备」拿一次性码 →
+App 内填桌面 IP + 码完成配对。详见 [android/README.md](android/README.md)。
+
+---
+
+## 功能
+
+- **捕获**：Windows 剪切板自动监听；Android 分享/手动/输入法显式保存（平台禁止后台读，故无轮询）
+- **分类**：text / url / path / command / code / error_log / prompt（规则，确定性）
+- **Secret Guard**：三道闸门，密钥不进 Obsidian / GitHub / 同步 / 全文索引 / 词库；预览脱敏
+- **Obsidian**：按类型目录自动写 Markdown（原子写、幂等）
+- **GitHub 备份**：JSONL 批量 commit + 定时 push；附恢复工具 `tools/restore.py`
+- **本地 Web UI**：历史、全文搜索、固定/收藏/删除、隔离区释放、词库、状态、配对
+- **Personal Memory**：词/短语/Prompt/命令/路径，导入与提升
+- **Suggestion Engine**：前缀+频率+时间衰减（确定性，pinned 硬置顶）
+- **Context Action**：按内容类型给出下一步动作（规则版，无 AI）
+- **双端同步**：HTTP 事件日志复制（配对鉴权、双重幂等、字段级 LWW）
+- **Keyboard Personal**：伴随式 IME，最近/词库/短语/Prompt/命令面板，一键粘贴，**永不记录按键**
+
+## 文档地图
 
 | 文件 | 回答的问题 |
 |---|---|
 | [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) | 做什么、不做什么、原则优先级 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 系统长什么样、模块怎么分、失败怎么办 |
-| [docs/CONTRACTS.md](docs/CONTRACTS.md) | 所有数据结构/协议/格式的精确定义（Builder 的圣经） |
+| [docs/CONTRACTS.md](docs/CONTRACTS.md) | 所有数据结构/协议/格式的精确定义 |
 | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | 密钥与隐私如何被保护 |
 | [docs/GATES.md](docs/GATES.md) | 每个版本怎样才算"做完了" |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | S001–S012 切片顺序 |
-| [docs/ADR/](docs/ADR/) | 七个关键决策及理由 |
+| [docs/ROADMAP.md](docs/ROADMAP.md) · [docs/SLICES/](docs/SLICES/) | S001–S012 切片与各片规格 |
+| [docs/ADR/](docs/ADR/) | 关键决策及理由 |
 | [docs/HANDOFF.md](docs/HANDOFF.md) | 项目当前状态（repo 记忆） |
-| [docs/SLICES/](docs/SLICES/) | 每片的开工规格 |
-| [docs/RUNBOOK_PURGE.md](docs/RUNBOOK_PURGE.md) | 密钥泄漏入备份后的清除流程 |
+| [docs/INSTALL.md](docs/INSTALL.md) · [docs/RUNBOOK_PURGE.md](docs/RUNBOOK_PURGE.md) | 安装运维 · 密钥泄漏清除 |
 
-## 工作流
-
-```text
-1. Builder（Codex）读 docs/，执行当前 SLICE 的 Paste Block
-2. Builder 跑测试、更新 HANDOFF.md（只报原始结果，不自评）
-3. Owner 把 HANDOFF + diff 交给 Architect（Fable）
-4. Architect 裁决、查范围蔓延、写下一片 SLICE
-5. 重复
-```
-
-铁律：不在 repo docs 里 = 没发生；Builder 不自我验收；Architect 不写实现代码；
-分歧必须显式记录；验收标准先冻结、结果后判断。
-
-## 仓库布局（目标形态）
+## 仓库结构
 
 ```text
 clipvault/
-  desktop/      # Python：watcher、pipeline、store、obsidian、backup、sync server、API+WebUI
-  android/      # Kotlin：app（采集/历史）、sync、ime（Keyboard Personal）
-  contracts/
-    vectors/    # 跨平台一致性测试向量（normalization/classifier/secret_guard）
-  tools/        # restore.py 等
-  docs/         # 本文档集（项目记忆）
+  desktop/      Python 桌面主节点（零运行时依赖：stdlib + ctypes）
+    clipvault/  core·store·pipeline·watcher·obsidian·backup·sync·api(+webui)
+    tests/      128 项 pytest
+    packaging/  PyInstaller 入口
+  android/      Kotlin
+    core/       与桌面对应的 normalize/classify/secret-guard（通过 VEC-1）
+    app/        Compose·Room·Share·QSTile·Sync·IME
+  contracts/vectors/  跨平台一致性测试向量（两端唯一仲裁）
+  tools/        restore.py（灾难恢复）· gen_vectors.py
+  docs/         设计与运维文档（项目记忆）
 ```
 
-## 现在开始
+## 从源码构建
 
-当前切片：**S001**。把 [docs/SLICES/SLICE_001.md](docs/SLICES/SLICE_001.md) 末尾的
-Builder Paste Block 交给 Codex 即可开工。
+```powershell
+# 桌面测试
+cd desktop; python -m venv .venv; .\.venv\Scripts\python -m pip install pytest
+.\.venv\Scripts\python -m pytest -q                    # 128 passed
+
+# 桌面打包（单文件 exe）
+.\.venv\Scripts\python -m pip install pyinstaller
+.\.venv\Scripts\python -m PyInstaller --onefile --name clipvault `
+  --add-data "clipvault/store/migrations;clipvault/store/migrations" `
+  --add-data "clipvault/api/webui;clipvault/api/webui" packaging/run_clipvault.py
+
+# Android（需 Android SDK）
+cd android; .\gradlew :core:test            # VEC-1 跨平台一致性
+.\gradlew :app:assembleDebug                # 产出 app-debug.apk
+```
+
+## 协作工作流
+
+```text
+1. Builder 读 docs/，执行当前 SLICE
+2. Builder 跑测试、更新 HANDOFF.md（只报原始结果，不自评）
+3. Owner 把 HANDOFF + diff 交给 Architect 裁决
+4. Architect 裁决、查范围蔓延、写下一片 SLICE
+```
+
+铁律：不在 repo docs 里 = 没发生；Builder 不自我验收；Architect 不写实现代码；分歧显式记录；验收标准先冻结、结果后判断。

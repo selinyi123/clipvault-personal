@@ -14,3 +14,8 @@ android/*/build/
 android/local.properties
 android/.idea/
 *.iml
+# PyInstaller build output (binaries go to GitHub Releases, not the repo)
+desktop/dist/
+desktop/build_pyi/
+desktop/packaging/*.spec
+*.keystore
