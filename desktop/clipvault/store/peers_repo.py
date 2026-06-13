@@ -50,6 +50,14 @@ class PeersRepo:
         )
         self.conn.commit()
 
+    def min_my_acked(self) -> int | None:
+        """Lowest my_acked_seq across all peers, or None if no peers paired.
+        Events at or below this seq are confirmed by every peer (prunable)."""
+        row = self.conn.execute(
+            "SELECT MIN(my_acked_seq) FROM sync_peers"
+        ).fetchone()
+        return None if row[0] is None else int(row[0])
+
     def touch_last_seen(self, device_id: str, when: str) -> None:
         self.conn.execute(
             "UPDATE sync_peers SET last_seen_at = ? WHERE device_id = ?",

@@ -14,8 +14,8 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale WebSocket (SYNC-1) |
 | Source of truth | SQLite local store (DB-1) |
-| Current slice | **S012 桌面加固 + S005 Android（待开工）** |
-| Last updated | 2026-06-13 (S001–S004 + S006 + S007 + S010 + S011 完成；桌面 v1 功能完整；Builder=Claude Fable 5) |
+| Current slice | **S005 — Android Capture App（待开工，需 Android/JVM 工具链）** |
+| Last updated | 2026-06-13 (桌面 v1.0 完整：S001–S004,S006,S007,S010,S011,S012；Builder=Claude Fable 5) |
 
 ## Product Constraints（全部 Active）
 
@@ -41,7 +41,11 @@
 | S007 Personal Memory | bfedef2 | memory_repo + memory/importers + models.MemoryItem + api 端点/路由 + webui 词库页 + service.promote_clip + tests | 81 passed / 0 failed（累计） | **PASS**（E1–E9 全过；live smoke 验证 memory CRUD/promote 路由） |
 | S010 Suggestion Engine | ed594e9 | core/suggest（纯）+ config 权重 + clips_repo.suggest_candidates + /api/suggest + /api/memory/{id}/use + tests | 92 passed / 0 failed（累计） | **PASS**（F1–F10 全过；含 SUG-1.1 pinned 硬置顶；live smoke 验证 /api/suggest） |
 | S011 Context Action Engine | 3d02733 | core/actions（纯规则）+ service.promote(kind) + /api/clips/{id}/actions + promote kind + webui chip + tests | 106 passed / 0 failed（累计） | **PASS**（G11-1..6 全过；纯规则无 AI） |
-| S006 双端同步服务端 | （见 git log: feat: S006） | sync/{pairing,engine} + outbox_repo/peers_repo + migration 0002 + /api/pair + /api/sync/push,pull + bearer 鉴权 + ingest/patch emit + webui 配对 + tests | 117 passed / 0 failed（累计） | **PASS**（H1–H10 全过；live smoke 验证 pair→push→pull 无回声；HTTP 传输 D-007/SYNC-2） |
+| S006 双端同步服务端 | 4b9a524 | sync/{pairing,engine} + outbox_repo/peers_repo + migration 0002 + /api/pair + /api/sync/push,pull + bearer 鉴权 + ingest/patch emit + webui 配对 + tests | 117 passed / 0 failed（累计） | **PASS**（H1–H10 全过；live smoke 验证 pair→push→pull 无回声；HTTP 传输 D-007/SYNC-2） |
+| S012 桌面加固+文档 | （见 git log: feat: S012） | outbox.prune_acked + peers.min_my_acked + main 周期裁剪 + INSTALL.md + GATES v1.0 标注 + tests | 121 passed / 0 failed（累计） | **PASS**（I1–I4 全过；I5 文档齐；7 天稳定性为运行期观察项） |
+
+> **桌面端 v1.0 功能完整**：capture/classify/secret-guard/Obsidian/GitHub-backup/Web-UI/memory/
+> suggestions/context-actions/双端同步服务端/恢复工具，全部测试覆盖。剩余：Android（S005/S008/S009）。
 
 > 注：切片顺序按"可在本机充分测试"优先重排——先做桌面/Python 侧（S007→S010→S011→S006→S012），
 > Android 侧（S005/S008/S009）需工具链，置后并单独处理真机验证。

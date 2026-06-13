@@ -18,6 +18,8 @@ from clipvault.api import server as api_server
 from clipvault.backup.github_backup import BackupWorker
 from clipvault.instance_lock import AlreadyRunningError, InstanceLock
 from clipvault.service import ClipVaultService
+from clipvault.store.outbox_repo import OutboxRepo
+from clipvault.store.peers_repo import PeersRepo
 from clipvault.store import db
 from clipvault.watcher.win_clipboard import (
     PollingWatcher,
@@ -86,13 +88,21 @@ def main(argv: list[str] | None = None) -> int:
             def sweep_loop() -> None:
                 sweep_conn = db.connect(cfg.db_path)
                 sweeper = ClipVaultService(sweep_conn, cfg)
+                peers = PeersRepo(sweep_conn)
+                outbox = OutboxRepo(sweep_conn)
                 while not stop.wait(_SWEEP_INTERVAL_S):
                     try:
                         repaired = sweeper.retry_obsidian_sweep()
                         if repaired:
                             log.info("obsidian sweep repaired %d clips", repaired)
+                        # Keep the sync outbox bounded: drop events every peer has acked.
+                        min_acked = peers.min_my_acked()
+                        if min_acked:
+                            pruned = outbox.prune_acked(min_acked)
+                            if pruned:
+                                log.info("outbox pruned %d acked events", pruned)
                     except Exception:  # sweep must never kill the service
-                        log.exception("obsidian sweep failed")
+                        log.exception("maintenance sweep failed")
 
             threading.Thread(target=sweep_loop, daemon=True, name="obsidian-sweep").start()
 

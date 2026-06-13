@@ -33,3 +33,12 @@ class OutboxRepo:
     def max_seq(self) -> int:
         row = self.conn.execute("SELECT COALESCE(MAX(seq), 0) FROM sync_outbox").fetchone()
         return int(row[0])
+
+    def prune_acked(self, min_acked: int) -> int:
+        """Drop events every peer has confirmed (seq <= min_acked). Keeps the
+        outbox bounded for long-running self-use. Returns rows deleted."""
+        if min_acked <= 0:
+            return 0
+        cur = self.conn.execute("DELETE FROM sync_outbox WHERE seq <= ?", (min_acked,))
+        self.conn.commit()
+        return cur.rowcount

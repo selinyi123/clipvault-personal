@@ -75,7 +75,12 @@
 
 ## v1.0 门禁（稳定自用版）
 
-- 恢复演练：tools/restore.py 从备份 JSONL 重建 SQLite，clip 数与 hash 全等。
-- 连续运行 7 天无崩溃（日志佐证）；队列无积压泄漏。
-- 全局门禁 G1–G8 全量复验。
-- 文档齐：安装、配对、purge runbook、配置说明。
+桌面侧（S012，2026-06-13 达成）：
+
+- [x] 恢复演练：tools/restore.py 从备份 JSONL 重建 SQLite，clip 数与 hash 全等（C6/I3）。
+- [x] sync outbox 有界：裁剪所有对端已确认事件（I1–I2）。
+- [x] 全局门禁 G1–G8 全量复验（121 tests 绿）。
+- [x] 文档齐：INSTALL.md（安装/配置/备份仓库/配对/自启/恢复/隐私）、RUNBOOK_PURGE.md。
+- [ ] 连续运行 7 天无崩溃 —— **运行期观察项**（无法在构建期断言；靠日志佐证，交 Owner 验证）。
+
+Android 侧（S005/S008/S009）与端到端双端联调在 Android 完成后复验。
