@@ -18,6 +18,8 @@ log = logging.getLogger("clipvault.api")
 WEBUI_DIR = Path(__file__).parent / "webui"
 _CLIP_ID_RE = re.compile(r"^/api/clips/([0-9A-Za-z]+)$")
 _RELEASE_RE = re.compile(r"^/api/clips/([0-9A-Za-z]+)/release$")
+_PROMOTE_RE = re.compile(r"^/api/clips/([0-9A-Za-z]+)/promote$")
+_MEMORY_ID_RE = re.compile(r"^/api/memory/([0-9A-Za-z]+)$")
 _LOOPBACK = ("127.0.0.1", "::1")
 
 
@@ -85,6 +87,8 @@ def make_handler(api: Api):
                 self._send_json(*api.list_clips(params))
             elif route == "/api/status":
                 self._send_json(*api.status())
+            elif route == "/api/memory":
+                self._send_json(*api.list_memory(params))
             else:
                 self._send_json(404, {"error": {"code": "not_found", "message": route}})
 
@@ -95,11 +99,27 @@ def make_handler(api: Api):
             if route == "/api/clips":
                 self._send_json(*api.create_clip(self._body()))
                 return
+            if route == "/api/memory":
+                self._send_json(*api.create_memory(self._body()))
+                return
             m = _RELEASE_RE.match(route)
             if m:
                 self._send_json(*api.release_clip(m.group(1)))
                 return
+            m = _PROMOTE_RE.match(route)
+            if m:
+                self._send_json(*api.promote_clip(m.group(1)))
+                return
             self._send_json(404, {"error": {"code": "not_found", "message": route}})
+
+        def do_DELETE(self):
+            if not self._guard():
+                return
+            m = _MEMORY_ID_RE.match(urlparse(self.path).path)
+            if m:
+                self._send_json(*api.delete_memory(m.group(1)))
+                return
+            self._send_json(404, {"error": {"code": "not_found", "message": self.path}})
 
         def do_PATCH(self):
             if not self._guard():
@@ -130,6 +150,7 @@ def serve(config, stop: threading.Event) -> None:
     from clipvault.store import db
 
     conn = db.connect(config.db_path)
+    db.migrate(conn)  # idempotent; makes this thread self-sufficient regardless of caller order
     api = Api(ClipVaultService(conn, config))
     httpd = build_server(api, config.host, config.port)
     httpd.timeout = 0.5

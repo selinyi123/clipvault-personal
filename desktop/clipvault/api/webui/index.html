@@ -15,9 +15,10 @@
   <nav class="tabs">
     <button data-tab="history" class="active">历史</button>
     <button data-tab="quarantine">隔离区</button>
+    <button data-tab="memory">词库</button>
   </nav>
 
-  <div class="toolbar">
+  <div class="toolbar" id="clip-toolbar">
     <input id="q" type="search" placeholder="全文搜索…" autocomplete="off">
     <select id="type">
       <option value="">全部类型</option>
@@ -29,6 +30,19 @@
       <option value="prompt">prompt</option>
       <option value="path">path</option>
     </select>
+  </div>
+
+  <div class="toolbar" id="mem-toolbar" hidden>
+    <input id="mem-text" type="text" placeholder="新增词条文本…" autocomplete="off">
+    <select id="mem-kind">
+      <option value="term">term</option>
+      <option value="phrase">phrase</option>
+      <option value="prompt">prompt</option>
+      <option value="command">command</option>
+      <option value="key_info">key_info</option>
+      <option value="path">path</option>
+    </select>
+    <button id="mem-add">添加</button>
   </div>
 
   <main id="list" class="list"></main>

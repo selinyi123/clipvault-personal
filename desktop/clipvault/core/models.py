@@ -15,6 +15,23 @@ class SecretVerdict:
     reasons: list[str] = field(default_factory=list)
 
 
+MEMORY_KINDS = ("term", "phrase", "prompt", "command", "key_info", "path")
+
+
+@dataclass
+class MemoryItem:
+    id: str
+    kind: str
+    text: str
+    label: str | None = None
+    pinned: bool = False
+    use_count: int = 0
+    last_used_at: str | None = None
+    source: str = "manual"  # manual|derived|obsidian_import|github_import
+    created_at: str = ""
+    deleted: bool = False
+
+
 @dataclass
 class Clip:
     id: str

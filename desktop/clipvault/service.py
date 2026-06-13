@@ -13,8 +13,12 @@ from clipvault.obsidian import writer
 from clipvault.pipeline import ingest as pipeline
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
+from clipvault.store.memory_repo import MemoryRepo
 
 log = logging.getLogger("clipvault.service")
+
+# content_type -> memory kind for clip promotion (S007)
+_PROMOTE_KIND = {"prompt": "prompt", "command": "command"}
 
 
 def _utc_now() -> str:
@@ -86,6 +90,16 @@ class ClipVaultService:
             except Exception:
                 log.exception("enqueue after release failed id=%s", clip.id)
         return True
+
+    def promote_clip(self, clip_id: str):
+        """Promote a clip into Personal Memory. Secret clips are refused."""
+        clip = self.clips.get(clip_id)
+        if clip is None or clip.is_secret:
+            return None
+        kind = _PROMOTE_KIND.get(clip.content_type, "phrase")
+        return MemoryRepo(self.conn).upsert(
+            kind, clip.content[:200], source="derived"
+        )
 
     def retry_obsidian_sweep(self) -> int:
         """The DB is the retry queue: any public clip without obsidian_path

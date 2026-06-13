@@ -5,10 +5,10 @@ directly unit-testable.
 
 from clipvault import __version__
 from clipvault.core import secret_guard
-from clipvault.pipeline import ingest as pipeline
 from clipvault.service import ClipVaultService
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
+from clipvault.store.memory_repo import KINDS as MEMORY_KINDS, MemoryRepo
 
 
 def _clip_dict(clip, *, redact: bool) -> dict:
@@ -31,11 +31,20 @@ def _clip_dict(clip, *, redact: bool) -> dict:
     }
 
 
+def _memory_dict(m) -> dict:
+    return {
+        "id": m.id, "kind": m.kind, "text": m.text, "label": m.label,
+        "pinned": m.pinned, "use_count": m.use_count,
+        "last_used_at": m.last_used_at, "source": m.source,
+    }
+
+
 class Api:
     def __init__(self, service: ClipVaultService):
         self.service = service
         self.conn = service.conn
         self.clips = ClipsRepo(self.conn)
+        self.memory = MemoryRepo(self.conn)
 
     def health(self) -> tuple[int, dict]:
         try:
@@ -83,6 +92,38 @@ class Api:
         if self.service.release_clip(clip_id):
             return 200, {"id": clip_id, "released": True}
         return 404, {"error": {"code": "not_found_or_not_secret", "message": clip_id}}
+
+    # --- memory (S007) ---
+
+    def list_memory(self, params: dict) -> tuple[int, dict]:
+        items = self.memory.list(
+            kind=params.get("kind") or None,
+            query=params.get("q") or None,
+            limit=min(int(params.get("limit", "200") or "200"), 500),
+        )
+        return 200, {"memory": [_memory_dict(m) for m in items]}
+
+    def create_memory(self, body: dict) -> tuple[int, dict]:
+        kind = body.get("kind")
+        text = body.get("text")
+        if kind not in MEMORY_KINDS:
+            return 400, {"error": {"code": "bad_kind", "message": f"kind in {MEMORY_KINDS}"}}
+        if not isinstance(text, str) or not text.strip():
+            return 400, {"error": {"code": "bad_request", "message": "text required"}}
+        item = self.memory.upsert(kind, text, label=body.get("label"),
+                                  pinned=bool(body.get("pinned", False)))
+        return 201, {"memory": _memory_dict(item)}
+
+    def delete_memory(self, item_id: str) -> tuple[int, dict]:
+        if self.memory.soft_delete(item_id):
+            return 200, {"id": item_id, "deleted": True}
+        return 404, {"error": {"code": "not_found", "message": item_id}}
+
+    def promote_clip(self, clip_id: str) -> tuple[int, dict]:
+        item = self.service.promote_clip(clip_id)
+        if item is None:
+            return 404, {"error": {"code": "not_found_or_secret", "message": clip_id}}
+        return 201, {"memory": _memory_dict(item)}
 
     def status(self) -> tuple[int, dict]:
         counts = self.clips.counts()
