@@ -129,3 +129,67 @@ class ClipsRepo:
             "SELECT 1 FROM clips_fts WHERE id = ?", (clip_id,)
         ).fetchone()
         return row is not None
+
+    # --- S004: query / flags / release ---
+
+    def list_clips(self, *, query: str | None = None, content_type: str | None = None,
+                   secret: bool = False, limit: int = 50,
+                   before_id: str | None = None) -> list[Clip]:
+        """List clips newest-first. secret=False excludes quarantined clips
+        (API-1: secrets only surface when explicitly requested)."""
+        where = ["deleted = 0"]
+        params: list = []
+        where.append("is_secret = 1" if secret else "is_secret = 0")
+        if content_type:
+            where.append("content_type = ?")
+            params.append(content_type)
+        if before_id:
+            where.append("id < ?")
+            params.append(before_id)
+        if query:
+            where.append("id IN (SELECT id FROM clips_fts WHERE clips_fts MATCH ?)")
+            params.append(query)
+        sql = (f"SELECT {_COLUMNS} FROM clips WHERE " + " AND ".join(where)
+               + " ORDER BY pinned DESC, last_seen_at DESC LIMIT ?")
+        params.append(limit)
+        rows = self.conn.execute(sql, params).fetchall()
+        return [_row_to_clip(r) for r in rows]
+
+    def set_flag(self, clip_id: str, field: str, value: bool) -> bool:
+        if field not in ("pinned", "favorite", "deleted"):
+            raise ValueError(f"not a settable flag: {field}")
+        cur = self.conn.execute(
+            f"UPDATE clips SET {field} = ? WHERE id = ?", (int(value), clip_id)
+        )
+        # Deleting removes the row from the FTS index (G1 invariant).
+        if field == "deleted" and value:
+            self.conn.execute("DELETE FROM clips_fts WHERE id = ?", (clip_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def release_secret(self, clip_id: str, when: str) -> Clip | None:
+        """Mark a quarantined clip as not-secret and re-index it (DB-1 §4.3)."""
+        clip = self.get(clip_id)
+        if clip is None or not clip.is_secret:
+            return None
+        self.conn.execute(
+            "UPDATE clips SET is_secret = 0, secret_level = NULL, secret_reasons = '[]', "
+            "released = 1, released_at = ? WHERE id = ?",
+            (when, clip_id),
+        )
+        if not clip.deleted:
+            self.conn.execute(
+                "INSERT INTO clips_fts(id, content) VALUES (?, ?)",
+                (clip_id, clip.content),
+            )
+        self.conn.commit()
+        return self.get(clip_id)
+
+    def counts(self) -> dict:
+        total = self.conn.execute(
+            "SELECT COUNT(*) FROM clips WHERE deleted = 0"
+        ).fetchone()[0]
+        secret = self.conn.execute(
+            "SELECT COUNT(*) FROM clips WHERE deleted = 0 AND is_secret = 1"
+        ).fetchone()[0]
+        return {"total": total, "secret": secret}

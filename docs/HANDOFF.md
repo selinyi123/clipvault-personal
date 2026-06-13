@@ -14,8 +14,8 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale WebSocket (SYNC-1) |
 | Source of truth | SQLite local store (DB-1) |
-| Current slice | **S004 — Local API + Web UI（待开工）** |
-| Last updated | 2026-06-13 (S001+S002+S003 完成并验收；Builder 角色由 Claude Fable 5 兼任) |
+| Current slice | **S005 — Android Capture App（待开工，需 Android 工具链）** |
+| Last updated | 2026-06-13 (S001–S004 完成并验收；Builder 角色由 Claude Fable 5 兼任) |
 
 ## Product Constraints（全部 Active）
 
@@ -36,7 +36,8 @@
 |---|---|---|---|---|
 | S001 Core Pipeline | 3cc4e78 | desktop/clipvault/{core,store,pipeline,obsidian}/** + tests + contracts/vectors/*.json + tools/gen_vectors.py | 32 passed / 0 failed (pytest) | **PASS**（A1–A10 全过） |
 | S002 Desktop Service | 002c606 | desktop/clipvault/{config,service,instance_lock,main}.py + watcher/** + tests | 48 passed / 0 failed（累计） | **PASS**（B1–B8 全过，B8 真实剪切板验证见下） |
-| S003 GitHub Backup Worker | （见 git log: feat: S003） | desktop/clipvault/backup/** + backup_queue_repo/clips_repo 扩展 + main 接线 + tools/restore.py + tests | 57 passed / 0 failed（累计） | **PASS**（C1–C8 全过，含恢复演练 C6） |
+| S003 GitHub Backup Worker | d2a8a2a | desktop/clipvault/backup/** + backup_queue_repo/clips_repo 扩展 + main 接线 + tools/restore.py + tests | 57 passed / 0 failed（累计） | **PASS**（C1–C8 全过，含恢复演练 C6） |
+| S004 Local API + Web UI | （见 git log: feat: S004） | desktop/clipvault/api/**（server/handlers/webui）+ clips_repo/service 扩展 + main 接线 + tests | 69 passed / 0 failed（累计） | **PASS**（D1–D10 全过；live smoke 验证真实 socket 服务，修复跨线程 SQLite bug） |
 
 ## Current Contracts
 
@@ -51,7 +52,7 @@
 | GitHub backup GHB-1 | CONTRACTS §7 | **Yes (v1)** |
 | Test vectors VEC-1 | CONTRACTS §8 + contracts/vectors/ | 框架冻结；向量文件由 S001 创建 |
 | SQLite DB-1 | CONTRACTS §9 | **Yes (v1)** |
-| REST API-1 | CONTRACTS §10 | Yes (v1)，S004 开工前允许提修订 |
+| REST API-1 | CONTRACTS §10 | **Yes (v1)**，框架改 stdlib（D-006），端点不变 |
 | Suggest SUG-1 | CONTRACTS §11 | Yes (v1)，S010 开工前允许提修订 |
 | Config CFG-1 | CONTRACTS §12 | **Yes (v1)** |
 
@@ -64,6 +65,7 @@
 | D-003 | Builder | S001 白名单外新增 core/ulid.py 与 tools/gen_vectors.py | a) 引第三方 ULID 库 b) 自实现 26 行 ULID + 向量生成器入库 | **RULED: ACCEPT b** — 零运行时依赖；生成器含对实现的自校验，留库便于复现 |
 | D-004 | Architect | 剪切板监听方案 | a) pywin32 消息窗（ADR-0005 原案）b) ctypes + GetClipboardSequenceNumber 500ms 轮询 | **RULED: MODIFY → b** — 零依赖、消除消息泵脆弱点，500ms 远低于 1s 门禁；已写入 SLICE_002 §2 |
 | D-005 | Builder | PowerShell/Notepad 写的 config.toml 带 UTF-8 BOM，tomllib 解析失败（B8 实测发现） | a) 文档要求无 BOM b) 用 utf-8-sig 读取 | **RULED: ACCEPT b** — 自用舒适度优先，容错真实 Windows 工具链 |
+| D-006 | Architect | S004 Web UI/API 框架 | a) FastAPI+uvicorn（ADR-0005 原案）b) stdlib http.server | **RULED: MODIFY → b** — 单用户 localhost，保持零运行时依赖、规避 pip 代理不稳定；API-1 端点语义不变。单线程 HTTPServer + 连接在服务线程内创建（避免跨线程 SQLite，live smoke 验证发现并修复） |
 
 ## Raw Verification Results
 
@@ -84,5 +86,6 @@
 
 ## Next Slice Candidate
 
-S004 — Local API + Web UI：FastAPI REST（API-1）、极简 Web UI（历史/搜索/隔离区释放/状态）、
-localhost 豁免鉴权。注：FastAPI 需引入运行时依赖（首个非纯 stdlib 依赖），pyproject 加 fastapi+uvicorn。
+S005 — Android Capture App：Kotlin/Compose 工程、Room、Share Target、手动保存、QS Tile、历史 UI、
+Kotlin 端通过 contracts/vectors/*.json。**前置：需 Android 工具链（JDK + Android SDK + Gradle）**，
+开工前先探测/安装环境（D-007 待定）。桌面线 v0.1 已完整（S001–S004），可独立运行使用。

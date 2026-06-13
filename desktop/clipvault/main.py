@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from clipvault import config as config_mod
+from clipvault.api import server as api_server
 from clipvault.backup.github_backup import BackupWorker
 from clipvault.instance_lock import AlreadyRunningError, InstanceLock
 from clipvault.service import ClipVaultService
@@ -112,6 +113,11 @@ def main(argv: list[str] | None = None) -> int:
                 threading.Thread(target=backup_loop, daemon=True, name="backup-worker").start()
                 log.info("backup worker enabled repo=%s interval=%dmin",
                          cfg.backup_repo_path, cfg.backup_interval_minutes)
+
+            threading.Thread(
+                target=api_server.serve, args=(cfg, stop),
+                daemon=True, name="api",
+            ).start()
 
             watcher = PollingWatcher(service.handle_clipboard_text, interval_ms=cfg.poll_ms)
             log.info("clipvault started device=%s poll=%dms", cfg.device_name, cfg.poll_ms)

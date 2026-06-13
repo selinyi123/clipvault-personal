@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClipVault Personal</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>ClipVault <span class="muted">Personal</span></h1>
+    <div id="status" class="status"></div>
+  </header>
+
+  <nav class="tabs">
+    <button data-tab="history" class="active">历史</button>
+    <button data-tab="quarantine">隔离区</button>
+  </nav>
+
+  <div class="toolbar">
+    <input id="q" type="search" placeholder="全文搜索…" autocomplete="off">
+    <select id="type">
+      <option value="">全部类型</option>
+      <option value="text">text</option>
+      <option value="url">url</option>
+      <option value="code">code</option>
+      <option value="command">command</option>
+      <option value="error_log">error_log</option>
+      <option value="prompt">prompt</option>
+      <option value="path">path</option>
+    </select>
+  </div>
+
+  <main id="list" class="list"></main>
+  <div id="empty" class="empty" hidden>没有内容</div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

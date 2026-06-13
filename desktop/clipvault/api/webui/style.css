@@ -1,0 +1,57 @@
+:root {
+  --bg: #0f1115; --panel: #181b22; --panel2: #1f232c; --line: #2a2f3a;
+  --fg: #e6e9ef; --muted: #8b93a3; --accent: #6ea8fe; --warn: #f2b8b5;
+  --pill: #2a2f3a; --ok: #7ee787;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
+}
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px; border-bottom: 1px solid var(--line);
+}
+h1 { font-size: 18px; margin: 0; font-weight: 600; }
+.muted { color: var(--muted); font-weight: 400; }
+.status { font-size: 12px; color: var(--muted); }
+.tabs { display: flex; gap: 4px; padding: 10px 20px 0; }
+.tabs button {
+  background: none; border: none; color: var(--muted); padding: 8px 14px;
+  cursor: pointer; border-radius: 8px 8px 0 0; font-size: 13px;
+}
+.tabs button.active { color: var(--fg); background: var(--panel); }
+.toolbar { display: flex; gap: 8px; padding: 12px 20px; }
+.toolbar input, .toolbar select {
+  background: var(--panel2); border: 1px solid var(--line); color: var(--fg);
+  padding: 8px 10px; border-radius: 8px; font-size: 13px;
+}
+.toolbar input { flex: 1; }
+.list { padding: 0 20px 40px; display: flex; flex-direction: column; gap: 10px; }
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 14px;
+}
+.card.secret { border-color: #5a3a3a; }
+.card .meta { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.pill {
+  font-size: 11px; background: var(--pill); color: var(--muted);
+  padding: 2px 8px; border-radius: 999px;
+}
+.pill.type { color: var(--accent); }
+.pill.secret { color: var(--warn); }
+.time { font-size: 11px; color: var(--muted); margin-left: auto; }
+.content {
+  white-space: pre-wrap; word-break: break-word; margin: 0;
+  font-family: "Cascadia Code", "Consolas", monospace; font-size: 13px;
+  max-height: 220px; overflow: auto;
+}
+.actions { display: flex; gap: 6px; margin-top: 10px; }
+.actions button {
+  background: var(--panel2); border: 1px solid var(--line); color: var(--fg);
+  padding: 5px 10px; border-radius: 7px; cursor: pointer; font-size: 12px;
+}
+.actions button:hover { border-color: var(--accent); }
+.actions button.on { color: var(--ok); border-color: var(--ok); }
+.actions button.release { color: var(--warn); border-color: var(--warn); }
+.empty { text-align: center; color: var(--muted); padding: 60px; }

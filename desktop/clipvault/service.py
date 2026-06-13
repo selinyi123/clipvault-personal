@@ -6,13 +6,19 @@ id, hash prefix, length and type.
 
 import logging
 import sqlite3
+from datetime import datetime, timezone
 
 from clipvault.config import Config
 from clipvault.obsidian import writer
 from clipvault.pipeline import ingest as pipeline
+from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
 
 log = logging.getLogger("clipvault.service")
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class ClipVaultService:
@@ -64,6 +70,21 @@ class ClipVaultService:
             return False
         self.clips.set_obsidian_path(clip.id, str(path))
         log.info("obsidian written id=%s", clip.id)
+        return True
+
+    def release_clip(self, clip_id: str) -> bool:
+        """Release a quarantined clip and re-run the public pipeline
+        (FTS already re-indexed by the repo; here we add Obsidian + backup)."""
+        clip = self.clips.release_secret(clip_id, _utc_now())
+        if clip is None:
+            return False
+        log.info("released id=%s (was quarantined)", clip.id)
+        if not clip.deleted:
+            self._write_obsidian(clip)
+            try:
+                BackupQueueRepo(self.conn).enqueue(clip.id, _utc_now())
+            except Exception:
+                log.exception("enqueue after release failed id=%s", clip.id)
         return True
 
     def retry_obsidian_sweep(self) -> int:
