@@ -14,8 +14,8 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale WebSocket (SYNC-1) |
 | Source of truth | SQLite local store (DB-1) |
-| Current slice | **全部 12 切片完成（v1.0）。剩余唯一项：Android 真机运行验证（需 SDK+设备，Owner 执行）** |
-| Last updated | 2026-06-13 (S001–S012 全部完成；桌面 128 测试绿 + Android core VEC-1 100/100；Builder=Claude Fable 5) |
+| Current slice | **全部 12 切片完成（v1.0）。Android app 已编译并产出 APK。剩余唯一项：真机运行体验确认（Owner）** |
+| Last updated | 2026-06-13 (S001–S012 完成；桌面 128 测试绿；Android core VEC-1 100/100 + app assembleDebug 成功；Builder=Claude Fable 5) |
 
 ## Product Constraints（全部 Active）
 
@@ -96,6 +96,7 @@
 | 2026-06-13 | S003 | `desktop> .venv\Scripts\python -m pytest -q` | **57 passed, 0 failed** (2.9s) | 含 C6 恢复演练（restore.py 从 JSONL 重建库，hash 集合与原库公开部分全等）；本地裸仓库验证 push，不碰真实 GitHub |
 | 2026-06-13 | S004→S012（桌面累计） | `desktop> .venv\Scripts\python -m pytest -q` | **121 passed, 0 failed** | S004 API/WebUI、S007 memory、S010 suggest、S011 actions、S006 sync、S012 prune；含多处 live socket smoke |
 | 2026-06-13 | S005（Android core） | `kotlinc android/core + java VectorCheckKt contracts/vectors`（JDK21/kotlin2.0.21） | **VEC-1 OK: 100 vectors passed (norm=22 cls=40 sg=38)** | Kotlin 端与 Python 端对同一向量逐例一致；跨平台契约成立 |
+| 2026-06-13 | Android 整体构建 | `gradle :core:test :app:assembleDebug`（Gradle 8.10.2 + JDK21 + SDK platform-34） | **BUILD SUCCESSFUL**：core:test 1 test 0 failures；**产出 app-debug.apk (~9.2MB)** | 整个 Android app（UI/Room/Share/QSTile/Sync/IME）编译通过；core VEC-1 经 Gradle/JUnit 路径再证；仅剩真机运行 |
 
 ## Architect Decisions Log
 

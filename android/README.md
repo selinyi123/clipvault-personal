@@ -45,8 +45,20 @@ gradle :core:test        # 仅需 JDK + Gradle + Maven Central，无需 Android 
 - 捕获即过 Secret Guard（gate A）；密钥本地隔离，**不进 outbox、不同步、不入全文**（gate B）。
 - Android 10+ 禁止后台读剪贴板——本应用不申请、不轮询；采集靠分享/手动/输入法显式动作。
 
+## 构建（已实测）
+
+本仓库已用 Gradle 8.10.2 + JDK 21 + Android SDK(platform-34/build-tools-34.0.0) 实测：
+
+```
+gradle :core:test        → VectorTest 1 test, 0 failures（VEC-1 经 JUnit/Gradle 路径再证）
+gradle :app:assembleDebug → BUILD SUCCESSFUL，产出 app/build/outputs/apk/debug/app-debug.apk（~9.2MB）
+```
+
+项目自带 Gradle wrapper（`gradlew` / `gradlew.bat`），Android Studio 可直接打开。
+`local.properties` 的 `sdk.dir` 为机器相关项，未提交——首次构建请指向你的 Android SDK。
+
 ## 状态
 
-- core VEC-1：**已通过（100/100）**，与桌面端一致。
-- app：源码完整（Share/Tile/Room/Compose/Sync/IME）；编译与真机运行需 Android SDK + 设备
-  （唯一需要 Owner 在本机/设备上完成的一步）。
+- core VEC-1：**已通过（100/100）**，且经 Gradle `:core:test` 再次确认。
+- app：**整体编译通过并产出可安装 APK**（Share/Tile/Room/Compose/Sync/IME 全部编译）。
+- **唯一剩余**：把 APK 装到手机、启用输入法、配对，做设备端体验确认（需物理设备，由 Owner 完成）。

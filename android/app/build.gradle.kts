@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
@@ -14,8 +15,7 @@ android {
         versionCode = 1
         versionName = "0.2"
     }
-    buildFeatures { compose = true }
-    composeOptions { kotlinCompilerExtensionVersion = "1.5.15" }
+    buildFeatures { compose = true }   // compiler managed by kotlin.plugin.compose
     kotlinOptions { jvmTarget = "17" }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

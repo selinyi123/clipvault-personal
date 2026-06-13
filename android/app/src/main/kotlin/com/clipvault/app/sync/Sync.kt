@@ -99,7 +99,7 @@ object SyncApply {
                 isSecret = isSecret, secretLevel = if (isSecret) verdict.level else null,
                 secretReasons = JSONArray(verdict.reasons).toString(),
                 sourceDevice = d.optString("source_device", "desktop"),
-                sourceApp = d.optString("source_app", null),
+                sourceApp = if (d.isNull("source_app")) null else d.optString("source_app"),
                 createdAt = d.getString("created_at"), lastSeenAt = d.getString("last_seen_at"),
                 timesSeen = d.optInt("times_seen", 1),
                 pinned = d.optBoolean("pinned", false), favorite = d.optBoolean("favorite", false),
