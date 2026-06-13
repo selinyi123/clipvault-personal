@@ -10,9 +10,11 @@ import logging.handlers
 import signal
 import sys
 import threading
+import time
 from pathlib import Path
 
 from clipvault import config as config_mod
+from clipvault.backup.github_backup import BackupWorker
 from clipvault.instance_lock import AlreadyRunningError, InstanceLock
 from clipvault.service import ClipVaultService
 from clipvault.store import db
@@ -92,6 +94,24 @@ def main(argv: list[str] | None = None) -> int:
                         log.exception("obsidian sweep failed")
 
             threading.Thread(target=sweep_loop, daemon=True, name="obsidian-sweep").start()
+
+            if cfg.backup_enabled and cfg.backup_repo_path:
+                def backup_loop() -> None:
+                    backup_conn = db.connect(cfg.db_path)
+                    worker = BackupWorker(backup_conn, cfg.backup_repo_path)
+                    interval_s = max(60, cfg.backup_interval_minutes * 60)
+                    while not stop.wait(interval_s):
+                        try:
+                            stats = worker.run_once(monotonic=time.monotonic())
+                            if stats["written"] or stats["dropped"]:
+                                log.info("backup: wrote=%d dropped=%d pushed=%s",
+                                         stats["written"], stats["dropped"], stats["pushed"])
+                        except Exception:  # worker must never kill the service
+                            log.exception("backup worker failed")
+
+                threading.Thread(target=backup_loop, daemon=True, name="backup-worker").start()
+                log.info("backup worker enabled repo=%s interval=%dmin",
+                         cfg.backup_repo_path, cfg.backup_interval_minutes)
 
             watcher = PollingWatcher(service.handle_clipboard_text, interval_ms=cfg.poll_ms)
             log.info("clipvault started device=%s poll=%dms", cfg.device_name, cfg.poll_ms)

@@ -14,8 +14,8 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale WebSocket (SYNC-1) |
 | Source of truth | SQLite local store (DB-1) |
-| Current slice | **S003 — GitHub Backup Worker（待 Architect 写规格）** |
-| Last updated | 2026-06-13 (S001+S002 完成并验收；Builder 角色由 Claude Fable 5 兼任，Owner 批准) |
+| Current slice | **S004 — Local API + Web UI（待开工）** |
+| Last updated | 2026-06-13 (S001+S002+S003 完成并验收；Builder 角色由 Claude Fable 5 兼任) |
 
 ## Product Constraints（全部 Active）
 
@@ -35,7 +35,8 @@
 | Slice | Commit | Files changed | Tests | Result |
 |---|---|---|---|---|
 | S001 Core Pipeline | 3cc4e78 | desktop/clipvault/{core,store,pipeline,obsidian}/** + tests + contracts/vectors/*.json + tools/gen_vectors.py | 32 passed / 0 failed (pytest) | **PASS**（A1–A10 全过） |
-| S002 Desktop Service | （见 git log: feat: S002） | desktop/clipvault/{config,service,instance_lock,main}.py + watcher/** + tests | 48 passed / 0 failed（累计） | **PASS**（B1–B8 全过，B8 真实剪切板验证见下） |
+| S002 Desktop Service | 002c606 | desktop/clipvault/{config,service,instance_lock,main}.py + watcher/** + tests | 48 passed / 0 failed（累计） | **PASS**（B1–B8 全过，B8 真实剪切板验证见下） |
+| S003 GitHub Backup Worker | （见 git log: feat: S003） | desktop/clipvault/backup/** + backup_queue_repo/clips_repo 扩展 + main 接线 + tools/restore.py + tests | 57 passed / 0 failed（累计） | **PASS**（C1–C8 全过，含恢复演练 C6） |
 
 ## Current Contracts
 
@@ -72,6 +73,7 @@
 | 2026-06-13 | S001 | `python tools/gen_vectors.py`（含实现自校验） | 100 cases written, 0 mismatches | 向量为两端唯一仲裁，Kotlin 端（S005）须通过同一文件 |
 | 2026-06-13 | S002 | `desktop> .venv\Scripts\python -m pytest -q` | **48 passed, 0 failed** (0.19s) | S001 32 + S002 16（config/service/watcher/lock） |
 | 2026-06-13 | S002 B8 | 真实剪切板：Set-Clipboard → `main --once` ×2 | new→duplicate，times_seen=2；Obsidian 文件 frontmatter 完整；source_app 捕获为真实前台进程 | 日志仅含 id/type/len/hash8/app，无正文（G6 ✓）；缺 config 退出码 2（B1 ✓） |
+| 2026-06-13 | S003 | `desktop> .venv\Scripts\python -m pytest -q` | **57 passed, 0 failed** (2.9s) | 含 C6 恢复演练（restore.py 从 JSONL 重建库，hash 集合与原库公开部分全等）；本地裸仓库验证 push，不碰真实 GitHub |
 
 ## Architect Decisions Log
 
@@ -82,4 +84,5 @@
 
 ## Next Slice Candidate
 
-S003 — GitHub Backup Worker：JSONL 序列化（GHB-1）、git 操作（subprocess，本地裸仓库测试）、定时排空 backup_queue、闸门 C 复扫、退避重试、main 接线。
+S004 — Local API + Web UI：FastAPI REST（API-1）、极简 Web UI（历史/搜索/隔离区释放/状态）、
+localhost 豁免鉴权。注：FastAPI 需引入运行时依赖（首个非纯 stdlib 依赖），pyproject 加 fastapi+uvicorn。

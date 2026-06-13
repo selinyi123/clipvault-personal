@@ -101,6 +101,18 @@ class ClipsRepo:
         )
         self.conn.commit()
 
+    def set_backed_up_at(self, clip_id: str, when: str) -> None:
+        self.conn.execute(
+            "UPDATE clips SET backed_up_at = ? WHERE id = ?", (when, clip_id)
+        )
+        self.conn.commit()
+
+    def all_clips(self) -> list[Clip]:
+        rows = self.conn.execute(
+            f"SELECT {_COLUMNS} FROM clips ORDER BY created_at"
+        ).fetchall()
+        return [_row_to_clip(r) for r in rows]
+
     def search_fts(self, query: str, limit: int = 50) -> list[Clip]:
         rows = self.conn.execute(
             f"""
