@@ -15,6 +15,13 @@ function esc(s) {
 }
 function fmtTime(iso) { return iso ? iso.replace("T", " ").replace("Z", "") : ""; }
 
+// Mirror of core/actions.recommend() for the primary promote chip (S011).
+const PROMOTE = {
+  command: ["保存为常用命令", "command"], prompt: ["归档为 Prompt", "prompt"],
+  url: ["保存链接到词库", "path"], path: ["保存路径到词库", "path"],
+  code: ["加入代码片段", "phrase"], error_log: ["加入词库", "phrase"], text: ["加入词库", "phrase"],
+};
+
 function clipCard(c) {
   const secret = c.is_secret;
   const actions = secret
@@ -22,7 +29,7 @@ function clipCard(c) {
        <button data-del="${c.id}">删除</button>`
     : `<button class="${c.pinned ? "on" : ""}" data-pin="${c.id}" data-v="${!c.pinned}">📌 固定</button>
        <button class="${c.favorite ? "on" : ""}" data-fav="${c.id}" data-v="${!c.favorite}">★ 收藏</button>
-       <button data-promote="${c.id}">加入词库</button>
+       <button data-promote="${c.id}" data-kind="${(PROMOTE[c.content_type]||PROMOTE.text)[1]}">${(PROMOTE[c.content_type]||PROMOTE.text)[0]}</button>
        <button data-copy="${c.id}">复制</button>
        <button data-del="${c.id}">删除</button>`;
   const reasons = secret && c.secret_reasons.length
@@ -97,7 +104,10 @@ document.addEventListener("click", async (e) => {
   else if (b.dataset.del) { await jpatch(b.dataset.del, { deleted: true }); refresh(); }
   else if (b.dataset.release) { await api(`/api/clips/${b.dataset.release}/release`, { method: "POST" }); refresh(); }
   else if (b.dataset.promote) {
-    await api(`/api/clips/${b.dataset.promote}/promote`, { method: "POST" });
+    await api(`/api/clips/${b.dataset.promote}/promote`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: b.dataset.kind }),
+    });
     b.textContent = "已加入"; b.classList.add("on");
   }
   else if (b.dataset.memdel) { await api(`/api/memory/${b.dataset.memdel}`, { method: "DELETE" }); refresh(); }

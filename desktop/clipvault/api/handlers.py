@@ -128,11 +128,24 @@ class Api:
             return 200, {"id": item_id, "deleted": True}
         return 404, {"error": {"code": "not_found", "message": item_id}}
 
-    def promote_clip(self, clip_id: str) -> tuple[int, dict]:
-        item = self.service.promote_clip(clip_id)
+    def promote_clip(self, clip_id: str, body: dict | None = None) -> tuple[int, dict]:
+        kind = (body or {}).get("kind")
+        if kind is not None and kind not in MEMORY_KINDS:
+            return 400, {"error": {"code": "bad_kind", "message": f"kind in {MEMORY_KINDS}"}}
+        item = self.service.promote_clip(clip_id, kind)
         if item is None:
             return 404, {"error": {"code": "not_found_or_secret", "message": clip_id}}
         return 201, {"memory": _memory_dict(item)}
+
+    def clip_actions(self, clip_id: str) -> tuple[int, dict]:
+        clip = self.clips.get(clip_id)
+        if clip is None:
+            return 404, {"error": {"code": "not_found", "message": clip_id}}
+        from clipvault.core import actions as action_rules
+        chips = action_rules.recommend(clip.content_type, clip.is_secret)
+        return 200, {"actions": [
+            {"action": a.action, "label": a.label, "kind": a.kind} for a in chips
+        ]}
 
     def use_memory(self, item_id: str) -> tuple[int, dict]:
         if self.memory.get(item_id) is None:

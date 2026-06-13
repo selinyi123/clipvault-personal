@@ -14,8 +14,8 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale WebSocket (SYNC-1) |
 | Source of truth | SQLite local store (DB-1) |
-| Current slice | **S011 — Context Action Engine（待开工，desktop 可全测）** |
-| Last updated | 2026-06-13 (S001–S004 + S007 + S010 完成并验收；Builder 角色由 Claude Fable 5 兼任) |
+| Current slice | **S006 — 双端同步服务端（待开工；D-007 传输方式裁决）** |
+| Last updated | 2026-06-13 (S001–S004 + S007 + S010 + S011 完成并验收；Builder=Claude Fable 5) |
 
 ## Product Constraints（全部 Active）
 
@@ -39,7 +39,8 @@
 | S003 GitHub Backup Worker | d2a8a2a | desktop/clipvault/backup/** + backup_queue_repo/clips_repo 扩展 + main 接线 + tools/restore.py + tests | 57 passed / 0 failed（累计） | **PASS**（C1–C8 全过，含恢复演练 C6） |
 | S004 Local API + Web UI | 75eabab | desktop/clipvault/api/**（server/handlers/webui）+ clips_repo/service 扩展 + main 接线 + tests | 69 passed / 0 failed（累计） | **PASS**（D1–D10 全过；live smoke 验证真实 socket 服务，修复跨线程 SQLite bug） |
 | S007 Personal Memory | bfedef2 | memory_repo + memory/importers + models.MemoryItem + api 端点/路由 + webui 词库页 + service.promote_clip + tests | 81 passed / 0 failed（累计） | **PASS**（E1–E9 全过；live smoke 验证 memory CRUD/promote 路由） |
-| S010 Suggestion Engine | （见 git log: feat: S010） | core/suggest（纯）+ config 权重 + clips_repo.suggest_candidates + /api/suggest + /api/memory/{id}/use + tests | 92 passed / 0 failed（累计） | **PASS**（F1–F10 全过；含 SUG-1.1 pinned 硬置顶；live smoke 验证 /api/suggest） |
+| S010 Suggestion Engine | ed594e9 | core/suggest（纯）+ config 权重 + clips_repo.suggest_candidates + /api/suggest + /api/memory/{id}/use + tests | 92 passed / 0 failed（累计） | **PASS**（F1–F10 全过；含 SUG-1.1 pinned 硬置顶；live smoke 验证 /api/suggest） |
+| S011 Context Action Engine | （见 git log: feat: S011） | core/actions（纯规则）+ service.promote(kind) + /api/clips/{id}/actions + promote kind + webui chip + tests | 106 passed / 0 failed（累计） | **PASS**（G11-1..6 全过；纯规则无 AI） |
 
 > 注：切片顺序按"可在本机充分测试"优先重排——先做桌面/Python 侧（S007→S010→S011→S006→S012），
 > Android 侧（S005/S008/S009）需工具链，置后并单独处理真机验证。

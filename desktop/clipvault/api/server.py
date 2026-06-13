@@ -19,6 +19,7 @@ WEBUI_DIR = Path(__file__).parent / "webui"
 _CLIP_ID_RE = re.compile(r"^/api/clips/([0-9A-Za-z]+)$")
 _RELEASE_RE = re.compile(r"^/api/clips/([0-9A-Za-z]+)/release$")
 _PROMOTE_RE = re.compile(r"^/api/clips/([0-9A-Za-z]+)/promote$")
+_ACTIONS_RE = re.compile(r"^/api/clips/([0-9A-Za-z]+)/actions$")
 _MEMORY_ID_RE = re.compile(r"^/api/memory/([0-9A-Za-z]+)$")
 _MEMORY_USE_RE = re.compile(r"^/api/memory/([0-9A-Za-z]+)/use$")
 _LOOPBACK = ("127.0.0.1", "::1")
@@ -93,7 +94,11 @@ def make_handler(api: Api):
             elif route == "/api/suggest":
                 self._send_json(*api.suggest(params))
             else:
-                self._send_json(404, {"error": {"code": "not_found", "message": route}})
+                m = _ACTIONS_RE.match(route)
+                if m:
+                    self._send_json(*api.clip_actions(m.group(1)))
+                else:
+                    self._send_json(404, {"error": {"code": "not_found", "message": route}})
 
         def do_POST(self):
             if not self._guard():
@@ -111,7 +116,7 @@ def make_handler(api: Api):
                 return
             m = _PROMOTE_RE.match(route)
             if m:
-                self._send_json(*api.promote_clip(m.group(1)))
+                self._send_json(*api.promote_clip(m.group(1), self._body()))
                 return
             m = _MEMORY_USE_RE.match(route)
             if m:
