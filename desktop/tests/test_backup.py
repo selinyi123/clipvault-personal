@@ -39,7 +39,10 @@ def work_repo(tmp_path):
 
 def test_c1_public_clip_serialized(conn, work_repo):
     repo, _ = work_repo
-    out = pipeline.ingest(conn, "hello backup", source_device="d")
+    # Fix the ingest clock too: the daily JSONL path derives from clip.created_at,
+    # so a real wall clock would make this assert date-dependent (rollover flake).
+    out = pipeline.ingest(conn, "hello backup", source_device="d",
+                          now_fn=lambda: "2026-06-13T10:00:00Z")
     worker = BackupWorker(conn, str(repo), push_enabled=False,
                           now_fn=lambda: "2026-06-13T10:00:00Z")
     stats = worker.run_once()
