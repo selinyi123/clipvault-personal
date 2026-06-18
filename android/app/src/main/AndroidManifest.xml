@@ -6,10 +6,14 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- SYNC-2 uses plain HTTP to the desktop over LAN/Tailscale (THREAT_MODEL:
+         LAN cleartext is an accepted residual risk; Tailscale recommended).
+         Android 9+ blocks cleartext by default, so we must opt in or sync fails. -->
     <application
         android:name=".ClipVaultApp"
         android:label="ClipVault"
         android:allowBackup="false"
+        android:usesCleartextTraffic="true"
         android:supportsRtl="true">
 
         <!-- Main UI: history, search, pairing, settings -->

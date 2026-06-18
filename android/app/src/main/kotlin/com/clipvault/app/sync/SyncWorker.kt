@@ -1,6 +1,7 @@
 package com.clipvault.app.sync
 
 import android.content.Context
+import android.util.Log
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
@@ -54,6 +55,9 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
             }
             Result.success()
         } catch (e: Exception) {
+            // Content-safe: log the failure class/message (never clip content) so
+            // sync problems are diagnosable instead of silently retrying forever.
+            Log.w("ClipVaultSync", "sync failed: ${e.javaClass.simpleName}: ${e.message}")
             Result.retry()
         }
     }
