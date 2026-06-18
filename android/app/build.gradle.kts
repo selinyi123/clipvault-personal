@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.google.devtools.ksp")
 }
 
 android {
@@ -12,8 +13,8 @@ android {
         applicationId = "com.clipvault.app"
         minSdk = 26          // Android 8.0: Quick Settings Tile + modern clipboard rules
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.2"
+        versionCode = 2
+        versionName = "1.0.2"
     }
     // Release signing reads from -P properties (or ~/.gradle), so the keystore
     // and passwords never live in the repo. Falls back gracefully when unset.
@@ -53,7 +54,7 @@ dependencies {
     val room = "2.6.1"
     implementation("androidx.room:room-runtime:$room")
     implementation("androidx.room:room-ktx:$room")
-    annotationProcessor("androidx.room:room-compiler:$room")
+    ksp("androidx.room:room-compiler:$room")   // KSP, not annotationProcessor (Kotlin)
 
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
