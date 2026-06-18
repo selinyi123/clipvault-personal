@@ -15,8 +15,8 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale WebSocket (SYNC-1) |
 | Source of truth | SQLite local store (DB-1) |
-| Current slice | **全部 12 切片完成（v1.0）。Android app 已编译并产出 APK。剩余唯一项：真机运行体验确认（Owner）** |
-| Last updated | 2026-06-13 (S001–S012 完成；桌面 128 测试绿；Android core VEC-1 100/100 + app assembleDebug 成功；Builder=Claude Fable 5) |
+| Current slice | **全部完成并端到端实测（v1.0.3）。模拟器实测：启动/IME/采集/双端同步全通；修了 2 个发布级 bug（Room-KSP 崩溃、明文 HTTP 拦截）。剩余仅 Owner 真机主观手感** |
+| Last updated | 2026-06-18 (S001–S012 + 模拟器端到端验证；桌面 129 绿；双端同步实证；Release v1.0.3；Builder=Claude Fable 5) |
 
 ## Product Constraints（全部 Active）
 
@@ -99,6 +99,7 @@
 | 2026-06-13 | S005（Android core） | `kotlinc android/core + java VectorCheckKt contracts/vectors`（JDK21/kotlin2.0.21） | **VEC-1 OK: 100 vectors passed (norm=22 cls=40 sg=38)** | Kotlin 端与 Python 端对同一向量逐例一致；跨平台契约成立 |
 | 2026-06-13 | Android 整体构建 | `gradle :core:test :app:assembleDebug`（Gradle 8.10.2 + JDK21 + SDK platform-34） | **BUILD SUCCESSFUL**：core:test 1 test 0 failures；**产出 app-debug.apk (~9.2MB)** | 整个 Android app（UI/Room/Share/QSTile/Sync/IME）编译通过；core VEC-1 经 Gradle/JUnit 路径再证 |
 | 2026-06-18 | Android 模拟器实测 | ATD x86_64/API34 headless 启动 → 安装 APK → 启动/IME/Share 验证 | 修 KSP/Room 后：**MainActivity 前台无崩溃；default_input_method=ClipVaultKeyboardService；Share 采集出 1 条 clip（content/hash/type/ULID/UTC 正确，isSecret=0）** | 真机级运行验证；release APK 同样启动无崩溃且 IME 可激活 |
+| 2026-06-18 | **双端同步端到端实测**（真实 Android emulator ↔ 真实桌面服务，adb reverse 隧道） | 桌面起服务+配对+seed token；手机 Share 采集触发 SyncWorker push+pull | **抓到第二个发布级 bug：明文 HTTP 被 Android 9+ 拦截（usesCleartextTraffic 未开）→ 同步在真机上全废，且 catch 静默吞错**。修复后：**手机→桌面 5 条全部到达 + 写入 Obsidian（.md）；桌面→手机 clip 进 Android Room；双向、source 归属正确、无回声**。PRODUCT_SPEC §7.1+§7.2 两条数据流均实证通过。发 v1.0.3 修复版 |
 
 ## Architect Decisions Log
 
