@@ -81,6 +81,25 @@ def test_k6_pull_returns_memory_events(api, conn):
     assert any(e["kind"] == "memory_upsert" for e in result["events"])
 
 
+def test_k7_memory_delete_lww(conn):
+    """A stale delete must not remove a locally-newer memory item; a fresh one does."""
+    item = MemoryRepo(conn).upsert("term", "keepme")
+    engine.emit_memory_upsert(conn, item, "2026-06-13T10:20:00Z")  # local meta-ts = t20
+
+    stale = {"origin_device": "peer", "seq": 1, "kind": "memory_delete",
+             "ts": "2026-06-13T10:10:00Z",
+             "data": {"kind": "term", "text": "keepme", "ts": "2026-06-13T10:10:00Z"}}
+    engine.apply_push(conn, "peer", [stale], service=None)
+    survivor = MemoryRepo(conn).by_kind_text("term", "keepme")
+    assert survivor is not None and survivor.deleted is False  # stale delete ignored
+
+    fresh = {"origin_device": "peer", "seq": 2, "kind": "memory_delete",
+             "ts": "2026-06-13T10:30:00Z",
+             "data": {"kind": "term", "text": "keepme", "ts": "2026-06-13T10:30:00Z"}}
+    engine.apply_push(conn, "peer", [fresh], service=None)
+    assert MemoryRepo(conn).list(kind="term") == []  # fresh delete applied
+
+
 def test_k8_no_content_in_logs(api, caplog):
     with caplog.at_level(logging.DEBUG, logger="clipvault"):
         api.create_memory({"kind": "command", "text": "secretmemorywords"})

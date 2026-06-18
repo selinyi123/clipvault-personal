@@ -45,7 +45,9 @@ def emit_clip_meta(conn, content_hash: str, patch: dict, ts: str, when: str) -> 
 
 
 def emit_memory_upsert(conn, item, when: str) -> int:
-    """Publish a Personal Memory item to peers (S008)."""
+    """Publish a Personal Memory item to peers (S008). A local upsert bumps the
+    item's meta-ts so a later-arriving stale delete loses the LWW race."""
+    _set_mem_ts(conn, item.kind, item.text, when)
     data = {
         "kind": item.kind, "text": item.text, "label": item.label,
         "pinned": item.pinned, "use_count": item.use_count, "source": item.source,
@@ -54,6 +56,7 @@ def emit_memory_upsert(conn, item, when: str) -> int:
 
 
 def emit_memory_delete(conn, kind: str, text: str, ts: str, when: str) -> int:
+    _set_mem_ts(conn, kind, text, ts)
     return OutboxRepo(conn).append(
         "memory_delete", {"kind": kind, "text": text, "ts": ts}, when
     )
@@ -74,6 +77,23 @@ def _set_meta_ts(conn, content_hash: str, ts: str) -> None:
         "ON CONFLICT(content_hash) DO UPDATE SET ts=excluded.ts "
         "WHERE excluded.ts >= clip_meta_ts.ts",
         (content_hash, ts),
+    )
+    conn.commit()
+
+
+def _get_mem_ts(conn, kind: str, text: str) -> str:
+    row = conn.execute(
+        "SELECT ts FROM memory_meta_ts WHERE kind = ? AND text = ?", (kind, text)
+    ).fetchone()
+    return row[0] if row else ""
+
+
+def _set_mem_ts(conn, kind: str, text: str, ts: str) -> None:
+    conn.execute(
+        "INSERT INTO memory_meta_ts(kind, text, ts) VALUES (?,?,?) "
+        "ON CONFLICT(kind, text) DO UPDATE SET ts=excluded.ts "
+        "WHERE excluded.ts >= memory_meta_ts.ts",
+        (kind, text, ts),
     )
     conn.commit()
 
@@ -153,10 +173,15 @@ def _apply_memory_upsert(conn, data: dict) -> None:
 
 def _apply_memory_delete(conn, data: dict) -> None:
     from clipvault.store.memory_repo import MemoryRepo
+    kind, text, ts = data["kind"], data["text"], data.get("ts", "")
+    # LWW (CONTRACTS §5.2): a stale delete must not remove a locally newer item.
+    if ts < _get_mem_ts(conn, kind, text):
+        return
     repo = MemoryRepo(conn)
-    item = repo.by_kind_text(data["kind"], data["text"])
+    item = repo.by_kind_text(kind, text)
     if item is not None:
         repo.soft_delete(item.id)
+    _set_mem_ts(conn, kind, text, ts)
 
 
 def _apply_clip_meta(conn, data: dict) -> None:
