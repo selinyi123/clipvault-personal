@@ -105,7 +105,8 @@
 |---|---|
 | 2026-06-12 | 初始架构冻结：ADR-0001…0007；CONTRACTS v1；GATES 全版本；ROADMAP S001–S012 |
 | 2026-06-13 | 发布 Release v1.0.0：Desktop exe（PyInstaller 单文件，验证独立运行）+ Android apk（签名 release，apksigner verify OK）。安装包走 GitHub Releases 不入 git（keystore/assets 在 .toolchain gitignored，未入库） |
-| 2026-06-18 | 审阅裁决：①仓库可见性 **保持 PUBLIC**（Owner 定；安全扫描确认源码仓库无 keystore/密钥/真实路径/个人数据，仅 commit 作者邮箱公开可见，Owner 接受）。②修 memory_delete LWW（migration 0003 memory_meta_ts；CONTRACTS §5.2 在桌面 hub 落实，129 tests 绿）。③apply_push 空洞处理与 RESEARCH 文档暂不动（Owner 选择）。**遗留 follow-up**：Android 端 memory_delete 对称 LWW（需 Room schema 改动，仅能编译验证，自用低风险） |
+| 2026-06-18 | 审阅裁决：①仓库可见性 **保持 PUBLIC**（Owner 定；安全扫描确认源码仓库无 keystore/密钥/真实路径/个人数据，仅 commit 作者邮箱公开可见，Owner 接受）。②修 memory_delete LWW（migration 0003 memory_meta_ts；CONTRACTS §5.2 在桌面 hub 落实，129 tests 绿）。③apply_push 空洞处理与 RESEARCH 文档暂不动（Owner 选择）。**Android 对称 LWW 经核实无需做**：Android `memory()` DAO 仅两处调用——IME 面板只读 list、Sync 仅应用远程事件；手机端无本地 memory 编辑、不 emit memory 事件（记忆为桌面权威、手机纯消费，符合 ADR-0001），故"旧删除覆盖手机较新编辑"的场景不存在，桌面端修复即完整。 |
+| 2026-06-18 | 版本对齐 + 重新打包 v1.0.1：__version__ 由 0.1.0 对齐为 1.0.1；桌面 exe 含 migration 0003 重建；APK 重建重签；GitHub Release v1.0.1 刷新双端安装包，使发布产物与最终代码一致 |
 | 2026-06-12 | 偏离原 ChatGPT 方案的修正：①GitHub 备份去掉 Markdown 镜像只存 JSONL；②密钥排除出 FTS 索引；③同步明确为事件日志复制；④Android 采集以 Share Target 为主路径（平台限制）；⑤IME 推荐只查本地缓存；⑥新增配对鉴权；⑦原 Slice001 拆为 S001–S004 |
 
 ## Next Slice Candidate

@@ -166,7 +166,7 @@ LWW 时间戳记于 `clip_meta_ts(content_hash, ts)`（migration 0002）。
 | `clip_new` | 完整 Clip 对象（§1） | 幂等插入：先按 (origin_device,seq) 去重，再按 content_hash 去重合并 |
 | `clip_meta` | `{content_hash, patch: {pinned?|favorite?|deleted?}, ts}` | 字段级 LWW（按 ts）；同 ts 时 deleted=true 赢 |
 | `memory_upsert` | 完整 MemoryItem（v0.4 启用） | 按 (kind,text) 幂等 upsert，use_count 取 max |
-| `memory_delete` | `{kind, text, ts}` | LWW（桌面 hub 已落实：migration 0003 `memory_meta_ts` 记每条本地变更 ts，应用远程删除时 ts<本地则跳过。Android 端对称 LWW 为 follow-up） |
+| `memory_delete` | `{kind, text, ts}` | LWW（migration 0003 `memory_meta_ts` 记每条本地变更 ts，应用远程删除时 ts<本地则跳过。**仅桌面端需要**：记忆为桌面权威、Android 纯消费不 emit memory 事件，故无对端冲突） |
 
 不变量：
 - is_secret=1 的 clip **永不**出现在 events 中；接收端若收到（对端实现 bug），必须本地隔离并记 ERROR。
