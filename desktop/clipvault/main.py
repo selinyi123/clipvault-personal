@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from clipvault import config as config_mod
+from clipvault import launcher
 from clipvault.api import server as api_server
 from clipvault.backup.github_backup import BackupWorker
 from clipvault.instance_lock import AlreadyRunningError, InstanceLock
@@ -46,24 +47,23 @@ def setup_logging(cfg: config_mod.Config) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="clipvault")
-    parser.add_argument("--config", default="config.toml")
+    parser.add_argument("--config", default=None,
+                        help="config path (default: %LOCALAPPDATA%/ClipVault/config.toml)")
     parser.add_argument("--once", action="store_true",
                         help="ingest the current clipboard once and exit")
+    parser.add_argument("--headless", action="store_true",
+                        help="run the service without tray/browser (for autostart)")
+    parser.add_argument("--no-open", action="store_true",
+                        help="run with tray but do not auto-open the browser (login autostart)")
     args = parser.parse_args(argv)
 
-    try:
-        cfg = config_mod.load(Path(args.config))
-    except config_mod.ConfigMissing as exc:
-        print(f"config template written, fill obsidian.vault_path and rerun: {exc.path}")
-        return 2
-    except config_mod.ConfigError as exc:
-        print(f"config error -> {exc.field}: {exc.message}")
-        return 2
-
-    setup_logging(cfg)
-    log = logging.getLogger("clipvault.main")
-
     if args.once:
+        try:
+            cfg = config_mod.load(Path(args.config or launcher.default_config_path()))
+        except (config_mod.ConfigMissing, config_mod.ConfigError) as exc:
+            print(f"config error: {exc}")
+            return 2
+        setup_logging(cfg)
         conn = db.connect(cfg.db_path)
         db.migrate(conn)
         text = get_clipboard_text()
@@ -74,6 +74,13 @@ def main(argv: list[str] | None = None) -> int:
         clip_id = outcome.clip.id if outcome.clip else "-"
         print(f"{outcome.status} id={clip_id}")
         return 0
+
+    # Service mode (default). First run auto-creates a working config so the app
+    # just works on a fresh machine — no manual editing required.
+    config_path = launcher.ensure_config(args.config)
+    cfg = config_mod.load(config_path)
+    setup_logging(cfg)
+    log = logging.getLogger("clipvault.main")
 
     try:
         with InstanceLock():
@@ -130,13 +137,25 @@ def main(argv: list[str] | None = None) -> int:
             ).start()
 
             watcher = PollingWatcher(service.handle_clipboard_text, interval_ms=cfg.poll_ms)
-            log.info("clipvault started device=%s poll=%dms", cfg.device_name, cfg.poll_ms)
-            watcher.run(stop)
+            threading.Thread(target=watcher.run, args=(stop,), daemon=True, name="watcher").start()
+            log.info("clipvault started device=%s poll=%dms panel=http://127.0.0.1:%d/",
+                     cfg.device_name, cfg.poll_ms, cfg.port)
+
+            if args.headless:
+                stop.wait()
+            else:
+                if not args.no_open:
+                    launcher.open_panel(cfg.port)
+                # Tray is the main-thread blocker; quitting it stops the service.
+                if launcher.run_tray(cfg.port, config_path.parent, stop.set) is False:
+                    stop.wait()  # no pystray (e.g. dev without deps) -> just run
             log.info("clipvault stopped")
             return 0
     except AlreadyRunningError:
-        print("ClipVault is already running")
-        return 1
+        # Second launch: surface the already-running instance instead of erroring.
+        launcher.open_panel(cfg.port)
+        print("ClipVault is already running — opened the panel.")
+        return 0
 
 
 if __name__ == "__main__":

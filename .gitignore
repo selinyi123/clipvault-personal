@@ -19,3 +19,5 @@ desktop/dist/
 desktop/build_pyi/
 desktop/packaging/*.spec
 *.keystore
+# Inno Setup output (the built installer ships via GitHub Releases)
+installer/dist/
