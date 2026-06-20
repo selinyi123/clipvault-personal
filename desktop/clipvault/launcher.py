@@ -107,9 +107,10 @@ def make_icon_image(size: int = 64):
     return img
 
 
-def run_tray(port: int, base_dir: Path, on_quit) -> None:
+def run_tray(port: int, base_dir: Path, on_quit) -> bool:
     """Block on a system tray icon. Calls on_quit() when the user exits.
-    Falls back (returns False) if pystray is unavailable."""
+    Returns False if the tray can't start (no pystray, or no GUI session) so the
+    caller can fall back to a plain headless run instead of crashing."""
     try:
         import pystray
     except Exception:
@@ -133,6 +134,9 @@ def run_tray(port: int, base_dir: Path, on_quit) -> None:
         pystray.MenuItem("打开配置文件夹", _open_config),
         pystray.MenuItem("退出 ClipVault", _quit),
     )
-    icon = pystray.Icon("ClipVault", make_icon_image(), "ClipVault Personal", menu)
-    icon.run()
+    try:
+        icon = pystray.Icon("ClipVault", make_icon_image(), "ClipVault Personal", menu)
+        icon.run()
+    except Exception:
+        return False  # e.g. no GUI session — caller falls back to a headless run
     return True

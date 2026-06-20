@@ -25,16 +25,20 @@ class SaveClipboardTileService : TileService() {
             return
         }
         thread {
-            val db = ClipVaultApp.db(this)
-            val r = Capture.ingest(db, text, sourceDevice = android.os.Build.MODEL ?: "android")
-            SyncScheduler.requestPush(this)
-            showToast(
+            // Guarded: an uncaught exception in this thread would crash the app.
+            val msg = try {
+                val db = ClipVaultApp.db(this)
+                val r = Capture.ingest(db, text, sourceDevice = android.os.Build.MODEL ?: "android")
+                SyncScheduler.requestPush(this)
                 when (r.status) {
                     Capture.Status.NEW -> if (r.clip?.isSecret == true) "已隔离" else "已保存"
                     Capture.Status.DUPLICATE -> "已存在"
                     Capture.Status.REJECTED -> "未保存"
                 }
-            )
+            } catch (e: Exception) {
+                "保存失败"
+            }
+            showToast(msg)
         }
     }
 

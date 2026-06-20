@@ -3,6 +3,7 @@ package com.clipvault.app.sync
 import android.content.Context
 import android.util.Log
 import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
@@ -75,6 +76,9 @@ object SyncScheduler {
         val req = PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES)
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .build()
-        WorkManager.getInstance(context).enqueue(req)
+        // KEEP: one periodic worker total. Without a unique policy, every app open
+        // stacked another worker (battery/resource leak).
+        WorkManager.getInstance(context)
+            .enqueueUniquePeriodicWork("sync-periodic", ExistingPeriodicWorkPolicy.KEEP, req)
     }
 }

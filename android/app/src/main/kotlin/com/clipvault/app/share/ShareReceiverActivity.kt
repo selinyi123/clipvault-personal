@@ -19,14 +19,20 @@ class ShareReceiverActivity : Activity() {
             finish(); return
         }
         thread {
-            val db = ClipVaultApp.db(this)
-            val r = Capture.ingest(db, text, sourceDevice = android.os.Build.MODEL ?: "android")
-            runOnUiThread {
-                val msg = when (r.status) {
+            // Guarded: a DB error must not crash the share flow (uncaught thread
+            // exceptions kill the process).
+            val msg = try {
+                val db = ClipVaultApp.db(this)
+                val r = Capture.ingest(db, text, sourceDevice = android.os.Build.MODEL ?: "android")
+                when (r.status) {
                     Capture.Status.NEW -> if (r.clip?.isSecret == true) "已隔离（疑似密钥）" else "已保存到 ClipVault"
                     Capture.Status.DUPLICATE -> "已存在"
                     Capture.Status.REJECTED -> "内容为空/过大，未保存"
                 }
+            } catch (e: Exception) {
+                "保存失败（${e.javaClass.simpleName}）"
+            }
+            runOnUiThread {
                 Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
                 SyncScheduler.requestPush(this)
                 finish()

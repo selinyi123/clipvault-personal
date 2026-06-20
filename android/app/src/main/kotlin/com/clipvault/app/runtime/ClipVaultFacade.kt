@@ -37,26 +37,39 @@ interface ClipVaultFacade {
     fun saveExplicit(text: String, sourceDevice: String): Boolean
 }
 
-/** Default Room-backed implementation. */
+/** Default Room-backed implementation.
+ *
+ * Runtime contract: these methods NEVER throw. A DB error returns an empty
+ * list / false instead of crashing the input frontend — for an input method a
+ * crash is far worse than a missing panel item (same lesson as the pairing fix).
+ */
 class RoomClipVaultFacade(context: Context) : ClipVaultFacade {
     private val ctx = context.applicationContext
 
-    override fun listRecentClips(limit: Int): List<ClipCandidate> =
+    override fun listRecentClips(limit: Int): List<ClipCandidate> = safe(emptyList()) {
         ClipVaultApp.db(ctx).clips().list("", 0)        // public only; never secrets
             .take(limit)
             .map { ClipCandidate(it.id, it.content, it.contentType) }
+    }
 
-    override fun listMemory(kind: String, limit: Int): List<MemoryCandidate> =
+    override fun listMemory(kind: String, limit: Int): List<MemoryCandidate> = safe(emptyList()) {
         ClipVaultApp.db(ctx).memory().list(kind)
             .take(limit)
             .map { MemoryCandidate("${it.kind}:${it.text}", it.text, it.kind, it.label) }
+    }
 
-    override fun saveExplicit(text: String, sourceDevice: String): Boolean {
-        if (text.isBlank()) return false
+    override fun saveExplicit(text: String, sourceDevice: String): Boolean = safe(false) {
+        if (text.isBlank()) return@safe false
         Capture.ingest(ClipVaultApp.db(ctx), text, sourceDevice = sourceDevice)
         SyncScheduler.requestPush(ctx)
-        return true
+        true
     }
+
+    private inline fun <T> safe(fallback: T, block: () -> T): T =
+        try { block() } catch (e: Exception) {
+            android.util.Log.w("clipvault.runtime", "facade op failed: ${e.javaClass.simpleName}")
+            fallback
+        }
 }
 
 /** Entry point so frontends don't construct the implementation directly. */
