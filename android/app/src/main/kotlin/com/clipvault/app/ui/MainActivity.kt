@@ -101,9 +101,12 @@ private fun Home() {
     val paired = remember(statusKey, pairing) { isPaired(ctx) }
 
     fun refresh() = scope.launch {
-        clips = withContext(Dispatchers.IO) {
-            ClipVaultApp.db(ctx).clips().list(query.trim(), if (showSecret) 1 else 0)
-        }
+        // Guarded: a DB error must never crash the app (same lesson as pairing).
+        clips = try {
+            withContext(Dispatchers.IO) {
+                ClipVaultApp.db(ctx).clips().list(query.trim(), if (showSecret) 1 else 0)
+            }
+        } catch (e: Exception) { clips }
     }
     LaunchedEffect(query, showSecret) { refresh() }
 
@@ -223,10 +226,18 @@ private fun PairDialog(onDismiss: () -> Unit) {
         },
         confirmButton = {
             TextButton(onClick = {
-                val s = Settings(ctx).apply { this.host = host.trim() }
+                val h = host.trim(); val c = code.trim()
+                if (h.isEmpty()) { msg = "请先填写电脑 IP"; return@TextButton }
+                if (c.isEmpty()) { msg = "请先填写配对码"; return@TextButton }
+                val s = Settings(ctx).apply { this.host = h }
+                msg = "配对中…"
                 scope.launch {
-                    val ok = withContext(Dispatchers.IO) { SyncClient(s).pair(code.trim()) }
-                    if (ok) { SyncScheduler.requestPush(ctx); onDismiss() } else msg = "配对失败，请检查 IP 与配对码"
+                    // try/catch so a network/parse failure can never crash the app.
+                    val ok = try {
+                        withContext(Dispatchers.IO) { SyncClient(s).pair(c) }
+                    } catch (e: Exception) { false }
+                    if (ok) { SyncScheduler.requestPush(ctx); onDismiss() }
+                    else msg = "配对失败：请确认电脑端 ClipVault 正在运行、IP 与配对码正确（码 5 分钟有效）、手机和电脑在同一网络"
                 }
             }) { Text("配对") }
         },

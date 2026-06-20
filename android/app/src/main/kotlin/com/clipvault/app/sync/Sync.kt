@@ -49,14 +49,23 @@ class SyncClient(private val s: Settings) {
         return code to text
     }
 
-    /** Redeem a one-time pairing code shown on the desktop Web UI. */
+    /** Redeem a one-time pairing code shown on the desktop Web UI.
+     * Never throws: any network/parse failure returns false so the UI shows a
+     * "配对失败" message instead of crashing the app. */
     fun pair(code: String): Boolean {
-        val body = JSONObject().put("code", code).put("device_id", s.deviceId)
-            .put("device_name", android.os.Build.MODEL ?: "Android").toString()
-        val (code2, text) = req("POST", "/pair", body, auth = false)
-        if (code2 != 200) return false
-        s.token = JSONObject(text).getString("token")
-        return true
+        return try {
+            val body = JSONObject().put("code", code).put("device_id", s.deviceId)
+                .put("device_name", android.os.Build.MODEL ?: "Android").toString()
+            val (code2, text) = req("POST", "/pair", body, auth = false)
+            if (code2 != 200) return false
+            val token = JSONObject(text).optString("token", "")
+            if (token.isEmpty()) return false
+            s.token = token
+            true
+        } catch (e: Exception) {
+            android.util.Log.w("clipvault.sync", "pair failed: ${e.javaClass.simpleName}")
+            false
+        }
     }
 
     fun push(events: JSONArray): Long {
