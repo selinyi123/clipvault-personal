@@ -10,10 +10,9 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import com.clipvault.app.ClipVaultApp
-import com.clipvault.app.capture.Capture
-import com.clipvault.app.data.ClipEntity
-import com.clipvault.app.sync.SyncScheduler
+import com.clipvault.app.runtime.ClipCandidate
+import com.clipvault.app.runtime.ClipVaultFacade
+import com.clipvault.app.runtime.ClipVaultRuntime
 import kotlin.concurrent.thread
 
 /**
@@ -27,6 +26,9 @@ import kotlin.concurrent.thread
  * (sync is delegated to WorkManager, which only moves already-stored data).
  */
 class ClipVaultKeyboardService : InputMethodService() {
+
+    // All data access goes through the Runtime facade (ADR-0008), never the DAO.
+    private val runtime: ClipVaultFacade by lazy { ClipVaultRuntime.facade(this) }
 
     override fun onCreateInputView(): View {
         val ctx = this
@@ -71,11 +73,11 @@ class ClipVaultKeyboardService : InputMethodService() {
     private fun showClips(list: LinearLayout) {
         val ctx = this
         thread {
-            val clips = ClipVaultApp.db(ctx).clips().list("", 0)   // public only; never secrets
+            val clips = runtime.listRecentClips(40)   // public only; never secrets
             runOnMain {
                 list.removeAllViews()
                 list.addView(TextView(ctx).apply { text = "最近内容（点按粘贴）"; textSize = 12f })
-                clips.take(40).forEach { c -> list.addView(clipButton(c)) }
+                clips.forEach { c -> list.addView(clipButton(c)) }
                 if (clips.isEmpty()) list.addView(TextView(ctx).apply {
                     text = "（暂无内容，先在桌面复制或分享到 ClipVault）"
                 })
@@ -86,7 +88,7 @@ class ClipVaultKeyboardService : InputMethodService() {
     private fun showMemory(list: LinearLayout, kind: String) {
         val ctx = this
         thread {
-            val items = ClipVaultApp.db(ctx).memory().list(kind)
+            val items = runtime.listMemory(kind)
             runOnMain {
                 list.removeAllViews()
                 list.addView(TextView(ctx).apply { text = "$kind（点按粘贴）"; textSize = 12f })
@@ -102,9 +104,9 @@ class ClipVaultKeyboardService : InputMethodService() {
         }
     }
 
-    private fun clipButton(c: ClipEntity): Button =
-        button("[${c.contentType}] " + c.content.replace("\n", " ").take(48)) {
-            currentInputConnection?.commitText(c.content, 1)   // one-tap paste
+    private fun clipButton(c: ClipCandidate): Button =
+        button("[${c.contentType}] " + c.text.replace("\n", " ").take(48)) {
+            currentInputConnection?.commitText(c.text, 1)   // one-tap paste
         }
 
     private fun saveClipboard() {
@@ -114,8 +116,7 @@ class ClipVaultKeyboardService : InputMethodService() {
             ?.getItemAt(0)?.coerceToText(this)?.toString()
         if (text.isNullOrBlank()) return
         thread {
-            Capture.ingest(ClipVaultApp.db(this), text, sourceDevice = android.os.Build.MODEL ?: "android")
-            SyncScheduler.requestPush(this)
+            runtime.saveExplicit(text, sourceDevice = android.os.Build.MODEL ?: "android")
         }
     }
 

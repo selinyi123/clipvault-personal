@@ -30,8 +30,11 @@
 
 ## 当前最该执行的 5 个 PR（v1.1 起步）
 
-- **PR1（docs，本次完成）**：ADR-0008 定义 v1 为 Runtime + 原则更新 + 本路线图。
-- PR2（android）：引入 `ClipVaultFacade`（runtime/），panel IME 改走 facade，行为不变。
+- **PR1（docs，✅ 完成）**：ADR-0008 定义 v1 为 Runtime + 原则更新 + 本路线图。
+- **PR2（android，✅ 完成）**：引入 `ClipVaultFacade`（`com.clipvault.app.runtime`）+ `RoomClipVaultFacade` +
+  `ClipVaultRuntime.facade()`；Panel IME 改走 facade（listRecentClips/listMemory/saveExplicit），
+  不再直接碰 Room DAO / Capture / SyncScheduler；行为不变（同样的查询与 take(40)）。编译通过、
+  模拟器实测 App 启动无崩溃、IME 仍注册。注：facade 暂在 app 模块内 `runtime/` 包，独立 Gradle 模块为后续细化。
 - PR3（android）：`ClipVaultKeyboardService` → `ClipVaultPanelImeService`；`ime_config` → `ime_panel_config`；Manifest 更新。
 - PR4（android）：新增第二个 InputMethodService（Full Keyboard Lab 空壳）：基础英文键盘 + ClipVault 工具栏占位，不接中文引擎。
 - PR5（docs）：键盘底座 Spike 计划（Trime/Fcitx5 checklist + RimeAdapter 目标 + license/build/integration 评分表）。
