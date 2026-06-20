@@ -35,9 +35,13 @@
   `ClipVaultRuntime.facade()`；Panel IME 改走 facade（listRecentClips/listMemory/saveExplicit），
   不再直接碰 Room DAO / Capture / SyncScheduler；行为不变（同样的查询与 take(40)）。编译通过、
   模拟器实测 App 启动无崩溃、IME 仍注册。注：facade 暂在 app 模块内 `runtime/` 包，独立 Gradle 模块为后续细化。
-- PR3（android）：`ClipVaultKeyboardService` → `ClipVaultPanelImeService`；`ime_config` → `ime_panel_config`；Manifest 更新。
-- PR4（android）：新增第二个 InputMethodService（Full Keyboard Lab 空壳）：基础英文键盘 + ClipVault 工具栏占位，不接中文引擎。
-- PR5（docs）：键盘底座 Spike 计划（Trime/Fcitx5 checklist + RimeAdapter 目标 + license/build/integration 评分表）。
+- **PR3（android，✅ 完成）**：`ClipVaultKeyboardService` → `ClipVaultPanelImeService`；
+  `res/xml/ime_config` → `ime_panel_config`；Manifest 服务名/资源/label（"ClipVault 面板"）更新。git mv 保留历史。
+- **PR4（android，✅ 完成）**：新增第二个 InputMethodService `ClipVaultFullKeyboardService`（Full Keyboard Lab）：
+  可用英文键盘（QWERTY + 一次性 shift + ?123 符号层 + 空格/回车/退格）+ ClipVault 工具栏（"最近剪切板"经
+  facade 调取并一键粘贴 + 切回键）。不接中文引擎。`res/xml/ime_full_config` + Manifest 注册（label "ClipVault 键盘(实验)"）。
+- **PR5（docs，✅ 完成）**：`docs/SLICES/V2-S003-keyboard-base-spike.md`——Trime / Fcitx5 Android spike 清单 +
+  `InputEngineAdapter`(RimeAdapter) 目标接口 + license/build/integration 评分表 + 预期裁决（输出 ADR-0010）。
 
 ## 待写文档（对应阶段开工时再写，不一次性产出）
 

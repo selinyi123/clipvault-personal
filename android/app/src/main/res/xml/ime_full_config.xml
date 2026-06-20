@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Full Keyboard Lab (ROADMAP_V2 PR4): experimental primary input + ClipVault
+     toolbar. English only for now; Chinese engine is a later spike. -->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:supportsSwitchingToNextInputMethod="true" />

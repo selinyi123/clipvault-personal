@@ -51,17 +51,33 @@
             </intent-filter>
         </service>
 
-        <!-- Keyboard Personal (companion IME, S009): knowledge panel, not a full keyboard -->
+        <!-- ClipVault Panel IME (companion knowledge panel, ADR-0004 / ROADMAP_V2 PR3) -->
         <service
-            android:name=".ime.ClipVaultKeyboardService"
+            android:name=".ime.ClipVaultPanelImeService"
             android:exported="true"
+            android:label="ClipVault 面板"
             android:permission="android.permission.BIND_INPUT_METHOD">
             <intent-filter>
                 <action android:name="android.view.InputMethod" />
             </intent-filter>
             <meta-data
                 android:name="android.view.im"
-                android:resource="@xml/ime_config" />
+                android:resource="@xml/ime_panel_config" />
+        </service>
+
+        <!-- ClipVault Full Keyboard Lab (ROADMAP_V2 PR4, experimental): basic
+             English keyboard + ClipVault toolbar. Enable separately in settings. -->
+        <service
+            android:name=".ime.ClipVaultFullKeyboardService"
+            android:exported="true"
+            android:label="ClipVault 键盘(实验)"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/ime_full_config" />
         </service>
 
         <!-- Periodic sync fallback when the app is not in the foreground -->

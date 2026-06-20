@@ -16,16 +16,17 @@ import com.clipvault.app.runtime.ClipVaultRuntime
 import kotlin.concurrent.thread
 
 /**
- * ClipVault Keyboard Personal — a companion IME (ADR-0004). It is a knowledge
- * panel: recent clips + synced desktop clips, one-tap paste, a save-clipboard
- * button, and a key to switch back to the previous keyboard.
+ * ClipVault Panel IME — the companion knowledge panel (ADR-0004, renamed in
+ * ROADMAP_V2 PR3 to distinguish it from the v2 ClipVaultFullKeyboardService).
+ * Recent clips + synced desktop clips + memory panels, one-tap paste, a
+ * save-clipboard button, and a key to switch back to the previous keyboard.
  *
  * PRIVACY (G2 / THREAT_MODEL T4): this service NEVER records typed text. It
  * has no onUpdateSelection/key persistence path; the only write happens when
  * the user explicitly taps "保存剪贴板". There are no network calls from here
  * (sync is delegated to WorkManager, which only moves already-stored data).
  */
-class ClipVaultKeyboardService : InputMethodService() {
+class ClipVaultPanelImeService : InputMethodService() {
 
     // All data access goes through the Runtime facade (ADR-0008), never the DAO.
     private val runtime: ClipVaultFacade by lazy { ClipVaultRuntime.facade(this) }
