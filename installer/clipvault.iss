@@ -3,7 +3,7 @@
 ; optional login autostart. Produces ClipVault-Setup-vX.Y.Z.exe.
 
 #define AppName "ClipVault Personal"
-#define AppVersion "1.1.0"
+#define AppVersion "1.2.0"
 #define AppPublisher "ClipVault"
 #define AppExe "clipvault.exe"
 
