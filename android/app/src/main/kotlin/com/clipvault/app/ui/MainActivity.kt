@@ -52,6 +52,32 @@ private fun isPaired(ctx: Context): Boolean {
     return !s.host.isNullOrBlank() && !s.token.isNullOrBlank()
 }
 
+/** Open the system input-method settings, falling back to general Settings so a
+ * stripped ROM (no IME settings activity) never crashes the app. */
+private fun openImeSettings(ctx: Context) {
+    val intents = listOf(
+        Intent(OsSettings.ACTION_INPUT_METHOD_SETTINGS),
+        Intent(OsSettings.ACTION_SETTINGS),
+    )
+    for (i in intents) {
+        try {
+            ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); return
+        } catch (_: Exception) { /* try the next fallback */ }
+    }
+    android.widget.Toast.makeText(ctx, "请到系统设置 → 语言和输入法 启用 ClipVault 键盘",
+        android.widget.Toast.LENGTH_LONG).show()
+}
+
+private fun switchKeyboard(ctx: Context) {
+    try {
+        (ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+            .showInputMethodPicker()
+    } catch (_: Exception) {
+        android.widget.Toast.makeText(ctx, "在任意输入框点右下角键盘图标切换",
+            android.widget.Toast.LENGTH_LONG).show()
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun Home() {
@@ -92,11 +118,8 @@ private fun Home() {
         Column(Modifier.padding(pad).padding(12.dp)) {
             SetupCard(
                 enabled = enabled, selected = selected, paired = paired,
-                onEnable = { ctx.startActivity(Intent(OsSettings.ACTION_INPUT_METHOD_SETTINGS)) },
-                onSwitch = {
-                    (ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
-                        .showInputMethodPicker()
-                },
+                onEnable = { openImeSettings(ctx) },
+                onSwitch = { switchKeyboard(ctx) },
                 onPair = { pairing = true },
             )
             Spacer(Modifier.height(12.dp))

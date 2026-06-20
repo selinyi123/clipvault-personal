@@ -15,8 +15,8 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale WebSocket (SYNC-1) |
 | Source of truth | SQLite local store (DB-1) |
-| Current slice | **全部完成并端到端实测（v1.0.3）。模拟器实测：启动/IME/采集/双端同步全通；修了 2 个发布级 bug（Room-KSP 崩溃、明文 HTTP 拦截）。剩余仅 Owner 真机主观手感** |
-| Last updated | 2026-06-18 (S001–S012 + 模拟器端到端验证；桌面 129 绿；双端同步实证；Release v1.0.3；Builder=Claude Fable 5) |
+| Current slice | **v1.1.0 可用性发布 + Runtime 方向裁定。** Owner 试用反馈：桌面打不开/无图标、手机不知如何用输入法 → 均已修。下一步：v1.1 Runtime Facade / 重命名 PanelIme（见 ROADMAP_V2_KEYBOARD） |
+| Last updated | 2026-06-19 (v1.1.0：桌面安装器+托盘+开箱即用配置；Android 引导卡；ADR-0008 v1-as-Runtime；桌面 129 绿；Builder=Claude Fable 5) |
 
 ## Product Constraints（全部 Active）
 
@@ -109,6 +109,7 @@
 | 2026-06-13 | 发布 Release v1.0.0：Desktop exe（PyInstaller 单文件，验证独立运行）+ Android apk（签名 release，apksigner verify OK）。安装包走 GitHub Releases 不入 git（keystore/assets 在 .toolchain gitignored，未入库） |
 | 2026-06-18 | 审阅裁决：①仓库可见性 **保持 PUBLIC**（Owner 定；安全扫描确认源码仓库无 keystore/密钥/真实路径/个人数据，仅 commit 作者邮箱公开可见，Owner 接受）。②修 memory_delete LWW（migration 0003 memory_meta_ts；CONTRACTS §5.2 在桌面 hub 落实，129 tests 绿）。③apply_push 空洞处理与 RESEARCH 文档暂不动（Owner 选择）。**Android 对称 LWW 经核实无需做**：Android `memory()` DAO 仅两处调用——IME 面板只读 list、Sync 仅应用远程事件；手机端无本地 memory 编辑、不 emit memory 事件（记忆为桌面权威、手机纯消费，符合 ADR-0001），故"旧删除覆盖手机较新编辑"的场景不存在，桌面端修复即完整。 |
 | 2026-06-18 | 版本对齐 + 重新打包 v1.0.1：__version__ 由 0.1.0 对齐为 1.0.1；桌面 exe 含 migration 0003 重建；APK 重建重签；GitHub Release v1.0.1 刷新双端安装包，使发布产物与最终代码一致 |
+| 2026-06-19 | **Owner 试用反馈 → v1.1.0 可用性修复**：①桌面"打不开/无图标"根因——双击无 config 即写模板并退出(`return 2`)，控制台一闪而退；且无托盘/无自动开面板/无快捷方式。修：新增 `launcher.py`(开箱即用——首启在 `%LOCALAPPDATA%\ClipVault` 自动建可用配置含默认 Vault；自动开浏览器面板；pystray 系统托盘"打开面板/打开配置/退出")；main 改 windowed+托盘为主阻塞、`--headless`/`--no-open`/二次启动开面板而非报错；PyInstaller 改 `--windowed`+图标；**Inno Setup 安装器**(桌面+开始菜单快捷方式+可选开机自启)，已实测装/卸创建并清理快捷方式。②Android"不知所云/没输入法"根因——MainActivity 只有剪切板列表，零引导。修：新增引导卡(状态检测 已启用?已配对?；三步：启用输入法→`ACTION_INPUT_METHOD_SETTINGS`、切换键盘→`showInputMethodPicker`、配对；含"它是面板键盘"说明)，intent 加 try/catch 回退防崩。**模拟器实测：UI 树确认引导全文渲染**(ATD 截屏黑屏/合成点击为该镜像局限，非应用缺陷)。③裁定 **ADR-0008：v1 升级为 ClipVault Runtime**，原则 P2/P7 演进(允许主输入法/处理普通键入但 L0–L4 分层)；写 ROADMAP_V2_KEYBOARD(v1.1→v3.0 分期)。发 **Release v1.1.0**(Setup 安装器 + 便携 exe + 签名 APK)。下一步按 ROADMAP_V2 的 PR2 起(ClipVaultFacade) |
 | 2026-06-18 | **Android 真机级验证（headless 模拟器，ATD x86_64/API34，Hyper-V 加速）→ 抓到并修复一个发布级崩溃**：app/build.gradle.kts 用 `annotationProcessor(room-compiler)`，但 Kotlin 项目该配置无效，Room 不生成 `AppDatabase_Impl` → 启动即 FATAL（"AppDatabase_Impl does not exist"）。"能编译成 APK"未能发现，**只有真机运行才暴露**。修复：根 + app 加 KSP 插件（com.google.devtools.ksp 2.0.21-1.0.25），Room 改 `ksp(...)`。重建后模拟器实测：app 启动无崩溃（MainActivity 前台）、Room DB 正常打开、**IME 注册并被设为活动输入法**、**Share Target 采集→normalize/hash/classify/secret-guard→Room 落库**（捕获文本 hash/分类/ULID/UTC 正确）。**v1.0.0/v1.0.1 的 APK 含此崩溃，已发 v1.0.2 修复版并下架旧 APK**。versionCode 2 / versionName 1.0.2 |
 | 2026-06-12 | 偏离原 ChatGPT 方案的修正：①GitHub 备份去掉 Markdown 镜像只存 JSONL；②密钥排除出 FTS 索引；③同步明确为事件日志复制；④Android 采集以 Share Target 为主路径（平台限制）；⑤IME 推荐只查本地缓存；⑥新增配对鉴权；⑦原 Slice001 拆为 S001–S004 |
 
