@@ -11,7 +11,7 @@
 | v1.0/1.1 | Runtime 收口 | 现有 v1 明确为 Runtime；Android 引入 ClipVaultFacade；panel IME 改走 facade |
 | v1.2 | SyncTransport 抽象 | 不做云，但把 HTTP push/pull 抽象为 transport，为云预留接口 |
 | v2.0 | 双 IME 入口 | 同一 APK 内：ClipVault Panel + ClipVault Keyboard Lab（基础英文键盘 + 工具栏） |
-| v2.1 | 底座 Spike | 裁决 Trime / Fcitx5 Android / Rime 长期方案（输出 ADR-0010） |
+| v2.1 | 底座 Spike | **paper spike 完成（ADR-0010）**：引擎=librime(BSD)；Trime 仅参考(GPL)；长期(A)自建 librime 前端 / (B) fcitx5 插件二选一，待 **build PoC** 终裁 |
 | v2.2 | CandidateMixer | ClipVault 内容（剪切板/词库/Prompt/命令/路径）进入候选栏 |
 | v2.3 | 本地学习 | 词频/短语/Prompt/命令/场景/最近，仅存可解释统计事件，不存普通键入正文 |
 | v2.4 | Cloud Relay POC | 可选端到端加密中继；云只中继密文，看不到明文 |

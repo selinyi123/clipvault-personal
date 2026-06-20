@@ -59,24 +59,45 @@ data class EngineState(val composing: String, val candidates: List<EngineCandida
 ```
 ClipVault 的 CandidateMixer（v2.2）消费 `EngineCandidate` + ClipVault 候选，统一排序。
 
-## 4. 评分表（spike 后填）
+## 4. 评分表（2026-06-20 调研填表，primary-source）
 
-| 维度（权重） | Trime | Fcitx5 Android |
-|---|---|---|
-| 构建/上手成本（低=好） | | |
-| 候选/工具栏接入难度（低=好） | | |
-| ClipVault 候选混入难度（低=好） | | |
-| 插件化（不 fork 主体，高=好） | | |
-| License 分发友好（高=好） | | |
-| 维护活跃度（高=好） | | |
-| **加权总分** | | |
+数据来源：各项目 GitHub 主页（README/LICENSE/releases），见文末 Sources。
 
-## 5. 预期裁决（待 spike 数据确认，写入 ADR-0010）
+| 维度 | Trime | Fcitx5-Android | 自建 librime 前端 |
+|---|---|---|---|
+| License | **GPL-3.0**（传染） | **LGPL-2.1**（插件边界友好） | **librime=BSD-3**（最友好） |
+| 架构 | Kotlin 94% + JNI(librime) | Kotlin 88% + C++/NDK | ClipVault 自己 + librime JNI |
+| 候选/工具栏接入 | 需 fork 改 UI（文档未提扩展点） | **插件系统**：可加载其他 APK 的 addon；可扩展候选视图 | 完全自控（自己渲染 CandidateBar） |
+| ClipVault 候选混入 | 难（fork 改候选渲染） | 中（作为 addon/候选提供器进 fcitx5 候选流） | **最易**（同一候选管线，Rime+ClipVault 一起排序） |
+| 插件化（不 fork 主体） | 否（要 fork） | **是**（独立 APK 插件） | N/A（本就自有） |
+| 维护活跃 | 很活跃 v3.3.10(2026-05)，4.4k★ | 活跃 0.1.2(2025-11)，1953 commits | librime v1.17.0(2026-06)，活跃 |
+| 上手/构建成本 | 低（拉来就能跑，验证最快） | 中（NDK + 插件机制） | **高**（自己编 librime for Android + 配 Rime 数据 + JNI） |
+| 对 Runtime 愿景契合 | 低（GPL 锁死、UI 不可控） | 中（候选进 fcitx5 管线，ClipVault 不全控） | **高**（CandidateMixer 原生混合、自有许可、全控） |
 
-- **Trime**：最快验证"Android + Rime + ClipVault 工具栏/候选"可行性的 spike 载体。
-- **Fcitx5 Android**：长期优先底座（插件化 + LGPL 分发更友好）。
-- **Rime / librime**：核心中文引擎。
-- **HeliBoard**：UI/隐私/手感参考。
+**关键结论**：
+- **引擎层已定 = librime（BSD-3）**，无争议：成熟、可嵌入、覆盖音码/形码/繁简、活跃。
+- **Trime 不作长期底座**：GPL-3.0 会把 ClipVault 整体传染为 GPL；且 UI 定制要 fork。
+  → 只作 **spike 参考**（读它学"librime 在 Android 上的 JNI/构建/Rime 数据"接法；读 GPL 代码学习可以，不把其代码拷进 ClipVault）。
+- **长期二选一**（待 build PoC 定）：
+  - **(A) 自建 librime 前端**：把 librime 经 JNI 嵌进 `ClipVaultFullKeyboardService`。最契合 Runtime/CandidateMixer
+    （引擎候选 + ClipVault 候选同一管线排序）、BSD 最友好、全控；**成本最高**（NDK 编译 + Rime 数据）。
+  - **(B) Fcitx5-Android 插件**：ClipVault 作为独立 APK 插件给 fcitx5 提供候选/工具栏。LGPL 分发友好、
+    借力活跃框架、成本更低；但候选混合在 fcitx5 管线里、ClipVault 不全控，且用户要装两个 App。
+
+## 5. 裁决（已写入 ADR-0010，2026-06-20）
+
+- **引擎 = librime（BSD-3）**：定了。
+- **Trime = spike 参考**（学 librime-on-Android 接法），不作 fork 底座（GPL-3.0 传染）。
+- **长期底座 = (A) 自建 librime 前端 [推荐，待 build PoC 确认成本] 或 (B) fcitx5-android 插件 [LGPL 务实回退]**。
+- **HeliBoard**：键盘布局/手感/隐私参考（GPL，不取代引擎）。
+- **下一步具体 spike（需真机/NDK）**：build PoC —— 在 ClipVault 仓库内试编一个最小 librime-for-Android
+  并经 JNI 喂一次拼音、取候选，量出 (A) 的真实构建成本，再终裁 (A)/(B)。本片为 paper spike（架构+许可+维护分析），
+  build PoC 是 v2.1 的下一子片。
+
+## Sources
+- fcitx5-android（LGPL-2.1，插件系统/RIME 插件/候选视图/剪贴板，v0.1.2 2025-11）：https://github.com/fcitx5-android/fcitx5-android
+- Trime（GPL-3.0，librime via JNI，v3.3.10 2026-05，4.4k★）：https://github.com/osfans/trime
+- librime（BSD-3，模块化可嵌入 C++ 引擎，v1.17.0 2026-06）：https://github.com/rime/librime
 
 ## 6. 不做（本片范围刹车）
 - 不在本片接任何引擎进产品；不 fork；不发布带 GPL 引擎的合并 APK 直到 License 判断完成。
