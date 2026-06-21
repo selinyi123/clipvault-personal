@@ -161,6 +161,20 @@ def test_h8_cursor_resume(api, conn):
     assert len(first["events"]) == 5
 
 
+def test_h8_push_gap_does_not_advance_ack(api, conn):
+    token = _pair(api)
+    # Event 2 can be applied idempotently, but ack must remain at 0 because seq 1 is missing.
+    _, first = api.sync_push(token, {"events": [_clip_new_event(2, "gap two", hash="gap2")]})
+    assert first["acked_upto"] == 0
+    assert ClipsRepo(conn).get_by_hash("gap2") is not None
+    # When seq 1 arrives later and seq 2 is replayed, the contiguous ack can advance to 2.
+    _, second = api.sync_push(token, {"events": [
+        _clip_new_event(1, "gap one", hash="gap1"),
+        _clip_new_event(2, "gap two", hash="gap2"),
+    ]})
+    assert second["acked_upto"] == 2
+
+
 def test_h9_local_public_in_outbox_secret_not(api, conn):
     api.create_clip({"content": "public goes to outbox"})
     api.create_clip({"content": FAKE_AWS_KEY})
