@@ -4,6 +4,7 @@ import android.inputmethodservice.InputMethodService
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -29,11 +30,21 @@ class ClipVaultFullKeyboardService : InputMethodService() {
     private val runtime: ClipVaultFacade by lazy { ClipVaultRuntime.facade(this) }
     private var shifted = false
     private var symbols = false
+    private var suppressCandidates = false
     private lateinit var keys: LinearLayout
     private lateinit var candidates: LinearLayout
 
     private val letterRows = listOf("qwertyuiop", "asdfghjkl", "zxcvbnm")
     private val symbolRows = listOf("1234567890", "@#\$%&-+()/", "*\"':;!?,.")
+
+    override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
+        super.onStartInput(attribute, restarting)
+        suppressCandidates = PrivacyAwareFilter.shouldSuppressCandidates(attribute)
+        if (::candidates.isInitialized && suppressCandidates) {
+            candidates.removeAllViews()
+            candidates.addView(hint(PrivacyAwareFilter.suppressionMessage()))
+        }
+    }
 
     override fun onCreateInputView(): View {
         val root = LinearLayout(this).apply {
@@ -50,7 +61,7 @@ class ClipVaultFullKeyboardService : InputMethodService() {
         // Candidate / ClipVault strip (filled when 最近 is tapped)
         val strip = HorizontalScrollView(this)
         candidates = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        candidates.addView(hint("点「最近剪切板」调取你存过的内容 →"))
+        candidates.addView(hint(if (suppressCandidates) PrivacyAwareFilter.suppressionMessage() else "点「最近剪切板」调取你存过的内容 →"))
         strip.addView(candidates)
         root.addView(strip)
 
@@ -92,6 +103,11 @@ class ClipVaultFullKeyboardService : InputMethodService() {
     }
 
     private fun showRecentClips() {
+        if (suppressCandidates) {
+            candidates.removeAllViews()
+            candidates.addView(hint(PrivacyAwareFilter.suppressionMessage()))
+            return
+        }
         thread {
             val clips = runtime.listRecentClips(20)   // facade is crash-safe
             runOnMain {
@@ -100,7 +116,7 @@ class ClipVaultFullKeyboardService : InputMethodService() {
                     candidates.addView(hint("（暂无内容，先在桌面复制或分享到 ClipVault）"))
                 } else {
                     clips.forEach { c ->
-                        candidates.addView(key(c.text.replace("\n", " ").take(24), weight = 0f) {
+                        candidates.addView(key("[clip:${c.contentType}] " + c.text.replace("\n", " ").take(24), weight = 0f) {
                             commit(c.text)
                         })
                     }
