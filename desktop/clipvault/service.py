@@ -78,17 +78,25 @@ class ClipVaultService:
 
     def release_clip(self, clip_id: str) -> bool:
         """Release a quarantined clip and re-run the public pipeline
-        (FTS already re-indexed by the repo; here we add Obsidian + backup)."""
+        (FTS already re-indexed by the repo; here we add Obsidian + backup + sync)."""
         clip = self.clips.release_secret(clip_id, _utc_now())
         if clip is None:
             return False
         log.info("released id=%s (was quarantined)", clip.id)
         if not clip.deleted:
             self._write_obsidian(clip)
+            now = _utc_now()
             try:
-                BackupQueueRepo(self.conn).enqueue(clip.id, _utc_now())
+                BackupQueueRepo(self.conn).enqueue(clip.id, now)
             except Exception:
                 log.exception("enqueue after release failed id=%s", clip.id)
+            # Released clips have an explicit user decision and must re-enter the
+            # public sync pipeline; otherwise Android never sees them.
+            try:
+                from clipvault.sync import engine
+                engine.emit_clip_new(self.conn, clip, now)
+            except Exception:
+                log.exception("sync emit after release failed id=%s", clip.id)
         return True
 
     def promote_clip(self, clip_id: str, kind: str | None = None):
