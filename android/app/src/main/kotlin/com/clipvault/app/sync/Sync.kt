@@ -1,6 +1,9 @@
 package com.clipvault.app.sync
 
 import android.content.Context
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
 import com.clipvault.app.ClipVaultApp
 import com.clipvault.app.data.AppDatabase
 import com.clipvault.app.data.ClipEntity
@@ -10,15 +13,89 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.KeyStore
 import java.util.UUID
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 
-/** Device-local sync settings (token lives here; on a real build move it to
- * EncryptedSharedPreferences / Keystore). */
+private const val SYNC_PREFS = "clipvault_sync"
+private const val TOKEN_PREFS = "clipvault_sync_token"
+private const val TOKEN_KEY_ALIAS = "clipvault_sync_token_v1"
+private const val TOKEN_IV = "token_iv"
+private const val TOKEN_CT = "token_ct"
+
+/** Keystore-backed bearer-token storage.
+ *
+ * The sync bearer token authorizes pull/push access to public ClipVault data, so
+ * it should not live as plaintext SharedPreferences. Host/port/cursor remain in
+ * ordinary prefs; only the token is encrypted with an AndroidKeyStore AES-GCM key.
+ */
+private class SecureTokenStore(context: Context) {
+    private val ctx = context.applicationContext
+    private val sp = ctx.getSharedPreferences(TOKEN_PREFS, Context.MODE_PRIVATE)
+
+    fun get(): String? {
+        val ivB64 = sp.getString(TOKEN_IV, null) ?: return null
+        val ctB64 = sp.getString(TOKEN_CT, null) ?: return null
+        return try {
+            val iv = Base64.decode(ivB64, Base64.NO_WRAP)
+            val ct = Base64.decode(ctB64, Base64.NO_WRAP)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, iv))
+            String(cipher.doFinal(ct), Charsets.UTF_8)
+        } catch (e: Exception) {
+            // If the keystore entry was invalidated/corrupted, fail closed and
+            // require pairing again rather than returning stale plaintext.
+            sp.edit().remove(TOKEN_IV).remove(TOKEN_CT).apply()
+            android.util.Log.w("clipvault.sync", "token decrypt failed: ${e.javaClass.simpleName}")
+            null
+        }
+    }
+
+    fun set(value: String?) {
+        if (value.isNullOrEmpty()) {
+            sp.edit().remove(TOKEN_IV).remove(TOKEN_CT).apply()
+            return
+        }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, key())
+        val ct = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
+        sp.edit()
+            .putString(TOKEN_IV, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+            .putString(TOKEN_CT, Base64.encodeToString(ct, Base64.NO_WRAP))
+            .apply()
+    }
+
+    private fun key(): SecretKey {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        if (!ks.containsAlias(TOKEN_KEY_ALIAS)) {
+            val kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+            val spec = KeyGenParameterSpec.Builder(
+                TOKEN_KEY_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setRandomizedEncryptionRequired(true)
+                .build()
+            kg.init(spec)
+            kg.generateKey()
+        }
+        return (ks.getEntry(TOKEN_KEY_ALIAS, null) as KeyStore.SecretKeyEntry).secretKey
+    }
+}
+
+/** Device-local sync settings. */
 class Settings(context: Context) {
-    private val sp = context.getSharedPreferences("clipvault_sync", Context.MODE_PRIVATE)
+    private val appCtx = context.applicationContext
+    private val sp = appCtx.getSharedPreferences(SYNC_PREFS, Context.MODE_PRIVATE)
+    private val tokenStore = SecureTokenStore(appCtx)
+
     var host: String?  get() = sp.getString("host", null);  set(v) { sp.edit().putString("host", v).apply() }
     var port: Int      get() = sp.getInt("port", 8787);     set(v) { sp.edit().putInt("port", v).apply() }
-    var token: String? get() = sp.getString("token", null); set(v) { sp.edit().putString("token", v).apply() }
+    var token: String? get() = tokenStore.get();             set(v) { tokenStore.set(v) }
     var sinceSeq: Long get() = sp.getLong("since", 0);      set(v) { sp.edit().putLong("since", v).apply() }
     val deviceId: String
         get() = sp.getString("device_id", null) ?: run {
