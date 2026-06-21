@@ -41,7 +41,11 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
                 }
                 val acked = client.push(events)
                 if (acked < 0) return Result.retry()
-                db.outbox().clearUpTo(maxSeq)
+                // Clear only what the desktop explicitly acknowledged. If the
+                // server detected a sequence gap, keeping later events preserves
+                // at-least-once delivery and lets the next retry fill the hole.
+                db.outbox().clearUpTo(acked)
+                if (acked < maxSeq) return Result.retry()
                 if (batch.size < 100) break
             }
             // pull desktop events
