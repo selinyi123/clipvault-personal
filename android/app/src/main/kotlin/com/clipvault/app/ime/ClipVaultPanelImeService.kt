@@ -11,7 +11,7 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import com.clipvault.app.runtime.ClipCandidate
+import com.clipvault.app.runtime.Candidate
 import com.clipvault.app.runtime.ClipVaultFacade
 import com.clipvault.app.runtime.ClipVaultRuntime
 import kotlin.concurrent.thread
@@ -39,89 +39,91 @@ class ClipVaultPanelImeService : InputMethodService() {
     }
 
     override fun onCreateInputView(): View {
-        val ctx = this
-        val root = LinearLayout(ctx).apply {
+        val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(16, 12, 16, 12)
         }
 
         // Action row: save current clipboard / switch back
-        val actions = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         actions.addView(button("保存剪贴板") { saveClipboard() })
         actions.addView(button("切回键盘") { switchToPreviousInputMethod() })
         root.addView(actions)
 
         // Panel switcher: recent clips + memory categories (词库/Prompt/命令).
-        val tabs = HorizontalScrollView(ctx)
-        val tabRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        val tabs = HorizontalScrollView(this)
+        val tabRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         tabs.addView(tabRow)
         root.addView(tabs)
 
-        val scroll = ScrollView(ctx)
-        val list = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        val scroll = ScrollView(this)
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(list)
         root.addView(scroll, ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(220)))
 
         // tab -> loader
         val panels = linkedMapOf<String, () -> Unit>(
-            "最近" to { showClips(list) },
-            "词库" to { showMemory(list, "term") },
-            "短语" to { showMemory(list, "phrase") },
-            "Prompt" to { showMemory(list, "prompt") },
-            "命令" to { showMemory(list, "command") },
+            "最近" to {
+                showCandidates(
+                    list = list,
+                    source = "clip",
+                    kind = null,
+                    title = "最近内容（点按粘贴）",
+                    emptyMessage = "（暂无内容，先在桌面复制或分享到 ClipVault）",
+                    limit = 40,
+                )
+            },
+            "词库" to { showMemoryCandidates(list, "term") },
+            "短语" to { showMemoryCandidates(list, "phrase") },
+            "Prompt" to { showMemoryCandidates(list, "prompt") },
+            "命令" to { showMemoryCandidates(list, "command") },
         )
         panels.forEach { (label, loader) ->
             tabRow.addView(button(label) { loader() })
         }
-        showClips(list)   // default panel
+        panels.getValue("最近").invoke()   // default panel
         return root
     }
 
-    private fun showClips(list: LinearLayout) {
-        val ctx = this
+    private fun showMemoryCandidates(list: LinearLayout, kind: String) {
+        showCandidates(
+            list = list,
+            source = "memory",
+            kind = kind,
+            title = "$kind（点按粘贴）",
+            emptyMessage = "（暂无 $kind，可在桌面词库添加并同步）",
+            limit = 100,
+        )
+    }
+
+    private fun showCandidates(
+        list: LinearLayout,
+        source: String,
+        kind: String?,
+        title: String,
+        emptyMessage: String,
+        limit: Int,
+    ) {
         if (suppressCandidates) {
             showSuppressed(list)
             return
         }
         thread {
-            val clips = runtime.listRecentClips(40)   // public only; never secrets
+            val items = runtime.listCandidates(limit = 100)
+                .filter { c -> c.source == source && (kind == null || c.kind == kind) }
+                .take(limit)
             runOnMain {
                 list.removeAllViews()
-                list.addView(TextView(ctx).apply { text = "最近内容（点按粘贴）"; textSize = 12f })
-                clips.forEach { c -> list.addView(clipButton(c)) }
-                if (clips.isEmpty()) list.addView(TextView(ctx).apply {
-                    text = "（暂无内容，先在桌面复制或分享到 ClipVault）"
-                })
+                list.addView(TextView(this).apply { text = title; textSize = 12f })
+                items.forEach { c -> list.addView(candidateButton(c)) }
+                if (items.isEmpty()) list.addView(TextView(this).apply { text = emptyMessage })
             }
         }
     }
 
-    private fun showMemory(list: LinearLayout, kind: String) {
-        val ctx = this
-        if (suppressCandidates) {
-            showSuppressed(list)
-            return
-        }
-        thread {
-            val items = runtime.listMemory(kind)
-            runOnMain {
-                list.removeAllViews()
-                list.addView(TextView(ctx).apply { text = "$kind（点按粘贴）"; textSize = 12f })
-                items.forEach { m ->
-                    list.addView(button("[memory:$kind] " + m.text.replace("\n", " ").take(48)) {
-                        currentInputConnection?.commitText(m.text, 1)
-                    })
-                }
-                if (items.isEmpty()) list.addView(TextView(ctx).apply {
-                    text = "（暂无 $kind，可在桌面词库添加并同步）"
-                })
-            }
-        }
-    }
-
-    private fun clipButton(c: ClipCandidate): Button =
-        button("[clip:${c.contentType}] " + c.text.replace("\n", " ").take(48)) {
+    private fun candidateButton(c: Candidate): Button =
+        button("${c.label} " + c.text.replace("\n", " ").take(48)) {
             currentInputConnection?.commitText(c.text, 1)   // one-tap paste
         }
 
