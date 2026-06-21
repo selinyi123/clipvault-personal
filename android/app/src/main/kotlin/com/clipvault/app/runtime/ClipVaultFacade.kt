@@ -37,7 +37,7 @@ data class Candidate(
     val riskFlags: List<String> = emptyList(),
 )
 
-private object CandidateMixer {
+internal object CandidateMixer {
     private val memoryKindWeight = mapOf(
         "phrase" to 42,
         "prompt" to 40,
