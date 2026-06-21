@@ -39,7 +39,8 @@ def _clip_dict(clip, *, redact: bool) -> dict:
         "favorite": clip.favorite,
         "source_app": clip.source_app,
         "obsidian_path": clip.obsidian_path,
-        "length": len(clip.content),
+        # Secret previews must not leak exact content length (CONTRACTS §4.3).
+        "length": None if redact else len(clip.content),
     }
 
 
