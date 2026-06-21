@@ -8,10 +8,10 @@ import com.clipvault.core.Normalize
 import com.clipvault.core.SecretGuard
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
-import java.util.UUID
 
 /**
  * The single capture path on Android (Share Target / manual save / QS Tile /
@@ -22,6 +22,9 @@ import java.util.UUID
 object Capture {
     enum class Status { NEW, DUPLICATE, REJECTED }
     data class Result(val status: Status, val clip: ClipEntity?)
+
+    private const val ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    private val rng = SecureRandom()
 
     fun ingest(db: AppDatabase, raw: String, sourceDevice: String, sourceApp: String? = null): Result {
         val content = Normalize.normalize(raw)
@@ -71,7 +74,28 @@ object Capture {
         return fmt.format(java.util.Date())
     }
 
-    // Lightweight time-ordered id (not full ULID, but unique + sortable enough for the cache).
-    private fun ulid(): String =
-        "01" + UUID.randomUUID().toString().replace("-", "").uppercase().take(24)
+    /** DB-1 compatible ULID: 48-bit millisecond time + 80-bit randomness,
+     * encoded as 26 Crockford Base32 characters. */
+    private fun ulid(): String {
+        val out = CharArray(26)
+        var t = System.currentTimeMillis()
+        for (i in 9 downTo 0) {
+            out[i] = ULID_ALPHABET[(t and 31L).toInt()]
+            t = t ushr 5
+        }
+        val random = ByteArray(10)
+        rng.nextBytes(random)
+        var bitBuffer = 0
+        var bitCount = 0
+        var pos = 10
+        for (b in random) {
+            bitBuffer = (bitBuffer shl 8) or (b.toInt() and 0xff)
+            bitCount += 8
+            while (bitCount >= 5 && pos < 26) {
+                bitCount -= 5
+                out[pos++] = ULID_ALPHABET[(bitBuffer ushr bitCount) and 31]
+            }
+        }
+        return String(out)
+    }
 }
