@@ -5,6 +5,7 @@ that slipped past gates A/B (older rules) is still dropped here.
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from clipvault.core import secret_guard
 from clipvault.backup import git_repo, jsonl_store
@@ -19,6 +20,20 @@ _BACKOFF_MAX_S = 1800  # 30 min cap
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _append_missing_lines(repo_path: str, relpath: str, lines: list[str]) -> None:
+    """Append JSONL lines idempotently.
+
+    If a previous worker run wrote the file but crashed/failed before the git
+    commit, the queue is still pending. Retrying must not duplicate those lines;
+    it should commit the already-written working-tree change instead.
+    """
+    target = Path(repo_path) / relpath
+    existing = set(target.read_text(encoding="utf-8").splitlines()) if target.exists() else set()
+    missing = [line for line in lines if line not in existing]
+    if missing:
+        jsonl_store.append_lines(repo_path, relpath, missing)
 
 
 class BackupWorker:
@@ -64,7 +79,7 @@ class BackupWorker:
         committed = None
         if by_day:
             for relpath, lines in by_day.items():
-                jsonl_store.append_lines(self.repo_path, relpath, lines)
+                _append_missing_lines(self.repo_path, relpath, lines)
             # If commit fails, do not mark queue rows done. The next worker run
             # must retry because there is no durable recovery point yet.
             committed = git_repo.add_commit(
