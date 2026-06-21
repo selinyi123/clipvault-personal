@@ -13,6 +13,7 @@ from clipvault.config import Config
 from clipvault.pipeline import ingest as pipeline
 from clipvault.service import ClipVaultService
 from clipvault.store.clips_repo import ClipsRepo
+from clipvault.store.outbox_repo import OutboxRepo
 
 FAKE_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
 
@@ -61,6 +62,7 @@ def test_d3_secret_hidden_then_redacted(api):
     assert c["is_secret"] is True
     assert FAKE_AWS_KEY not in c["content"]
     assert c["content"].startswith("AKIA") and "••••" in c["content"]
+    assert c["length"] is None  # secret previews must not leak exact length
 
 
 def test_d4_create_writes_obsidian(api, cfg, tmp_path):
@@ -95,6 +97,17 @@ def test_d6_release_runs_pipeline(api, conn, tmp_path):
     assert clip.is_secret is False and clip.released is True
     assert ClipsRepo(conn).fts_contains(cid)              # back in FTS
     assert len(list((tmp_path / "vault").rglob("*.md"))) == 1  # written to vault
+
+
+def test_d6_release_reenters_sync_outbox(api, conn):
+    _, obj = api.create_clip({"content": FAKE_AWS_KEY})
+    cid = obj["clip"]["id"]
+    assert OutboxRepo(conn).list_since(0) == []
+    assert api.release_clip(cid)[0] == 200
+    rows = OutboxRepo(conn).list_since(0)
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "clip_new"
+    assert rows[0]["payload"]["id"] == cid
 
 
 def test_d6_release_missing_returns_404(api):
