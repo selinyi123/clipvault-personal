@@ -5,6 +5,7 @@ import android.content.Context
 import android.inputmethodservice.InputMethodService
 import android.view.View
 import android.view.ViewGroup
+import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -30,6 +31,12 @@ class ClipVaultPanelImeService : InputMethodService() {
 
     // All data access goes through the Runtime facade (ADR-0008), never the DAO.
     private val runtime: ClipVaultFacade by lazy { ClipVaultRuntime.facade(this) }
+    private var suppressCandidates = false
+
+    override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
+        super.onStartInput(attribute, restarting)
+        suppressCandidates = PrivacyAwareFilter.shouldSuppressCandidates(attribute)
+    }
 
     override fun onCreateInputView(): View {
         val ctx = this
@@ -73,6 +80,10 @@ class ClipVaultPanelImeService : InputMethodService() {
 
     private fun showClips(list: LinearLayout) {
         val ctx = this
+        if (suppressCandidates) {
+            showSuppressed(list)
+            return
+        }
         thread {
             val clips = runtime.listRecentClips(40)   // public only; never secrets
             runOnMain {
@@ -88,13 +99,17 @@ class ClipVaultPanelImeService : InputMethodService() {
 
     private fun showMemory(list: LinearLayout, kind: String) {
         val ctx = this
+        if (suppressCandidates) {
+            showSuppressed(list)
+            return
+        }
         thread {
             val items = runtime.listMemory(kind)
             runOnMain {
                 list.removeAllViews()
                 list.addView(TextView(ctx).apply { text = "$kind（点按粘贴）"; textSize = 12f })
                 items.forEach { m ->
-                    list.addView(button(m.text.replace("\n", " ").take(48)) {
+                    list.addView(button("[memory:$kind] " + m.text.replace("\n", " ").take(48)) {
                         currentInputConnection?.commitText(m.text, 1)
                     })
                 }
@@ -106,9 +121,17 @@ class ClipVaultPanelImeService : InputMethodService() {
     }
 
     private fun clipButton(c: ClipCandidate): Button =
-        button("[${c.contentType}] " + c.text.replace("\n", " ").take(48)) {
+        button("[clip:${c.contentType}] " + c.text.replace("\n", " ").take(48)) {
             currentInputConnection?.commitText(c.text, 1)   // one-tap paste
         }
+
+    private fun showSuppressed(list: LinearLayout) {
+        list.removeAllViews()
+        list.addView(TextView(this).apply {
+            text = PrivacyAwareFilter.suppressionMessage()
+            textSize = 12f
+        })
+    }
 
     private fun saveClipboard() {
         // The IME is the current input method, so reading the clipboard is allowed.
