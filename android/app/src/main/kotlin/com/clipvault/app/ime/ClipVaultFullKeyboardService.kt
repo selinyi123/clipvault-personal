@@ -16,14 +16,11 @@ import kotlin.concurrent.thread
 /**
  * ClipVault Full Keyboard Lab (ROADMAP_V2 PR4 — experimental second IME).
  *
- * A real (if basic) English keyboard so ClipVault can be a *primary* input
- * entry, plus a ClipVault toolbar/candidate strip that pastes recent clips via
- * the Runtime facade. No Chinese engine yet — the Rime/Fcitx5 base is a later
- * spike (PR5). The Panel IME (ClipVaultPanelImeService) is unchanged.
+ * A real (if basic) English keyboard so ClipVault can be a primary input entry,
+ * plus a ClipVault toolbar/candidate strip that pastes Runtime candidates.
  *
- * PRIVACY: like the panel, this never persists keystrokes — keys only drive the
- * current InputConnection. The only stored write is the explicit toolbar action,
- * which goes through the same Runtime facade.
+ * PRIVACY: this service never persists keystrokes. Keys only drive the current
+ * InputConnection. ClipVault candidates are hidden in sensitive fields.
  */
 class ClipVaultFullKeyboardService : InputMethodService() {
 
@@ -52,16 +49,14 @@ class ClipVaultFullKeyboardService : InputMethodService() {
             setPadding(dp(2), dp(4), dp(2), dp(6))
         }
 
-        // ClipVault toolbar
         val toolbar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        toolbar.addView(key("📋 最近剪切板", weight = 2f) { showRecentClips() })
+        toolbar.addView(key("📋 ClipVault", weight = 2f) { showCandidates() })
         toolbar.addView(key("切回", weight = 1f) { switchToPreviousInputMethod() })
         root.addView(toolbar)
 
-        // Candidate / ClipVault strip (filled when 最近 is tapped)
         val strip = HorizontalScrollView(this)
         candidates = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        candidates.addView(hint(if (suppressCandidates) PrivacyAwareFilter.suppressionMessage() else "点「最近剪切板」调取你存过的内容 →"))
+        candidates.addView(hint(if (suppressCandidates) PrivacyAwareFilter.suppressionMessage() else "点 ClipVault 调取候选 →"))
         strip.addView(candidates)
         root.addView(strip)
 
@@ -76,7 +71,6 @@ class ClipVaultFullKeyboardService : InputMethodService() {
         val rows = if (symbols) symbolRows else letterRows
         rows.forEachIndexed { i, row ->
             val r = rowLayout()
-            // last letter row gets shift (left) and backspace (right)
             if (!symbols && i == rows.lastIndex) {
                 r.addView(key(if (shifted) "⇧" else "⇪", weight = 1.5f) { shifted = !shifted; renderKeys() })
             }
@@ -84,15 +78,12 @@ class ClipVaultFullKeyboardService : InputMethodService() {
                 val label = if (!symbols && shifted) ch.uppercaseChar() else ch
                 r.addView(key(label.toString(), weight = 1f) {
                     commit(label.toString())
-                    if (shifted && !symbols) { shifted = false; renderKeys() }  // one-shot shift
+                    if (shifted && !symbols) { shifted = false; renderKeys() }
                 })
             }
-            if (i == rows.lastIndex) {
-                r.addView(key("⌫", weight = 1.5f) { backspace() })
-            }
+            if (i == rows.lastIndex) r.addView(key("⌫", weight = 1.5f) { backspace() })
             keys.addView(r)
         }
-        // bottom row
         val bottom = rowLayout()
         bottom.addView(key(if (symbols) "ABC" else "?123", weight = 1.5f) { symbols = !symbols; renderKeys() })
         bottom.addView(key(",", weight = 1f) { commit(",") })
@@ -102,21 +93,21 @@ class ClipVaultFullKeyboardService : InputMethodService() {
         keys.addView(bottom)
     }
 
-    private fun showRecentClips() {
+    private fun showCandidates() {
         if (suppressCandidates) {
             candidates.removeAllViews()
             candidates.addView(hint(PrivacyAwareFilter.suppressionMessage()))
             return
         }
         thread {
-            val clips = runtime.listRecentClips(20)   // facade is crash-safe
+            val items = runtime.listCandidates(limit = 20)
             runOnMain {
                 candidates.removeAllViews()
-                if (clips.isEmpty()) {
-                    candidates.addView(hint("（暂无内容，先在桌面复制或分享到 ClipVault）"))
+                if (items.isEmpty()) {
+                    candidates.addView(hint("（暂无候选，先在桌面添加记忆或复制内容并同步）"))
                 } else {
-                    clips.forEach { c ->
-                        candidates.addView(key("[clip:${c.contentType}] " + c.text.replace("\n", " ").take(24), weight = 0f) {
+                    items.forEach { c ->
+                        candidates.addView(key("${c.label} " + c.text.replace("\n", " ").take(24), weight = 0f) {
                             commit(c.text)
                         })
                     }
@@ -125,7 +116,6 @@ class ClipVaultFullKeyboardService : InputMethodService() {
         }
     }
 
-    // --- input helpers ---
     private fun commit(s: String) { currentInputConnection?.commitText(s, 1) }
     private fun backspace() { currentInputConnection?.deleteSurroundingText(1, 0) }
     private fun enter() {
@@ -134,7 +124,6 @@ class ClipVaultFullKeyboardService : InputMethodService() {
         ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
     }
 
-    // --- view helpers ---
     private fun rowLayout() = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46))
@@ -144,8 +133,7 @@ class ClipVaultFullKeyboardService : InputMethodService() {
         Button(this).apply {
             text = label; isAllCaps = false; textSize = 16f
             setPadding(dp(2), 0, dp(2), 0)
-            layoutParams =
-                if (weight > 0f) LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight)
+            layoutParams = if (weight > 0f) LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight)
                 else LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40))
             setOnClickListener { onClick() }
         }
