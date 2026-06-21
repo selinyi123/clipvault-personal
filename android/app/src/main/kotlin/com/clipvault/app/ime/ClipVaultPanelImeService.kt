@@ -110,7 +110,7 @@ class ClipVaultPanelImeService : InputMethodService() {
             return
         }
         thread {
-            val items = runtime.listCandidates(limit = 100)
+            val items = runtime.listCandidates(limit = 200)
                 .filter { c -> c.source == source && (kind == null || c.kind == kind) }
                 .take(limit)
             runOnMain {
