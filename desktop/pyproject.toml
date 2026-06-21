@@ -1,6 +1,6 @@
 [project]
 name = "clipvault-desktop"
-version = "1.5.6"
+version = "1.5.8"
 description = "ClipVault Personal desktop node"
 requires-python = ">=3.11"
 dependencies = []
