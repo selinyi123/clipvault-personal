@@ -13,8 +13,8 @@ android {
         applicationId = "com.clipvault.app"
         minSdk = 26          // Android 8.0: Quick Settings Tile + modern clipboard rules
         targetSdk = 34
-        versionCode = 8
-        versionName = "1.5.0"
+        versionCode = 9
+        versionName = "1.5.6"
     }
     // Release signing reads from -P properties (or ~/.gradle), so the keystore
     // and passwords never live in the repo. Falls back gracefully when unset.
