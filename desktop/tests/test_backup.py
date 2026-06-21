@@ -101,6 +101,33 @@ def test_c3_commit_failure_keeps_queue_pending(conn, work_repo, monkeypatch):
     assert ClipsRepo(conn).get(out.clip.id).backed_up_at is None
 
 
+def test_c3_commit_failure_retry_does_not_duplicate_jsonl(conn, work_repo, monkeypatch):
+    repo, _ = work_repo
+    out = pipeline.ingest(conn, "retry idempotently", source_device="d",
+                          now_fn=lambda: "2026-06-13T10:00:00Z")
+    jsonl = repo / "clips" / "2026" / "06" / "2026-06-13.jsonl"
+    real_add_commit = git_repo.add_commit
+
+    def boom(*args, **kwargs):
+        raise git_repo.GitError("simulated commit failure")
+
+    monkeypatch.setattr(git_repo, "add_commit", boom)
+    worker = BackupWorker(conn, str(repo), push_enabled=False,
+                          now_fn=lambda: "2026-06-13T10:00:00Z")
+    with pytest.raises(git_repo.GitError):
+        worker.run_once()
+    assert jsonl.exists()
+    assert len(jsonl.read_text(encoding="utf-8").splitlines()) == 1
+
+    monkeypatch.setattr(git_repo, "add_commit", real_add_commit)
+    stats = worker.run_once()
+    assert stats["committed"] is not None
+    lines = jsonl.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["id"] == out.clip.id
+    assert BackupQueueRepo(conn).state_of(out.clip.id) == "done"
+
+
 def test_c4_push_failure_backs_off_then_recovers(conn, tmp_path, monkeypatch):
     repo = tmp_path / "backup"
     git_repo.init(repo)
