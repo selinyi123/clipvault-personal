@@ -41,6 +41,7 @@ class BackupWorker:
         written = 0
         dropped = 0
         by_day: dict[str, list[str]] = {}
+        mark_after_commit: list[tuple[str, str]] = []
 
         for clip_id in pending:
             clip = self.clips.get(clip_id)
@@ -57,24 +58,27 @@ class BackupWorker:
                 continue
             relpath = jsonl_store.daily_relpath(clip.created_at)
             by_day.setdefault(relpath, []).append(jsonl_store.serialize_clip(clip))
-            now = self.now_fn()
-            self.clips.set_backed_up_at(clip_id, now)
-            self.queue.mark_done(clip_id, now)
+            mark_after_commit.append((clip_id, self.now_fn()))
             written += 1
 
         committed = None
         if by_day:
             for relpath, lines in by_day.items():
                 jsonl_store.append_lines(self.repo_path, relpath, lines)
+            # If commit fails, do not mark queue rows done. The next worker run
+            # must retry because there is no durable recovery point yet.
             committed = git_repo.add_commit(
                 self.repo_path, f"backup: {written} clips {self.now_fn()}"
             )
+            if committed is not None:
+                for clip_id, done_at in mark_after_commit:
+                    self.clips.set_backed_up_at(clip_id, done_at)
+                    self.queue.mark_done(clip_id, done_at)
 
         pushed = False
-        if self.push_enabled and not git_repo.is_clean(self.repo_path):
-            # there are local commits not yet pushed
-            pass
-        if self.push_enabled and committed is not None:
+        # Retry push even when this run had no new commits; a previous push may
+        # have failed after data was safely committed locally.
+        if self.push_enabled and git_repo.head_commit(self.repo_path) is not None:
             pushed = self._try_push(monotonic)
 
         return {"written": written, "dropped": dropped,
