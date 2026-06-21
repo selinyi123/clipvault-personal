@@ -8,6 +8,7 @@ import com.clipvault.core.Normalize
 import com.clipvault.core.SecretGuard
 import org.json.JSONArray
 import org.json.JSONObject
+import java.math.BigInteger
 import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -25,6 +26,7 @@ object Capture {
 
     private const val ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
     private val rng = SecureRandom()
+    private val mask31 = BigInteger.valueOf(31L)
 
     fun ingest(db: AppDatabase, raw: String, sourceDevice: String, sourceApp: String? = null): Result {
         val content = Normalize.normalize(raw)
@@ -83,18 +85,13 @@ object Capture {
             out[i] = ULID_ALPHABET[(t and 31L).toInt()]
             t = t ushr 5
         }
+
         val random = ByteArray(10)
         rng.nextBytes(random)
-        var bitBuffer = 0
-        var bitCount = 0
-        var pos = 10
-        for (b in random) {
-            bitBuffer = (bitBuffer shl 8) or (b.toInt() and 0xff)
-            bitCount += 8
-            while (bitCount >= 5 && pos < 26) {
-                bitCount -= 5
-                out[pos++] = ULID_ALPHABET[(bitBuffer ushr bitCount) and 31]
-            }
+        var r = BigInteger(1, random)
+        for (i in 25 downTo 10) {
+            out[i] = ULID_ALPHABET[r.and(mask31).toInt()]
+            r = r.shiftRight(5)
         }
         return String(out)
     }
