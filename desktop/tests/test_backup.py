@@ -85,6 +85,22 @@ def test_c3_commit_and_push(conn, work_repo):
     assert "backup:" in log.stdout
 
 
+def test_c3_commit_failure_keeps_queue_pending(conn, work_repo, monkeypatch):
+    repo, _ = work_repo
+    out = pipeline.ingest(conn, "commit must happen before done", source_device="d",
+                          now_fn=lambda: "2026-06-13T10:00:00Z")
+
+    def boom(*args, **kwargs):
+        raise git_repo.GitError("simulated commit failure")
+
+    monkeypatch.setattr(git_repo, "add_commit", boom)
+    worker = BackupWorker(conn, str(repo), push_enabled=False)
+    with pytest.raises(git_repo.GitError):
+        worker.run_once()
+    assert BackupQueueRepo(conn).state_of(out.clip.id) == "pending"
+    assert ClipsRepo(conn).get(out.clip.id).backed_up_at is None
+
+
 def test_c4_push_failure_backs_off_then_recovers(conn, tmp_path, monkeypatch):
     repo = tmp_path / "backup"
     git_repo.init(repo)
@@ -107,6 +123,23 @@ def test_c4_push_failure_backs_off_then_recovers(conn, tmp_path, monkeypatch):
     assert worker._try_push(monotonic=150.0) is False   # within backoff window
     assert worker._try_push(monotonic=300.0) is True
     assert worker._backoff_s == 60                       # reset after success
+
+
+def test_c4_run_once_retries_previous_unpushed_commit(conn, tmp_path):
+    repo = tmp_path / "backup"
+    remote = tmp_path / "remote.git"
+    git_repo.init(repo)
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "remote", "add", "origin", str(remote))
+    pipeline.ingest(conn, "retry later", source_device="d")
+    worker = BackupWorker(conn, str(repo), push_enabled=True)
+    assert worker.run_once(monotonic=100.0)["pushed"] is False
+
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    stats = worker.run_once(monotonic=300.0)
+    assert stats["written"] == 0
+    assert stats["pushed"] is True
 
 
 def test_c5_no_double_backup(conn, work_repo):
