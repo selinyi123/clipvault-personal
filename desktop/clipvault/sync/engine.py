@@ -101,7 +101,12 @@ def _set_mem_ts(conn, kind: str, text: str, ts: str) -> None:
 # --- remote application (called by /api/sync/push) ---
 
 def apply_push(conn, device_id: str, events: list[dict], service) -> int:
-    """Apply a peer's events idempotently; return highest contiguous seq applied."""
+    """Apply a peer's events idempotently; return highest contiguous seq applied.
+
+    A gap must not advance the ack cursor. Otherwise the sender may delete an
+    unacknowledged event and permanently lose it. Out-of-order/gapped events are
+    still safe to apply because every event kind is idempotent.
+    """
     peers = PeersRepo(conn)
     peer = peers.get(device_id)
     cursor = peer["peer_cursor"] if peer else 0
@@ -124,8 +129,8 @@ def apply_push(conn, device_id: str, events: list[dict], service) -> int:
             log.error("unknown sync event kind=%s", kind)
         if seq == acked + 1:
             acked = seq
-        else:
-            acked = max(acked, seq)  # tolerate gaps in self-use 2-device setup
+        elif seq > acked + 1:
+            log.warning("sync gap from device=%s cursor=%d saw=%d", device_id, acked, seq)
     if peer:
         peers.set_peer_cursor(device_id, acked)
     return acked
