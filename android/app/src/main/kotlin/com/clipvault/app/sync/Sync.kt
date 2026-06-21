@@ -4,7 +4,6 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
-import com.clipvault.app.ClipVaultApp
 import com.clipvault.app.data.AppDatabase
 import com.clipvault.app.data.ClipEntity
 import com.clipvault.core.SecretGuard
@@ -21,6 +20,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 private const val SYNC_PREFS = "clipvault_sync"
+private const val LEGACY_TOKEN = "token"
 private const val TOKEN_PREFS = "clipvault_sync_token"
 private const val TOKEN_KEY_ALIAS = "clipvault_sync_token_v1"
 private const val TOKEN_IV = "token_iv"
@@ -93,15 +93,27 @@ class Settings(context: Context) {
     private val sp = appCtx.getSharedPreferences(SYNC_PREFS, Context.MODE_PRIVATE)
     private val tokenStore = SecureTokenStore(appCtx)
 
+    init { migrateLegacyToken() }
+
     var host: String?  get() = sp.getString("host", null);  set(v) { sp.edit().putString("host", v).apply() }
     var port: Int      get() = sp.getInt("port", 8787);     set(v) { sp.edit().putInt("port", v).apply() }
-    var token: String? get() = tokenStore.get();             set(v) { tokenStore.set(v) }
+    var token: String? get() = tokenStore.get();             set(v) { tokenStore.set(v); sp.edit().remove(LEGACY_TOKEN).apply() }
     var sinceSeq: Long get() = sp.getLong("since", 0);      set(v) { sp.edit().putLong("since", v).apply() }
     val deviceId: String
         get() = sp.getString("device_id", null) ?: run {
             val id = "android-" + UUID.randomUUID().toString().take(8)
             sp.edit().putString("device_id", id).apply(); id
         }
+
+    /** One-time v1.2.x -> v1.3 migration. Preserve pairing while deleting the
+     * old plaintext token from the legacy sync preference file. */
+    private fun migrateLegacyToken() {
+        val legacy = sp.getString(LEGACY_TOKEN, null)
+        if (!legacy.isNullOrEmpty() && tokenStore.get().isNullOrEmpty()) {
+            tokenStore.set(legacy)
+        }
+        if (legacy != null) sp.edit().remove(LEGACY_TOKEN).apply()
+    }
 }
 
 /** Minimal HTTP sync client (SYNC-2). Uses HttpURLConnection — no extra deps. */
