@@ -12,8 +12,10 @@ import android.view.inputmethod.EditorInfo
  * default even when the user explicitly opened the keyboard panel.
  */
 object PrivacyAwareFilter {
-    fun shouldSuppressCandidates(info: EditorInfo?): Boolean {
-        val inputType = info?.inputType ?: return false
+    fun shouldSuppressCandidates(info: EditorInfo?): Boolean =
+        info?.let { shouldSuppressCandidates(it.inputType) } ?: false
+
+    internal fun shouldSuppressCandidates(inputType: Int): Boolean {
         val klass = inputType and InputType.TYPE_MASK_CLASS
         val variation = inputType and InputType.TYPE_MASK_VARIATION
         val flags = inputType and InputType.TYPE_MASK_FLAGS
