@@ -110,9 +110,12 @@ class ClipVaultPanelImeService : InputMethodService() {
             return
         }
         thread {
-            val items = runtime.listCandidates(limit = 200)
-                .filter { c -> c.source == source && (kind == null || c.kind == kind) }
-                .take(limit)
+            // Use the tested PanelCandidateTabs helper (filter-before-limit) so the
+            // service and PanelCandidateTabsTest share one source of truth.
+            val items = PanelCandidateTabs.filter(
+                runtime.listCandidates(limit = PANEL_CANDIDATE_POOL_LIMIT),
+                source, kind, limit,
+            )
             runOnMain {
                 list.removeAllViews()
                 list.addView(TextView(this).apply { text = title; textSize = 12f })

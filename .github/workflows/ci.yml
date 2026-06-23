@@ -12,7 +12,9 @@ permissions:
 jobs:
   desktop:
     name: Desktop tests
-    runs-on: ubuntu-latest
+    # Windows-only node: watcher + instance_lock use ctypes.WinDLL (user32/kernel32),
+    # which do not exist on Linux. Running on ubuntu fails at import collection.
+    runs-on: windows-latest
     defaults:
       run:
         working-directory: desktop
