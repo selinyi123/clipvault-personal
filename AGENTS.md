@@ -2,6 +2,8 @@
 
 Minimal instructions for coding agents working on ClipVault Personal.
 
+For task flow and role split, read docs/AGENT_WORKFLOWS.md.
+
 ## Product boundary
 
 - Keep the Android IME local-first.
