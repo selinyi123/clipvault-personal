@@ -14,13 +14,16 @@ Use this workflow until Issue 3 is closed.
 6. Update Issue 3 with the actual result.
 7. Stop. Do not start unrelated work.
 
-Allowed blockers:
+Active blockers:
 
-- Panel IME service wiring to PanelCandidateTabs.
-- Desktop version metadata alignment.
-- Android version metadata alignment.
 - CI result discovery.
 - Manual QA completion.
+
+Resolved closure items:
+
+- Panel IME service is wired to PanelCandidateTabs.
+- Desktop runtime and package metadata are aligned.
+- Android versionName is aligned and versionCode has advanced.
 
 ## Workflow 2: Research before architecture
 
@@ -63,8 +66,6 @@ Use this when a user asks to continue without naming a specific blocker.
 3. Read Issue 3.
 4. Select the first unfinished blocker in this order:
    - CI result discovery.
-   - service wiring.
-   - version metadata alignment.
    - manual QA evidence.
 5. Attempt exactly one narrow improvement.
 6. If the patch is blocked, record the blocker and stop.
