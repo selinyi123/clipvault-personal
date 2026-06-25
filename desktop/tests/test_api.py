@@ -50,6 +50,12 @@ def test_d2_list_and_search(api):
     assert len(cmds["clips"]) == 1 and cmds["clips"][0]["content_type"] == "command"
 
 
+def test_d2_bad_limit_params_return_400(api):
+    assert api.list_clips({"limit": "abc"})[0] == 400
+    assert api.list_memory({"limit": "abc"})[0] == 400
+    assert api.suggest({"limit": "abc"})[0] == 400
+
+
 def test_d3_secret_hidden_then_redacted(api):
     api.create_clip({"content": FAKE_AWS_KEY})
     # default list excludes secrets
@@ -158,6 +164,23 @@ def test_d8_binds_configured_host(api):
     httpd = api_server.build_server(api, "127.0.0.1", 0)
     assert httpd.server_address[0] == "127.0.0.1"
     httpd.server_close()
+
+
+def test_d8_pair_rejects_large_body(api):
+    stop = threading.Event()
+    httpd = api_server.build_server(api, "127.0.0.1", 0)
+    port = httpd.server_address[1]
+    t = threading.Thread(target=_serve_until, args=(httpd, stop), daemon=True)
+    t.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("POST", "/api/pair", body="x" * 5000, headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        assert resp.status == 413
+        resp.read()
+        conn.close()
+    finally:
+        stop.set()
 
 
 def test_d9_api_logs_no_content(api, caplog):
