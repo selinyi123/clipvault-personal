@@ -74,37 +74,37 @@ Use this when a user asks to continue without naming a specific blocker.
 
 ## Agent roles
 
-Research agent:
+### Research agent
 
 - Finds prior art and risk signals.
 - Produces concise design implications.
 - Does not modify runtime code.
 
-Patch agent:
+### Patch agent
 
 - Makes small source changes.
 - Avoids broad refactors.
 - Keeps privacy boundaries intact.
 
-Test agent:
+### Test agent
 
 - Adds or improves deterministic tests.
 - Prefers host JVM tests for pure candidate logic.
 - Does not add emulator CI unless explicitly planned.
 
-Release agent:
+### Release agent
 
 - Aligns visible version metadata.
 - Reads CI or records why CI is unavailable.
 - Updates Issue 3 with evidence.
 
-QA agent:
+### QA agent
 
 - Executes the manual checklist.
 - Records exact pass or fail status.
 - Does not close the release issue alone.
 
-Privacy gate agent:
+### Privacy gate agent
 
 - Blocks typed-text collection.
 - Blocks network calls inside the IME.
