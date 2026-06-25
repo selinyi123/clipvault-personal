@@ -174,12 +174,21 @@ class SyncClient(private val s: Settings) {
 object SyncApply {
     fun applyEvents(db: AppDatabase, events: JSONArray) {
         for (i in 0 until events.length()) {
-            val ev = events.getJSONObject(i)
-            when (ev.getString("kind")) {
-                "clip_new" -> applyClipNew(db, ev.getJSONObject("payload"))
-                "clip_meta" -> applyClipMeta(db, ev.getJSONObject("payload"))
-                "memory_upsert" -> applyMemoryUpsert(db, ev.getJSONObject("payload"))
-                "memory_delete" -> applyMemoryDelete(db, ev.getJSONObject("payload"))
+            val ev = events.optJSONObject(i)
+            if (ev == null) {
+                android.util.Log.w("clipvault.sync", "ignored malformed event")
+                continue
+            }
+            try {
+                when (ev.optString("kind", "")) {
+                    "clip_new" -> applyClipNew(db, ev.getJSONObject("payload"))
+                    "clip_meta" -> applyClipMeta(db, ev.getJSONObject("payload"))
+                    "memory_upsert" -> applyMemoryUpsert(db, ev.getJSONObject("payload"))
+                    "memory_delete" -> applyMemoryDelete(db, ev.getJSONObject("payload"))
+                    else -> android.util.Log.w("clipvault.sync", "ignored unknown event kind")
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("clipvault.sync", "ignored bad event: ${e.javaClass.simpleName}")
             }
         }
     }
