@@ -1,6 +1,6 @@
-# ClipVault Personal v1.5.12 — Manual QA checklist
+# ClipVault Personal v1.5.16 — Manual QA checklist
 
-Date: 2026-06-21
+Date: 2026-06-25
 
 Scope: define the manual validation gate required before closing the v1.5 CandidateMixer node.
 
@@ -62,9 +62,13 @@ Expected result:
 
 ## Release-state checks
 
+- Desktop runtime version is 1.5.16.
+- Desktop package metadata is 1.5.16.
+- Android versionName is 1.5.16.
+- Android versionCode is 12 or higher.
+- Windows installer AppVersion is 1.5.16.
 - PanelCandidateTabs helper exists.
 - PanelCandidateTabsTest exists and passes.
-- Version metadata is aligned before final release.
 - GitHub Actions status is recorded before closing Issue 3.
 
 ## Close criteria
@@ -76,4 +80,4 @@ Close Issue 3 only when:
 - Android debug build passes.
 - Full Keyboard manual checks pass.
 - Panel IME manual checks pass.
-- visible version metadata is aligned.
+- visible version metadata is aligned to 1.5.16.
