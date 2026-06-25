@@ -55,6 +55,12 @@ This file records the repository evidence for v1.5.16.
 - Desktop HTTP server version follows package metadata.
 - Release endpoint remains bodyless for compatibility.
 
+## Verification workflow status
+
+- CI workflow supports `workflow_dispatch` for manual verification on main.
+- Manual QA checklist includes CI trigger instructions.
+- Agent workflow treats manual CI dispatch evidence as acceptable CI evidence.
+
 ## Remaining review risks
 
 - CI and manual QA evidence are not recorded in this repository yet.
