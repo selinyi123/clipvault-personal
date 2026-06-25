@@ -15,7 +15,7 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
-| Current slice | v1.5.16 release metadata aligned；Panel IME 已接入 PanelCandidateTabs；剩余 gate 为 CI 可见性与 MANUAL_QA_V1_5_12 手动验证。 |
+| Current slice | v1.5.16 release metadata aligned；Panel IME 已接入 PanelCandidateTabs；剩余 gate 为 CI 可见性与 MANUAL_QA_V1_5_16 手动验证。 |
 | Last updated | 2026-06-25 |
 
 ## Product Constraints（全部 Active）
