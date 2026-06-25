@@ -60,6 +60,12 @@ interface ClipDao {
 
     @Query("UPDATE clips SET deleted = 1 WHERE id = :id")
     fun softDelete(id: String)
+
+    @Query("UPDATE clips SET pinned = :pinned WHERE contentHash = :hash")
+    fun setPinnedByHash(hash: String, pinned: Boolean)
+
+    @Query("UPDATE clips SET favorite = :favorite WHERE contentHash = :hash")
+    fun setFavoriteByHash(hash: String, favorite: Boolean)
 }
 
 @Dao
