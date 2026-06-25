@@ -60,9 +60,9 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
             }
             Result.success()
         } catch (e: Exception) {
-            // Content-safe: log the failure class/message (never clip content) so
-            // sync problems are diagnosable instead of silently retrying forever.
-            Log.w("ClipVaultSync", "sync failed: ${e.javaClass.simpleName}: ${e.message}")
+            // Content-safe: log only the failure class. Raw exception messages can
+            // include host/URL details from networking libraries.
+            Log.w("ClipVaultSync", "sync failed: ${e.javaClass.simpleName}")
             Result.retry()
         }
     }
