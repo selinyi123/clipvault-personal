@@ -41,6 +41,23 @@
 - Panel IME service uses PanelCandidateTabs.filter with PANEL_CANDIDATE_POOL_LIMIT
 - Remaining blockers: CI result visibility and manual QA evidence
 
+## Completed Slices Snapshot
+
+| Slice | Result |
+|---|---|
+| S001 Core Pipeline | PASS: normalization, classification, secret guard, Obsidian golden tests, vectors generated |
+| S002 Desktop Service | PASS: config, service, watcher, lock, real clipboard duplicate path |
+| S003 GitHub Backup Worker | PASS: backup queue, local bare repo push, restore drill |
+| S004 Local API + Web UI | PASS: stdlib HTTP API/UI, SQLite threading fix validated by live smoke |
+| S007 Personal Memory | PASS: memory repo/importers/API/web UI/promote path |
+| S010 Suggestion Engine | PASS: deterministic suggestions, pinned hard-priority behavior |
+| S011 Context Action Engine | PASS: pure rule actions and promote-kind flow |
+| S006 Desktop Sync Server | PASS: pair, push, pull, bearer auth, no-echo behavior |
+| S012 Desktop Hardening | PASS: outbox pruning, peer ack tracking, docs/gates |
+| S005 Android Capture + Kotlin Core | Source complete; Kotlin core vector tests historically passed; device validation remains owner-run |
+| S008 Memory to Android Sync | Desktop side tested; Android mirror/source complete |
+| S009 Keyboard Personal | IME source complete; current v1.5.16 Panel/Full Keyboard gates remain manual QA |
+
 ## Current Contracts
 
 | Contract | Location | Frozen? |
@@ -57,6 +74,23 @@
 | REST API-1 | CONTRACTS §10 | Yes (v1) |
 | Suggest SUG-1 | CONTRACTS §11 | Yes (v1) |
 | Config CFG-1 | CONTRACTS §12 | Yes (v1) |
+
+## Decision Snapshot
+
+| ID | Decision |
+|---|---|
+| D-001 | Secret entropy false positives handled with known-format exclusions rather than raising entropy threshold |
+| D-002 | Use venv/pip validation path instead of requiring uv |
+| D-003 | Keep self-contained ULID/vector tooling rather than adding runtime dependency |
+| D-004 | Use ctypes polling watcher rather than pywin32 message window |
+| D-005 | Read config with UTF-8 BOM tolerance for Windows tools |
+| D-006 | Use stdlib HTTP server for local API/UI |
+| D-007 | Use HTTP push/pull sync rather than WebSocket server |
+| D-008 | Treat pinned suggestions as hard priority layer |
+
+## Verification Snapshot
+
+Historical desktop verification reached 128 passing pytest cases across core pipeline, service, backup, API/UI, memory, suggestion, context-action, sync, and hardening slices. Android Kotlin core vectors historically passed 100/100. Current v1.5.16 still requires fresh CI visibility or local command evidence plus manual QA before Issue #3 can close.
 
 ## v1.5 Release Gate
 
