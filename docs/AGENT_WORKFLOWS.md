@@ -16,7 +16,7 @@ Use this workflow until Issue 3 is closed.
 
 Active blockers:
 
-- CI result discovery.
+- CI result discovery via the manual `CI` workflow dispatch or visible commit status.
 - Manual QA completion via docs/MANUAL_QA_V1_5_16.md.
 
 Resolved closure items:
@@ -24,13 +24,14 @@ Resolved closure items:
 - Panel IME service is wired to PanelCandidateTabs.
 - Desktop runtime and package metadata are aligned.
 - Android versionName is aligned and versionCode has advanced.
+- CI workflow has a manual dispatch entry point.
 
 ## Recurring session loop
 
 1. Read this file.
 2. Read Issue 3.
 3. Select the first unfinished blocker in this order:
-   - CI result discovery.
+   - CI result discovery or manual CI dispatch evidence.
    - manual QA evidence.
 4. Attempt exactly one narrow improvement.
 5. If the patch lands, fetch the changed file and cite it.
@@ -84,6 +85,7 @@ A task is not complete unless at least one of these is true:
 - changed file is fetched after commit and cited.
 - GitHub issue is updated and cited.
 - CI status is fetched and cited.
+- manual CI workflow result is recorded in Issue 3.
 - manual QA result is recorded in Issue 3.
 - blocker is explicitly recorded in Issue 3.
 
