@@ -159,6 +159,7 @@ def make_handler(api: Api):
             if route == "/api/sync/push":
                 token = self._bearer()
                 if not api.auth_ok(token):
+                    self.close_connection = True
                     self._send_json(401, {"error": {"code": "unauthorized", "message": "bad token"}})
                     return
                 body = self._body(_MAX_SYNC_PUSH_BODY)
@@ -168,9 +169,6 @@ def make_handler(api: Api):
                 return
             m = _RELEASE_RE.match(route)
             if m:
-                body = self._body()
-                if body is None:
-                    return
                 self._send_json(*api.release_clip(m.group(1)))
                 return
             m = _PROMOTE_RE.match(route)
