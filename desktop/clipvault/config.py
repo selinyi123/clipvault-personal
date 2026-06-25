@@ -28,7 +28,7 @@ interval_minutes = 15
 enabled          = false
 
 [server]
-host = "0.0.0.0"
+host = "127.0.0.1"          # 改为 0.0.0.0 前请确认只在可信 LAN/Tailscale 使用
 port = 8787
 
 [log]
@@ -62,7 +62,7 @@ class Config:
     backup_repo_path: str = ""
     backup_interval_minutes: int = 15
     backup_enabled: bool = False
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8787
     log_dir: str = "logs"
     log_retention_days: int = 14
@@ -136,7 +136,7 @@ def load(path: Path) -> Config:
         backup_repo_path=str(backup.get("repo_path", "")),
         backup_interval_minutes=int(backup.get("interval_minutes", 15)),
         backup_enabled=bool(backup.get("enabled", False)),
-        host=str(server.get("host", "0.0.0.0")),
+        host=str(server.get("host", "127.0.0.1")),
         port=port,
         log_dir=str(log.get("dir", "logs")),
         log_retention_days=int(log.get("retention_days", 14)),
