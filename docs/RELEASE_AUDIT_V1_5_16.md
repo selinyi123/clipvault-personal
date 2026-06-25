@@ -39,6 +39,11 @@ This file records the repository evidence for v1.5.16.
 - HANDOFF keeps current v1.5.16 state and restores a compact project-memory snapshot.
 - The old manual QA file was replaced by `docs/MANUAL_QA_V1_5_16.md`.
 
+## Remaining review risks
+
+- CI and manual QA evidence are not recorded in this repository yet.
+- Issue 3 body may still contain stale status if GitHub issue body updates are blocked; rely on comments and docs until it is refreshed.
+
 ## Result
 
 v1.5.16 is not only a version-number bump. The repository contains version metadata, runtime candidate logic, panel tab filtering, input frontend wiring, tests, CI definition, and manual QA gate for this release state.
