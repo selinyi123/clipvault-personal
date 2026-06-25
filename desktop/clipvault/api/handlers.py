@@ -57,14 +57,19 @@ def _bad_param(name: str, message: str) -> tuple[int, dict]:
 
 
 def _int_param(params: dict, name: str, default: int, *, min_value: int, max_value: int) -> int:
+    """Parse integer query params without breaking existing high-limit callers.
+
+    Older API behavior clamped values above the route max. Preserve that
+    compatibility, but reject non-integers and values below the minimum.
+    """
     raw = params.get(name, str(default)) or str(default)
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        raise ValueError(f"must be an integer in {min_value}..{max_value}")
-    if not min_value <= value <= max_value:
-        raise ValueError(f"must be in {min_value}..{max_value}")
-    return value
+        raise ValueError(f"must be an integer >= {min_value}")
+    if value < min_value:
+        raise ValueError(f"must be >= {min_value}")
+    return min(value, max_value)
 
 
 class Api:
