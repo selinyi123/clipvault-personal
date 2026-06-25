@@ -110,10 +110,14 @@ class ClipVaultPanelImeService : InputMethodService() {
             return
         }
         thread {
-            // Use the tested PanelCandidateTabs helper (filter-before-limit) so the
-            // service and PanelCandidateTabsTest share one source of truth.
+            // Ask Runtime for the tab-specific source/kind before applying the UI
+            // limit. This prevents one memory kind from starving another kind.
             val items = PanelCandidateTabs.filter(
-                runtime.listCandidates(limit = PANEL_CANDIDATE_POOL_LIMIT),
+                runtime.listCandidates(
+                    limit = PANEL_CANDIDATE_POOL_LIMIT,
+                    source = source,
+                    kind = kind,
+                ),
                 source, kind, limit,
             )
             runOnMain {
