@@ -28,6 +28,7 @@ This file records the repository evidence for v1.5.16.
 - `android/app/src/test/kotlin/com/clipvault/app/ime/PanelCandidateTabsTest.kt`
 - `desktop/tests/test_api.py`
 - `desktop/tests/test_config.py`
+- `desktop/tests/test_sync.py`
 
 ## Validation files
 
@@ -46,15 +47,15 @@ This file records the repository evidence for v1.5.16.
 - Panel tabs now request source/kind-specific candidates from Runtime.
 - Android pull now mirrors clip pinned/favorite metadata.
 - Android sync worker logs only exception classes.
-- Desktop API query parameter validation is stricter.
+- Desktop API query parameter validation rejects malformed or negative values while preserving high-value clamping.
 - Desktop server request handling has explicit size guards.
 - New desktop config templates bind to loopback by default.
 - Desktop HTTP server version follows package metadata.
+- Release endpoint remains bodyless for compatibility.
 
 ## Remaining review risks
 
 - CI and manual QA evidence are not recorded in this repository yet.
-- Issue 3 body may still contain stale status if GitHub issue body updates are blocked; rely on comments and docs until it is refreshed.
 - Android changes still need Gradle unit/build validation.
 
 ## Result
