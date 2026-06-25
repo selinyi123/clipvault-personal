@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
+from clipvault import __version__
 from clipvault.api.handlers import Api
 
 log = logging.getLogger("clipvault.api")
@@ -28,6 +29,9 @@ _ACTIONS_RE = re.compile(r"^/api/clips/([0-9A-Za-z]+)/actions$")
 _MEMORY_ID_RE = re.compile(r"^/api/memory/([0-9A-Za-z]+)$")
 _MEMORY_USE_RE = re.compile(r"^/api/memory/([0-9A-Za-z]+)/use$")
 _LOOPBACK = ("127.0.0.1", "::1")
+_MAX_JSON_BODY = 1_048_576
+_MAX_PAIR_BODY = 4_096
+_MAX_SYNC_PUSH_BODY = 4 * 1_048_576
 
 
 def _remote_allowed(route: str) -> bool:
@@ -37,7 +41,7 @@ def _remote_allowed(route: str) -> bool:
 
 def make_handler(api: Api):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "ClipVault/0.1"
+        server_version = f"ClipVault/{__version__}"
 
         def _is_loopback(self) -> bool:
             return self.client_address[0] in _LOOPBACK
@@ -65,14 +69,26 @@ def make_handler(api: Api):
             self.end_headers()
             self.wfile.write(data)
 
-        def _body(self) -> dict:
-            length = int(self.headers.get("Content-Length", 0) or 0)
+        def _body(self, max_bytes: int = _MAX_JSON_BODY) -> dict | None:
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+            except ValueError:
+                self._send_json(400, {"error": {"code": "bad_request", "message": "invalid Content-Length"}})
+                return None
+            if length < 0:
+                self._send_json(400, {"error": {"code": "bad_request", "message": "invalid Content-Length"}})
+                return None
+            if length > max_bytes:
+                self.close_connection = True
+                self._send_json(413, {"error": {"code": "payload_too_large", "message": "request body too large"}})
+                return None
             if not length:
                 return {}
             try:
                 return json.loads(self.rfile.read(length).decode("utf-8"))
             except (ValueError, UnicodeDecodeError):
-                return {}
+                self._send_json(400, {"error": {"code": "bad_request", "message": "invalid json"}})
+                return None
 
         def _guard(self, route: str) -> bool:
             # Sync/pair are auth-gated in the handler; everything else is loopback-only.
@@ -123,24 +139,46 @@ def make_handler(api: Api):
             if not self._guard(route):
                 return
             if route == "/api/clips":
-                self._send_json(*api.create_clip(self._body()))
+                body = self._body()
+                if body is None:
+                    return
+                self._send_json(*api.create_clip(body))
                 return
             if route == "/api/memory":
-                self._send_json(*api.create_memory(self._body()))
+                body = self._body()
+                if body is None:
+                    return
+                self._send_json(*api.create_memory(body))
                 return
             if route == "/api/pair":
-                self._send_json(*api.pair(self._body()))
+                body = self._body(_MAX_PAIR_BODY)
+                if body is None:
+                    return
+                self._send_json(*api.pair(body))
                 return
             if route == "/api/sync/push":
-                self._send_json(*api.sync_push(self._bearer(), self._body()))
+                token = self._bearer()
+                if not api.auth_ok(token):
+                    self._send_json(401, {"error": {"code": "unauthorized", "message": "bad token"}})
+                    return
+                body = self._body(_MAX_SYNC_PUSH_BODY)
+                if body is None:
+                    return
+                self._send_json(*api.sync_push(token, body))
                 return
             m = _RELEASE_RE.match(route)
             if m:
+                body = self._body()
+                if body is None:
+                    return
                 self._send_json(*api.release_clip(m.group(1)))
                 return
             m = _PROMOTE_RE.match(route)
             if m:
-                self._send_json(*api.promote_clip(m.group(1), self._body()))
+                body = self._body()
+                if body is None:
+                    return
+                self._send_json(*api.promote_clip(m.group(1), body))
                 return
             m = _MEMORY_USE_RE.match(route)
             if m:
@@ -164,7 +202,10 @@ def make_handler(api: Api):
                 return
             m = _CLIP_ID_RE.match(route)
             if m:
-                self._send_json(*api.patch_clip(m.group(1), self._body()))
+                body = self._body()
+                if body is None:
+                    return
+                self._send_json(*api.patch_clip(m.group(1), body))
                 return
             self._send_json(404, {"error": {"code": "not_found", "message": route}})
 
