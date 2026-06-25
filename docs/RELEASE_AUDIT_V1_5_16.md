@@ -33,6 +33,12 @@ This file records the repository evidence for v1.5.16.
 - `docs/MANUAL_QA_V1_5_16.md`
 - `docs/AGENT_WORKFLOWS.md`
 
+## Review fixes after diff audit
+
+- Android dependency declarations are present in `android/app/build.gradle.kts`.
+- HANDOFF keeps current v1.5.16 state and restores a compact project-memory snapshot.
+- The old manual QA file was replaced by `docs/MANUAL_QA_V1_5_16.md`.
+
 ## Result
 
 v1.5.16 is not only a version-number bump. The repository contains version metadata, runtime candidate logic, panel tab filtering, input frontend wiring, tests, CI definition, and manual QA gate for this release state.
