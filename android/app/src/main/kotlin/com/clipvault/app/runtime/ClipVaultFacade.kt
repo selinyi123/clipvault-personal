@@ -34,7 +34,7 @@ data class Candidate(
     val text: String,
     val label: String,
     val score: Int,
-    val riskFlags: List<String> = emptyList(),
+    val riskFlags: List<String> = emptyList(), // reserved; do not use as a privacy boundary
 )
 
 internal object CandidateMixer {
@@ -93,8 +93,13 @@ internal object CandidateMixer {
 }
 
 interface ClipVaultFacade {
-    /** Unified deterministic candidates for all IME frontends. */
-    fun listCandidates(query: String = "", limit: Int = 40): List<Candidate>
+    /** Unified deterministic candidates for all IME frontends.
+     *
+     * `source`/`kind` are optional narrow filters. Panel tabs pass these filters
+     * so a low-frequency memory kind cannot be starved by the global memory top
+     * 100 before the tab filter is applied.
+     */
+    fun listCandidates(query: String = "", limit: Int = 40, source: String? = null, kind: String? = null): List<Candidate>
 
     /** Recent public clips, newest/pinned first. Secrets are never returned. */
     fun listRecentClips(limit: Int = 40): List<ClipCandidate>
@@ -117,10 +122,10 @@ interface ClipVaultFacade {
 class RoomClipVaultFacade(context: Context) : ClipVaultFacade {
     private val ctx = context.applicationContext
 
-    override fun listCandidates(query: String, limit: Int): List<Candidate> = safe(emptyList()) {
+    override fun listCandidates(query: String, limit: Int, source: String?, kind: String?): List<Candidate> = safe(emptyList()) {
         val db = ClipVaultApp.db(ctx)
-        val clips = db.clips().list(query, 0)        // public only; never secrets
-        val memories = db.memory().list("")
+        val clips = if (source == null || source == "clip") db.clips().list(query, 0) else emptyList()
+        val memories = if (source == null || source == "memory") db.memory().list(kind ?: "") else emptyList()
         CandidateMixer.mix(clips, memories, query, limit)
     }
 
