@@ -26,6 +26,8 @@ This file records the repository evidence for v1.5.16.
 - `android/app/src/test/kotlin/com/clipvault/app/runtime/CandidateMixerTest.kt`
 - `android/app/src/test/kotlin/com/clipvault/app/ime/PrivacyAwareFilterTest.kt`
 - `android/app/src/test/kotlin/com/clipvault/app/ime/PanelCandidateTabsTest.kt`
+- `desktop/tests/test_api.py`
+- `desktop/tests/test_config.py`
 
 ## Validation files
 
@@ -39,10 +41,21 @@ This file records the repository evidence for v1.5.16.
 - HANDOFF keeps current v1.5.16 state and restores a compact project-memory snapshot.
 - The old manual QA file was replaced by `docs/MANUAL_QA_V1_5_16.md`.
 
+## Risk fixes after broader review
+
+- Panel tabs now request source/kind-specific candidates from Runtime.
+- Android pull now mirrors clip pinned/favorite metadata.
+- Android sync worker logs only exception classes.
+- Desktop API query parameter validation is stricter.
+- Desktop server request handling has explicit size guards.
+- New desktop config templates bind to loopback by default.
+- Desktop HTTP server version follows package metadata.
+
 ## Remaining review risks
 
 - CI and manual QA evidence are not recorded in this repository yet.
 - Issue 3 body may still contain stale status if GitHub issue body updates are blocked; rely on comments and docs until it is refreshed.
+- Android changes still need Gradle unit/build validation.
 
 ## Result
 
