@@ -11,6 +11,23 @@ Scope: define the manual validation gate required before closing the v1.5 Candid
 - Android device has ClipVault Panel IME and Full Keyboard enabled.
 - Device has at least one recent clip and several memory candidates.
 
+## CI validation
+
+GitHub Actions workflow `.github/workflows/ci.yml` supports manual `workflow_dispatch`.
+
+Use this before closing Issue 3:
+
+1. Open the repository Actions tab.
+2. Select the `CI` workflow.
+3. Run the workflow on `main`.
+4. Record the desktop and Android job results in Issue 3.
+
+Expected result:
+
+- Desktop tests pass.
+- Android unit tests pass.
+- Android debug APK builds.
+
 ## Desktop validation
 
 Run from repository root:
