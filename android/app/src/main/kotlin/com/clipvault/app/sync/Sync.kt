@@ -207,11 +207,12 @@ object SyncApply {
     }
 
     private fun applyClipMeta(db: AppDatabase, d: JSONObject) {
-        val clip = db.clips().byHash(d.getString("content_hash")) ?: return
+        val hash = d.getString("content_hash")
+        val clip = db.clips().byHash(hash) ?: return
         val patch = d.getJSONObject("patch")
+        if (patch.has("pinned")) db.clips().setPinnedByHash(hash, patch.getBoolean("pinned"))
+        if (patch.has("favorite")) db.clips().setFavoriteByHash(hash, patch.getBoolean("favorite"))
         if (patch.optBoolean("deleted", false)) db.clips().softDelete(clip.id)
-        // pin/favorite mirroring omitted in the cache UI for brevity; delete is the
-        // user-visible one. Full field LWW lives on the desktop (source of truth).
     }
 
     private fun applyMemoryUpsert(db: AppDatabase, d: JSONObject) {
