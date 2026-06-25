@@ -54,6 +54,23 @@ Use this before closing a release node.
 5. Record pass, fail, or unavailable in Issue 3.
 6. Close Issue 3 only when every required check is confirmed.
 
+## Workflow 5: Operating loop for recurring sessions
+
+Use this when a user asks to continue without naming a specific blocker.
+
+1. Read AGENTS.md.
+2. Read this file.
+3. Read Issue 3.
+4. Select the first unfinished blocker in this order:
+   - CI result discovery.
+   - service wiring.
+   - version metadata alignment.
+   - manual QA evidence.
+5. Attempt exactly one narrow improvement.
+6. If the patch is blocked, record the blocker and stop.
+7. If the patch lands, fetch the changed file and cite it in the final report.
+8. Do not create v1.6 work until Issue 3 is closed.
+
 ## Agent roles
 
 Research agent:
