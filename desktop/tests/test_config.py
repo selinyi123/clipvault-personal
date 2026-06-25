@@ -19,6 +19,7 @@ def test_missing_file_writes_template(tmp_path):
         config_mod.load(path)
     assert path.exists()
     assert "vault_path" in path.read_text(encoding="utf-8")
+    assert 'host = "127.0.0.1"' in path.read_text(encoding="utf-8")
 
 
 def test_template_itself_fails_on_empty_vault(tmp_path):
@@ -65,6 +66,7 @@ def test_defaults_applied(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text(VALID.format(vault=tmp_path.as_posix()), encoding="utf-8")
     cfg = config_mod.load(path)
+    assert cfg.host == "127.0.0.1"
     assert cfg.port == 8787
     assert cfg.poll_ms == 500
     assert cfg.max_clip_bytes == 1_048_576
