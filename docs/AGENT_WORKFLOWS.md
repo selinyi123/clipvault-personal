@@ -103,6 +103,50 @@ QA agent:
 - Records exact pass or fail status.
 - Does not close the release issue alone.
 
+Privacy gate agent:
+
+- Blocks typed-text collection.
+- Blocks network calls inside the IME.
+- Blocks analytics SDKs inside keyboard components.
+- Blocks implicit saving of user content.
+- Requires sensitive fields to suppress candidates.
+
+## Evidence requirements
+
+A task is not complete unless at least one of these is true:
+
+- changed file is fetched after commit and cited.
+- GitHub issue is updated and cited.
+- CI status is fetched and cited.
+- manual QA result is recorded in Issue 3.
+- blocker is explicitly recorded in Issue 3.
+
+## v1.5 release gate
+
+Issue 3 can close only when:
+
+- desktop tests pass.
+- Android unit tests pass.
+- Android debug build passes.
+- Full Keyboard manual checks pass.
+- Panel IME manual checks pass.
+- visible version metadata is aligned.
+- no v1.5 blocker remains open.
+
+## v1.6 entry gate
+
+Do not start v1.6 until Issue 3 is closed.
+
+Candidate v1.6 tracks after closure:
+
+- candidate source caps and tab weighting.
+- source toggles in keyboard UI.
+- query-aware transient candidate filtering.
+- improved release-state display.
+- safer version metadata single-source strategy.
+
+Typed text learning, behavioral profiling, cloud keyboard intelligence, and analytics remain out of scope unless a separate privacy design is approved first.
+
 ## Current stop rule
 
 Stop any workflow if it would require adding typed-text collection, analytics SDKs, network calls inside the IME, or implicit saving of user content.
