@@ -52,6 +52,21 @@ def _memory_dict(m) -> dict:
     }
 
 
+def _bad_param(name: str, message: str) -> tuple[int, dict]:
+    return 400, {"error": {"code": "bad_request", "message": f"{name}: {message}"}}
+
+
+def _int_param(params: dict, name: str, default: int, *, min_value: int, max_value: int) -> int:
+    raw = params.get(name, str(default)) or str(default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"must be an integer in {min_value}..{max_value}")
+    if not min_value <= value <= max_value:
+        raise ValueError(f"must be in {min_value}..{max_value}")
+    return value
+
+
 class Api:
     def __init__(self, service: ClipVaultService, pairing: Pairing | None = None):
         self.service = service
@@ -71,7 +86,10 @@ class Api:
 
     def list_clips(self, params: dict) -> tuple[int, dict]:
         secret = params.get("secret") in ("1", "true", "True")
-        limit = min(int(params.get("limit", "50") or "50"), 200)
+        try:
+            limit = _int_param(params, "limit", 50, min_value=1, max_value=200)
+        except ValueError as exc:
+            return _bad_param("limit", str(exc))
         clips = self.clips.list_clips(
             query=params.get("q") or None,
             content_type=params.get("type") or None,
@@ -115,10 +133,14 @@ class Api:
     # --- memory (S007) ---
 
     def list_memory(self, params: dict) -> tuple[int, dict]:
+        try:
+            limit = _int_param(params, "limit", 200, min_value=1, max_value=500)
+        except ValueError as exc:
+            return _bad_param("limit", str(exc))
         items = self.memory.list(
             kind=params.get("kind") or None,
             query=params.get("q") or None,
-            limit=min(int(params.get("limit", "200") or "200"), 500),
+            limit=limit,
         )
         return 200, {"memory": [_memory_dict(m) for m in items]}
 
@@ -172,7 +194,10 @@ class Api:
     def suggest(self, params: dict, weights=None) -> tuple[int, dict]:
         prefix = params.get("prefix", "")
         app = params.get("app") or None
-        limit = min(int(params.get("limit", "10") or "10"), 50)
+        try:
+            limit = _int_param(params, "limit", 10, min_value=1, max_value=50)
+        except ValueError as exc:
+            return _bad_param("limit", str(exc))
         w = weights or self.service.config.weights()
         now = datetime.now(timezone.utc)
         since = (now - timedelta(days=_SUGGEST_WINDOW_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -219,6 +244,9 @@ class Api:
             return None
         return self.peers.by_token_hash(hash_token(token))
 
+    def auth_ok(self, token: str | None) -> bool:
+        return self._auth_device(token) is not None
+
     def sync_push(self, token: str | None, body: dict) -> tuple[int, dict]:
         peer = self._auth_device(token)
         if peer is None:
@@ -234,7 +262,10 @@ class Api:
         if peer is None:
             return 401, {"error": {"code": "unauthorized", "message": "bad token"}}
         device_id = peer["device_id"]
-        since = int(params.get("since_seq", "0") or "0")
+        try:
+            since = _int_param(params, "since_seq", 0, min_value=0, max_value=9_223_372_036_854_775_807)
+        except ValueError as exc:
+            return _bad_param("since_seq", str(exc))
         result = sync_engine.build_pull(self.conn, since)
         self.peers.set_my_acked(device_id, since)
         self.peers.touch_last_seen(device_id, _now_iso())
