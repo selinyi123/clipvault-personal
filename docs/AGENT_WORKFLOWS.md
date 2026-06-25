@@ -17,7 +17,7 @@ Use this workflow until Issue 3 is closed.
 Active blockers:
 
 - CI result discovery.
-- Manual QA completion.
+- Manual QA completion via docs/MANUAL_QA_V1_5_16.md.
 
 Resolved closure items:
 
