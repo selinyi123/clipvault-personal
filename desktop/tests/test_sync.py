@@ -4,7 +4,6 @@ real-socket auth check (H2)."""
 
 import threading
 import http.client
-import json
 import tempfile
 import os
 
@@ -79,6 +78,12 @@ def test_h2_auth_required(api):
     assert api.sync_push("wrong-token", {"events": []})[0] == 401
     token = _pair(api)
     assert api.sync_pull(token, {"since_seq": "0"})[0] == 200
+
+
+def test_h2_bad_since_seq_returns_400(api):
+    token = _pair(api)
+    assert api.sync_pull(token, {"since_seq": "abc"})[0] == 400
+    assert api.sync_pull(token, {"since_seq": "-1"})[0] == 400
 
 
 def test_h3_push_clip_new_lands(api, conn, tmp_path):
@@ -184,7 +189,7 @@ def test_h9_local_public_in_outbox_secret_not(api, conn):
 
 def test_h2_socket_auth_end_to_end(cfg):
     """Real socket: unauthorized sync push is 401; management route from
-    loopback still works."""
+    loopback still works on a fresh connection after the rejected request."""
     import clipvault.store.db as db
     t = tempfile.mkdtemp()
     cfg.db_path = os.path.join(t, "cv.db")
@@ -198,8 +203,12 @@ def test_h2_socket_auth_end_to_end(cfg):
         c.request("POST", "/api/sync/push", body="{}",
                   headers={"Content-Type": "application/json"})
         assert c.getresponse().status == 401  # no token
+        c.close()
+
+        c = http.client.HTTPConnection("127.0.0.1", 8795, timeout=5)
         c.request("GET", "/api/health")
         assert c.getresponse().status == 200
+        c.close()
     finally:
         stop.set()
         time.sleep(0.6)
