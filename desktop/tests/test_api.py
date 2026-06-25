@@ -2,6 +2,7 @@
 http.client test for routing + loopback guard (D8)."""
 
 import http.client
+import json
 import logging
 import threading
 
@@ -10,7 +11,6 @@ import pytest
 from clipvault.api.handlers import Api
 from clipvault.api import server as api_server
 from clipvault.config import Config
-from clipvault.pipeline import ingest as pipeline
 from clipvault.service import ClipVaultService
 from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.outbox_repo import OutboxRepo
@@ -54,6 +54,15 @@ def test_d2_bad_limit_params_return_400(api):
     assert api.list_clips({"limit": "abc"})[0] == 400
     assert api.list_memory({"limit": "abc"})[0] == 400
     assert api.suggest({"limit": "abc"})[0] == 400
+    assert api.list_clips({"limit": "-1"})[0] == 400
+
+
+def test_d2_high_limit_params_are_clamped_for_compatibility(api):
+    api.create_clip({"content": "one"})
+    api.create_clip({"content": "two"})
+    code, obj = api.list_clips({"limit": "9999"})
+    assert code == 200
+    assert len(obj["clips"]) == 2
 
 
 def test_d3_secret_hidden_then_redacted(api):
@@ -144,7 +153,6 @@ def test_d8_loopback_guard_and_routing(api):
         conn.request("GET", "/api/health")
         resp = conn.getresponse()
         assert resp.status == 200
-        import json
         assert json.loads(resp.read())["status"] == "ok"
         conn.close()
     finally:
@@ -178,6 +186,24 @@ def test_d8_pair_rejects_large_body(api):
         resp = conn.getresponse()
         assert resp.status == 413
         resp.read()
+        conn.close()
+    finally:
+        stop.set()
+
+
+def test_d8_release_endpoint_remains_bodyless(api):
+    _, obj = api.create_clip({"content": FAKE_AWS_KEY})
+    cid = obj["clip"]["id"]
+    stop = threading.Event()
+    httpd = api_server.build_server(api, "127.0.0.1", 0)
+    port = httpd.server_address[1]
+    t = threading.Thread(target=_serve_until, args=(httpd, stop), daemon=True)
+    t.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("POST", f"/api/clips/{cid}/release", body="not-json", headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        assert resp.status == 200
         conn.close()
     finally:
         stop.set()
