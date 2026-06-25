@@ -20,6 +20,7 @@ This file records the repository evidence for v1.5.16.
 - `android/app/src/main/kotlin/com/clipvault/app/ime/ClipVaultPanelImeService.kt`
 - `android/app/src/main/kotlin/com/clipvault/app/ime/ClipVaultFullKeyboardService.kt`
 - `android/app/src/main/kotlin/com/clipvault/app/data/Db.kt`
+- `android/app/src/main/kotlin/com/clipvault/app/sync/Sync.kt`
 
 ## Test files
 
@@ -47,6 +48,7 @@ This file records the repository evidence for v1.5.16.
 - Panel tabs now request source/kind-specific candidates from Runtime.
 - Android pull now mirrors clip pinned/favorite metadata.
 - Android sync worker logs only exception classes.
+- Android pull ignores unknown or malformed individual events instead of failing the entire batch.
 - Desktop API query parameter validation rejects malformed or negative values while preserving high-value clamping.
 - Desktop server request handling has explicit size guards.
 - New desktop config templates bind to loopback by default.
