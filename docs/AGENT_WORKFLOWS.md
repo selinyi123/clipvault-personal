@@ -61,16 +61,15 @@ Use this before closing a release node.
 
 Use this when a user asks to continue without naming a specific blocker.
 
-1. Read AGENTS.md.
-2. Read this file.
-3. Read Issue 3.
-4. Select the first unfinished blocker in this order:
+1. Read this file.
+2. Read Issue 3.
+3. Select the first unfinished blocker in this order:
    - CI result discovery.
    - manual QA evidence.
-5. Attempt exactly one narrow improvement.
-6. If the patch is blocked, record the blocker and stop.
-7. If the patch lands, fetch the changed file and cite it in the final report.
-8. Do not create v1.6 work until Issue 3 is closed.
+4. Attempt exactly one narrow improvement.
+5. If the patch is blocked, record the blocker and stop.
+6. If the patch lands, fetch the changed file and cite it in the final report.
+7. Do not create v1.6 work until Issue 3 is closed.
 
 ## Agent roles
 
