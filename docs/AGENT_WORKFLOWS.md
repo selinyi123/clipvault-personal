@@ -110,5 +110,3 @@ Candidate v1.6 tracks after closure:
 - query-aware transient candidate filtering.
 - improved release-state display.
 - safer version metadata single-source strategy.
-
-Typed text learning, behavioral profiling, cloud keyboard intelligence, and analytics remain out of scope unless a separate privacy design is approved first.
