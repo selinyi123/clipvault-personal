@@ -67,7 +67,8 @@ function memCard(m) {
 async function refresh() {
   const status = await api("/api/status");
   $("#status").textContent =
-    `共 ${status.clips_total} 条 · 隔离 ${status.quarantined} · 待备份 ${status.backup_pending}`
+    (status.version ? `v${status.version} · ` : "")
+    + `共 ${status.clips_total} 条 · 隔离 ${status.quarantined} · 待备份 ${status.backup_pending}`
     + (status.last_backup_at ? ` · 最近备份 ${fmtTime(status.last_backup_at)}` : "");
 
   if (tab === "memory") {

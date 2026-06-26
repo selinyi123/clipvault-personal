@@ -139,6 +139,8 @@ def test_d7_status_matches_db(api):
     api.create_clip({"content": FAKE_AWS_KEY})
     code, st = api.status()
     assert code == 200
+    from clipvault import __version__
+    assert st["version"] == __version__
     assert st["clips_total"] == 3
     assert st["quarantined"] == 1
     assert st["backup_pending"] == 2  # secret not queued

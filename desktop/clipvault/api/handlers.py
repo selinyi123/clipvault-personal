@@ -306,6 +306,7 @@ class Api:
             "SELECT MAX(backed_up_at) FROM clips"
         ).fetchone()[0]
         return 200, {
+            "version": __version__,
             "clips_total": counts["total"],
             "quarantined": counts["secret"],
             "backup_pending": pending,
