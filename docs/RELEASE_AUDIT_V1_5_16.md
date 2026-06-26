@@ -76,6 +76,21 @@ A follow-up review of the v1.5.16 diff produced these fixes:
   `/api/status` report `lan_reachable`, the Web UI shows a warning, and the
   Android pairing-failure message points at `server.host`.
 
+## Follow-up test hardening (clip_meta sync)
+
+The clip metadata sync feature was only verified for the `deleted` field.
+Added deterministic desktop tests so the pin/favorite paths the Android cache
+consumes are covered both ways:
+
+- `test_h7_clip_meta_pins_and_favorites`: a peer's `clip_meta` with
+  `pinned`/`favorite` mirrors onto the desktop clip.
+- `test_h7_clip_meta_pin_lww_rejects_stale`: an older-ts un-pin loses the LWW
+  race against a newer pin.
+- `test_h7_local_patch_emits_clip_meta_for_pull`: a local pin/favorite patch
+  emits a `clip_meta` event that `build_pull` returns under the `payload` key
+  with the patch fields `applyClipMeta` reads — guarding the desktop↔Android
+  wire contract.
+
 ## Verification workflow status
 
 - CI workflow supports `workflow_dispatch` for manual verification on main.

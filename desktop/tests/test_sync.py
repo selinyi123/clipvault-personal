@@ -153,6 +153,58 @@ def test_h7_clip_meta_lww(api, conn):
     assert ClipsRepo(conn).get(clip.id).deleted is True  # unchanged
 
 
+def test_h7_clip_meta_pins_and_favorites(api, conn):
+    # A peer's clip_meta carrying pinned/favorite must mirror onto the desktop
+    # clip, not just the deleted flag (the Android cache consumes the same patch).
+    token = _pair(api)
+    api.sync_push(token, {"events": [_clip_new_event(1, "pin me", hash="pf1")]})
+    clip = ClipsRepo(conn).get_by_hash("pf1")
+    assert not clip.pinned and not clip.favorite
+    meta = {"origin_device": PEER, "seq": 2, "kind": "clip_meta",
+            "ts": "2026-06-13T10:20:00Z",
+            "data": {"content_hash": "pf1",
+                     "patch": {"pinned": True, "favorite": True},
+                     "ts": "2026-06-13T10:20:00Z"}}
+    api.sync_push(token, {"events": [meta]})
+    row = ClipsRepo(conn).get(clip.id)
+    assert row.pinned is True and row.favorite is True
+
+
+def test_h7_clip_meta_pin_lww_rejects_stale(api, conn):
+    # Same-field LWW: an older-ts un-pin must not override a newer pin.
+    token = _pair(api)
+    api.sync_push(token, {"events": [_clip_new_event(1, "lww pin", hash="pf2")]})
+    clip = ClipsRepo(conn).get_by_hash("pf2")
+    api.sync_push(token, {"events": [{"origin_device": PEER, "seq": 2, "kind": "clip_meta",
+        "ts": "2026-06-13T10:20:00Z",
+        "data": {"content_hash": "pf2", "patch": {"pinned": True},
+                 "ts": "2026-06-13T10:20:00Z"}}]})
+    assert ClipsRepo(conn).get(clip.id).pinned is True
+    api.sync_push(token, {"events": [{"origin_device": PEER, "seq": 3, "kind": "clip_meta",
+        "ts": "2026-06-13T10:10:00Z",
+        "data": {"content_hash": "pf2", "patch": {"pinned": False},
+                 "ts": "2026-06-13T10:10:00Z"}}]})
+    assert ClipsRepo(conn).get(clip.id).pinned is True  # stale un-pin ignored
+
+
+def test_h7_local_patch_emits_clip_meta_for_pull(api, conn):
+    # Desktop->phone contract: patching pin/favorite must emit a clip_meta event
+    # that build_pull returns under the `payload` key with the patch fields the
+    # Android applyClipMeta reads. Guards the desktop<->Android wire shape.
+    token = _pair(api)
+    _, obj = api.create_clip({"content": "pull my pin"})
+    cid = obj["clip"]["id"]
+    chash = ClipsRepo(conn).get(cid).content_hash
+    api.patch_clip(cid, {"pinned": True, "favorite": True})
+    _, pulled = api.sync_pull(token, {"since_seq": "0"})
+    metas = [e for e in pulled["events"] if e["kind"] == "clip_meta"]
+    assert metas, "patch must emit a clip_meta event for peers"
+    payload = metas[-1]["payload"]
+    assert payload["content_hash"] == chash
+    assert payload["patch"].get("pinned") is True
+    assert payload["patch"].get("favorite") is True
+
+
 def test_h8_cursor_resume(api, conn):
     token = _pair(api)
     for i in range(5):
