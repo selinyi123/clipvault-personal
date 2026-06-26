@@ -37,6 +37,11 @@ planned"):
 The decision logic behind every residual item is unit-tested above; only the
 view rendering and input-connection wiring are unverified by automation.
 
+These three are now filed as a planned instrumented (`androidTest`) task:
+`docs/INSTRUMENTED_QA_BACKLOG.md` holds the wiring plan, and
+`android/app/src/androidTest/kotlin/com/clipvault/app/ime/ResidualImeChecksTest.kt`
+encodes them as `@Ignore`-d scaffolds ready to implement on a device/emulator.
+
 ## Preconditions
 
 - Desktop node can run local tests.

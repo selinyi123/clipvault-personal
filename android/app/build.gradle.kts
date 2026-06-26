@@ -67,4 +67,9 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     testImplementation("junit:junit:4.13.2")
+    // androidTest holds the residual on-device QA checks (ResidualImeChecksTest).
+    // They are @Ignore-d scaffolds — running them needs the AndroidJUnitRunner +
+    // espresso/uiautomator deps listed in docs/INSTRUMENTED_QA_BACKLOG.md. CI does
+    // not compile or run androidTest, so this stays inert until a device cycle.
+    androidTestImplementation("junit:junit:4.13.2")
 }
