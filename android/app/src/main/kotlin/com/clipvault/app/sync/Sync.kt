@@ -187,8 +187,13 @@ object SyncApply {
                     "memory_delete" -> applyMemoryDelete(db, ev.getJSONObject("payload"))
                     else -> android.util.Log.w("clipvault.sync", "ignored unknown event kind")
                 }
-            } catch (e: Exception) {
-                android.util.Log.w("clipvault.sync", "ignored bad event: ${e.javaClass.simpleName}")
+            } catch (e: org.json.JSONException) {
+                // A malformed payload (missing/mistyped fields) is permanently bad,
+                // so skip it instead of retrying the batch forever. Anything else
+                // (e.g. a transient DB write failure) is deliberately NOT caught
+                // here: it propagates so SyncWorker retries without advancing the
+                // sync cursor past an event we have not actually applied.
+                android.util.Log.w("clipvault.sync", "ignored malformed event: ${e.javaClass.simpleName}")
             }
         }
     }

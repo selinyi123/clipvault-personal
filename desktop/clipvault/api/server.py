@@ -29,7 +29,10 @@ _ACTIONS_RE = re.compile(r"^/api/clips/([0-9A-Za-z]+)/actions$")
 _MEMORY_ID_RE = re.compile(r"^/api/memory/([0-9A-Za-z]+)$")
 _MEMORY_USE_RE = re.compile(r"^/api/memory/([0-9A-Za-z]+)/use$")
 _LOOPBACK = ("127.0.0.1", "::1")
-_MAX_JSON_BODY = 1_048_576
+# Cap for plain JSON request bodies. Kept above config.max_clip_bytes (default
+# 1 MiB) so a maximum-size clip still fits once wrapped in JSON and escaped; the
+# real per-clip limit is enforced in the service layer (422), not here.
+_MAX_JSON_BODY = 2 * 1_048_576
 _MAX_PAIR_BODY = 4_096
 _MAX_SYNC_PUSH_BODY = 4 * 1_048_576
 
@@ -89,6 +92,24 @@ def make_handler(api: Api):
             except (ValueError, UnicodeDecodeError):
                 self._send_json(400, {"error": {"code": "bad_request", "message": "invalid json"}})
                 return None
+
+        def _drain(self) -> None:
+            """Discard an unread request body so leftover bytes do not corrupt the
+            next request on a kept-alive connection (bodyless routes ignore it)."""
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+            except ValueError:
+                self.close_connection = True
+                return
+            if length <= 0:
+                return
+            if length > _MAX_JSON_BODY:
+                self.close_connection = True  # don't read unbounded junk
+                return
+            try:
+                self.rfile.read(length)
+            except Exception:
+                self.close_connection = True
 
         def _guard(self, route: str) -> bool:
             # Sync/pair are auth-gated in the handler; everything else is loopback-only.
@@ -169,6 +190,7 @@ def make_handler(api: Api):
                 return
             m = _RELEASE_RE.match(route)
             if m:
+                self._drain()
                 self._send_json(*api.release_clip(m.group(1)))
                 return
             m = _PROMOTE_RE.match(route)
@@ -180,6 +202,7 @@ def make_handler(api: Api):
                 return
             m = _MEMORY_USE_RE.match(route)
             if m:
+                self._drain()
                 self._send_json(*api.use_memory(m.group(1)))
                 return
             self._send_json(404, {"error": {"code": "not_found", "message": route}})
@@ -190,6 +213,7 @@ def make_handler(api: Api):
                 return
             m = _MEMORY_ID_RE.match(route)
             if m:
+                self._drain()
                 self._send_json(*api.delete_memory(m.group(1)))
                 return
             self._send_json(404, {"error": {"code": "not_found", "message": route}})
