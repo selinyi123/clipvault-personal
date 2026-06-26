@@ -55,6 +55,31 @@ class CandidateMixerTest {
         assertEquals(listOf("clip-a", "clip-b"), out.map { it.id })
     }
 
+    @Test
+    fun sourceCapKeepsMinoritySourceWhenOneFloods() {
+        // v1.6 source caps: a flood of high-score pinned clips must not fully
+        // starve memories (or vice versa).
+        val clips = (0 until 12).map { clip(id = "clip-$it", text = "clip $it", pinned = true, timesSeen = 50) }
+        val memories = (0 until 4).map { memory(kind = "term", text = "mem $it") }
+
+        val out = CandidateMixer.mix(clips, memories, query = "", limit = 8)
+
+        assertEquals(8, out.size)
+        assertTrue(out.count { it.source == "memory" } >= 2)  // reserve = max(1, 8 / 4) = 2
+        assertTrue(out.count { it.source == "clip" } >= 2)
+    }
+
+    @Test
+    fun noSourceCapWhenEverythingFits() {
+        val clips = listOf(clip(id = "clip-1", text = "deploy", pinned = true, timesSeen = 50))
+        val memories = (0 until 3).map { memory(kind = "term", text = "m$it") }
+
+        val out = CandidateMixer.mix(clips, memories, query = "", limit = 10)
+
+        assertEquals(4, out.size)
+        assertEquals("clip", out.first().source)  // pinned clip leads; no cap reshuffle
+    }
+
     private fun clip(
         id: String,
         text: String,
