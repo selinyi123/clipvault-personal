@@ -77,6 +77,13 @@ def score(c: Candidate, query: str, app: str | None, w: Weights,
     return pinned + m + freq + app_bonus
 
 
+def _priority(cs: tuple[Candidate, float]) -> tuple:
+    # SUG-1.1: pinned is a hard top tier (PRODUCT_SPEC "pinned 永远置顶"),
+    # then by score, then most-recently-used. Predictable ordering > raw score.
+    c, s = cs
+    return (c.pinned, s, c.last_used_at or "")
+
+
 def rank(candidates: list[Candidate], query: str, app: str | None, w: Weights,
          now: datetime | None = None, limit: int = 10) -> list[tuple[Candidate, float]]:
     now = now or datetime.now(timezone.utc)
@@ -85,10 +92,30 @@ def rank(candidates: list[Candidate], query: str, app: str | None, w: Weights,
         s = score(c, query, app, w, now)
         if s is not None:
             scored.append((c, s))
-    # SUG-1.1: pinned is a hard top tier (PRODUCT_SPEC "pinned 永远置顶"),
-    # then by score, then most-recently-used. Predictable ordering > raw score.
-    scored.sort(
-        key=lambda cs: (cs[0].pinned, cs[1], cs[0].last_used_at or ""),
-        reverse=True,
-    )
-    return scored[:limit]
+    scored.sort(key=_priority, reverse=True)
+    return _cap_origins(scored, limit)
+
+
+def _cap_origins(scored: list[tuple[Candidate, float]], limit: int) -> list[tuple[Candidate, float]]:
+    """SUG-1.2 (source caps): when results overflow the limit and both origins
+    (memory/clip) are present, guarantee each origin a minimum share so a flood of
+    one origin cannot fully starve the other. The priority order from ``rank``
+    (pinned tier first) is preserved; reserved minority items take the lowest
+    slots rather than displacing higher-priority items.
+    """
+    if len(scored) <= limit:
+        return scored[:limit]
+    by_origin: dict[str, list[tuple[Candidate, float]]] = {}
+    for pair in scored:
+        by_origin.setdefault(pair[0].origin, []).append(pair)
+    if len(by_origin) < 2:
+        return scored[:limit]  # single origin: nothing to balance
+    reserve = max(1, limit // 4)
+    reserved: list[tuple[Candidate, float]] = []
+    for items in by_origin.values():
+        reserved.extend(items[:min(reserve, len(items))])
+    reserved_ids = {id(p) for p in reserved}
+    rest = [p for p in scored if id(p) not in reserved_ids]
+    filled = reserved + rest[: max(0, limit - len(reserved))]
+    filled.sort(key=_priority, reverse=True)
+    return filled[:limit]
