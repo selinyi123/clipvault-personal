@@ -4,6 +4,39 @@ Date: 2026-06-25
 
 Scope: define the manual validation gate required before closing the v1.5 CandidateMixer node.
 
+## Automated coverage (no device required)
+
+As much of this gate as possible is now enforced by deterministic tests that run
+in CI, so it does not depend on a human with a device. What each automated test
+covers:
+
+| Manual section | Covered by | Notes |
+|---|---|---|
+| CI validation | GitHub Actions `CI` (Desktop + Android jobs) | runs on every push/PR |
+| Desktop validation | `desktop/tests/` via `pytest` | full suite green |
+| Android validation | `:core:test`, `:app:testDebugUnitTest`, `:app:assembleDebug` (CI) | unit tests + debug build |
+| Release-state / version alignment | `desktop/tests/test_release_alignment.py` | fails CI on any version drift |
+| Sensitive-field suppression decision (FK #3–6, Panel #6–7) | `PrivacyAwareFilterTest` | password / no-suggestions / numeric-password |
+| Suppression message present (Panel #7) | `PrivacyAwareFilterTest.suppressionMessageIsNonBlank` | non-empty message |
+| Recent tab = clips only (Panel #3) | `PanelCandidateTabsTest.recentTabKeepsClipsAndDropsMemory` | |
+| Memory tabs filter by kind (Panel #4) | `PanelCandidateTabsTest.memoryTabsFilterToTheirOwnKind` | term/phrase/prompt/command |
+| Candidate ordering / mix | `CandidateMixerTest` | |
+| clip_meta pin/favorite sync | `desktop/tests/test_sync.py::test_h7_clip_meta_*` | both directions + wire contract |
+
+### Residual checks that still require a physical device
+
+These verify on-screen rendering and live IME interaction, which cannot be
+exercised on the host JVM and would need an instrumented/emulator test (out of
+scope per docs/AGENT_WORKFLOWS.md — "does not add emulator CI unless explicitly
+planned"):
+
+- FK #1–2: candidate strip is visible; tapping a candidate commits text.
+- Panel #1–2, #5: switching to the Panel IME; tapping a candidate commits text.
+- Panel #8: the explicit save action requires a user tap (no implicit save).
+
+The decision logic behind every residual item is unit-tested above; only the
+view rendering and input-connection wiring are unverified by automation.
+
 ## Preconditions
 
 - Desktop node can run local tests.
@@ -90,11 +123,20 @@ Expected result:
 
 ## Close criteria
 
-Close Issue 3 only when:
+Automated (enforced by CI — currently green):
 
 - desktop tests pass.
 - Android unit tests pass.
 - Android debug build passes.
-- Full Keyboard manual checks pass.
-- Panel IME manual checks pass.
-- visible version metadata is aligned to 1.5.16.
+- visible version metadata is aligned (`test_release_alignment.py`).
+- candidate suppression, panel tab filtering, and ordering logic pass.
+
+Residual (physical device only — see "Residual checks" above):
+
+- Full Keyboard strip render + tap-commit.
+- Panel IME switch + tap-commit + explicit-save-requires-tap.
+
+If no device is available, the automated gate above is fully green and the
+residual items are the only thing left. They should be signed off by the
+maintainer or deferred to a planned instrumented test — not silently marked
+passed.

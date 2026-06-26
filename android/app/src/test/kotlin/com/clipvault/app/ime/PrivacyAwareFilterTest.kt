@@ -54,4 +54,10 @@ class PrivacyAwareFilterTest {
 
         assertFalse(PrivacyAwareFilter.shouldSuppressCandidates(inputType))
     }
+
+    @Test
+    fun suppressionMessageIsNonBlank() {
+        // Manual QA (Panel #7): the suppression state shows a non-empty message.
+        assertTrue(PrivacyAwareFilter.suppressionMessage().isNotBlank())
+    }
 }
