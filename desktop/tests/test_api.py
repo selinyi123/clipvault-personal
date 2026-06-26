@@ -247,6 +247,25 @@ def test_d8_release_endpoint_remains_bodyless(cfg):
         time.sleep(0.6)
 
 
+def test_d8_peers_route_is_loopback_reachable(cfg):
+    # The device-management route dispatches over a real socket (loopback-only).
+    cfg.db_path = os.path.join(tempfile.mkdtemp(), "cv.db")
+    cfg.port = 8798
+    stop = threading.Event()
+    threading.Thread(target=api_server.serve, args=(cfg, stop), daemon=True).start()
+    time.sleep(0.5)
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", 8798, timeout=5)
+        c.request("GET", "/api/peers")
+        resp = c.getresponse()
+        assert resp.status == 200
+        assert json.loads(resp.read()) == {"peers": []}
+        c.close()
+    finally:
+        stop.set()
+        time.sleep(0.6)
+
+
 def test_d9_api_logs_no_content(api, caplog):
     with caplog.at_level(logging.INFO, logger="clipvault"):
         api.create_clip({"content": "topsecretwords in content"})

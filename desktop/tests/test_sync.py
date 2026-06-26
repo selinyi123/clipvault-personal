@@ -252,6 +252,24 @@ def test_status_reports_paired_device_summary(api, conn):
     assert sync["last_peer_sync_at"] is not None
 
 
+def test_unpair_revokes_device_access(api):
+    token = _pair(api)
+    # listed for management, without exposing the token hash
+    peers = api.list_peers()[1]["peers"]
+    assert len(peers) == 1 and peers[0]["device_id"] == PEER
+    assert all("token" not in key for key in peers[0])
+    assert api.sync_pull(token, {"since_seq": "0"})[0] == 200  # works while paired
+    # revoke: the bearer token must stop authenticating immediately
+    assert api.unpair(PEER)[1]["unpaired"] is True
+    assert api.sync_pull(token, {"since_seq": "0"})[0] == 401
+    assert api.sync_push(token, {"events": []})[0] == 401
+    assert api.list_peers()[1]["peers"] == []
+
+
+def test_unpair_unknown_device_returns_404(api):
+    assert api.unpair("not-a-device")[0] == 404
+
+
 def test_h2_socket_auth_end_to_end(cfg):
     """Real socket: unauthorized sync push is 401; management route from
     loopback still works on a fresh connection after the rejected request."""

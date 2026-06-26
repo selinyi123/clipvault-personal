@@ -95,6 +95,22 @@ async function refresh() {
   $("#empty").hidden = clips.length > 0;
 }
 
+// Paired-device management. Loopback-only on the server; a 解绑 revokes the
+// device's sync token immediately (lost/compromised-device recovery).
+async function renderDevices() {
+  const d = await api("/api/peers");
+  const peers = d.peers || [];
+  const el = $("#devices");
+  el.hidden = false;
+  el.innerHTML = peers.length
+    ? `<div class="devices-title">已配对设备</div>`
+      + peers.map((p) =>
+          `<div class="device"><span>${esc(p.device_name || p.device_id)}</span>`
+          + `<span class="time">${p.last_seen_at ? "最近同步 " + fmtTime(p.last_seen_at) : "未同步"}</span>`
+          + `<button data-unpair="${esc(p.device_id)}">解绑</button></div>`).join("")
+    : `<div class="devices-title">暂无已配对设备</div>`;
+}
+
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("button");
   if (!b) return;
@@ -130,6 +146,11 @@ document.addEventListener("click", async (e) => {
     });
     $("#mem-text").value = ""; refresh();
   }
+  else if (b.dataset.unpair) {
+    if (!confirm("解绑该设备？其同步令牌将立即失效。")) return;
+    await api(`/api/peers/${encodeURIComponent(b.dataset.unpair)}`, { method: "DELETE" });
+    renderDevices(); refresh();
+  }
 });
 
 $("#pair-btn").addEventListener("click", async () => {
@@ -139,6 +160,7 @@ $("#pair-btn").addEventListener("click", async () => {
   let text = `配对码：${r.code}（${Math.round(r.ttl_seconds / 60)} 分钟内有效，在 Android 端输入）`;
   if (r.lan_reachable === false && r.hint) text += `\n⚠️ ${r.hint}`;
   banner.textContent = text;
+  renderDevices();
 });
 
 $("#q").addEventListener("input", () => { clearTimeout(window._t); window._t = setTimeout(refresh, 200); });

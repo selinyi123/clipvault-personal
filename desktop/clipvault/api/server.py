@@ -28,6 +28,7 @@ _PROMOTE_RE = re.compile(r"^/api/clips/([0-9A-Za-z]+)/promote$")
 _ACTIONS_RE = re.compile(r"^/api/clips/([0-9A-Za-z]+)/actions$")
 _MEMORY_ID_RE = re.compile(r"^/api/memory/([0-9A-Za-z]+)$")
 _MEMORY_USE_RE = re.compile(r"^/api/memory/([0-9A-Za-z]+)/use$")
+_PEER_ID_RE = re.compile(r"^/api/peers/([0-9A-Za-z_-]+)$")  # device ids contain hyphens
 _LOOPBACK = ("127.0.0.1", "::1")
 # Cap for plain JSON request bodies. Kept above config.max_clip_bytes (default
 # 1 MiB) so a maximum-size clip still fits once wrapped in JSON and escaped; the
@@ -140,6 +141,8 @@ def make_handler(api: Api):
                 self._send_json(*api.list_clips(params))
             elif route == "/api/status":
                 self._send_json(*api.status())
+            elif route == "/api/peers":
+                self._send_json(*api.list_peers())
             elif route == "/api/memory":
                 self._send_json(*api.list_memory(params))
             elif route == "/api/suggest":
@@ -215,6 +218,11 @@ def make_handler(api: Api):
             if m:
                 self._drain()
                 self._send_json(*api.delete_memory(m.group(1)))
+                return
+            m = _PEER_ID_RE.match(route)
+            if m:
+                self._drain()
+                self._send_json(*api.unpair(m.group(1)))
                 return
             self._send_json(404, {"error": {"code": "not_found", "message": route}})
 
