@@ -94,6 +94,38 @@ def test_f3b_pinned_tier_regardless_of_weight():
     assert sg.rank([plain, pinned], "", None, w, NOW)[0][0].text == "p"
 
 
+def _origin_cand(cid, origin, **kw):
+    return sg.Candidate(id=cid, kind="term", text=cid, origin=origin, **kw)
+
+
+def test_f11_source_cap_keeps_minority_origin():
+    # SUG-1.2: a flood of high-score memory candidates must not fully starve clips.
+    w = sg.Weights()
+    mems = [_origin_cand(f"m{i}", "memory", use_count=100, last_used_at=_iso(NOW)) for i in range(12)]
+    clips = [_origin_cand(f"c{i}", "clip", use_count=1, last_used_at=_iso(NOW)) for i in range(4)]
+    ranked = sg.rank(mems + clips, "", None, w, NOW, limit=8)
+    origins = [c.origin for c, _ in ranked]
+    assert len(ranked) == 8
+    assert origins.count("clip") >= 2     # reserve = max(1, 8 // 4) = 2
+    assert origins.count("memory") >= 2
+
+
+def test_f11b_no_cap_when_all_fit():
+    w = sg.Weights()
+    mems = [_origin_cand(f"m{i}", "memory", use_count=10, last_used_at=_iso(NOW)) for i in range(3)]
+    clip = _origin_cand("c0", "clip", use_count=100, last_used_at=_iso(NOW))
+    ranked = sg.rank(mems + [clip], "", None, w, NOW, limit=10)
+    assert len(ranked) == 4
+    assert ranked[0][0].id == "c0"        # highest freq leads; no cap reshuffle
+
+
+def test_f11c_single_origin_overflow_is_plain_topn():
+    w = sg.Weights()
+    mems = [_origin_cand(f"m{i}", "memory", use_count=100 - i, last_used_at=_iso(NOW)) for i in range(20)]
+    ranked = sg.rank(mems, "", None, w, NOW, limit=5)
+    assert [c.id for c, _ in ranked] == ["m0", "m1", "m2", "m3", "m4"]  # plain top-5
+
+
 # --- integration: candidate assembly + API ---
 
 @pytest.fixture

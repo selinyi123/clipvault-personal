@@ -49,14 +49,32 @@ internal object CandidateMixer {
 
     fun mix(clips: List<ClipEntity>, memories: List<MemoryEntity>, query: String, limit: Int): List<Candidate> {
         val q = query.trim()
-        return (clips.map { fromClip(it, q) } + memories.map { fromMemory(it, q) })
+        val ranked = (clips.map { fromClip(it, q) } + memories.map { fromMemory(it, q) })
             .filter { q.isEmpty() || it.text.contains(q, ignoreCase = true) || it.label.contains(q, ignoreCase = true) }
             .sortedWith(compareByDescending<Candidate> { it.score }
                 .thenBy { it.source }
                 .thenBy { it.kind }
                 .thenBy { it.label }
                 .thenBy { it.id })
-            .take(limit)
+        return capSources(ranked, limit)
+    }
+
+    /** Source caps: when candidates overflow [limit] and both sources are present,
+     * guarantee each source at least `max(1, limit / 4)` slots so a flood of one
+     * source cannot fully starve the other. The ranked priority order is otherwise
+     * preserved — reserved minority items take the lowest slots rather than
+     * displacing higher-priority ones. Mirrors the desktop suggest ranker (SUG-1.2). */
+    internal fun capSources(ranked: List<Candidate>, limit: Int): List<Candidate> {
+        if (ranked.size <= limit) return ranked
+        val bySource = LinkedHashMap<String, MutableList<Int>>()
+        ranked.forEachIndexed { i, c -> bySource.getOrPut(c.source) { mutableListOf() }.add(i) }
+        if (bySource.size < 2) return ranked.take(limit)
+        val reserve = maxOf(1, limit / 4)
+        val chosen = LinkedHashSet<Int>()
+        for (idxs in bySource.values) chosen.addAll(idxs.take(minOf(reserve, idxs.size)))
+        var i = 0
+        while (chosen.size < limit && i < ranked.size) { chosen.add(i); i++ }
+        return chosen.sorted().take(limit).map { ranked[it] }
     }
 
     private fun fromClip(c: ClipEntity, q: String): Candidate {
