@@ -312,4 +312,5 @@ class Api:
             "backup_pending": pending,
             "last_backup_at": last_backup,
             "lan_reachable": _lan_reachable(self.service.config.host),
+            "sync": self.peers.summary(),
         }

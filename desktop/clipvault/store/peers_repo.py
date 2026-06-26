@@ -64,3 +64,11 @@ class PeersRepo:
             (when, device_id),
         )
         self.conn.commit()
+
+    def summary(self) -> dict:
+        """Paired-device count and the most recent peer contact, for status
+        display. No tokens or device identifiers are exposed."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n, MAX(last_seen_at) AS last FROM sync_peers"
+        ).fetchone()
+        return {"paired_devices": int(row["n"]), "last_peer_sync_at": row["last"]}

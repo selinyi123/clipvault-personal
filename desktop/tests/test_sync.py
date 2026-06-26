@@ -239,6 +239,19 @@ def test_h9_local_public_in_outbox_secret_not(api, conn):
     assert len(rows) == 1 and rows[0]["payload"]["content"] == "public goes to outbox"
 
 
+def test_status_reports_paired_device_summary(api, conn):
+    # Release-state display: status surfaces how many devices are paired and the
+    # most recent peer contact, without exposing any device identifiers.
+    assert api.status()[1]["sync"] == {"paired_devices": 0, "last_peer_sync_at": None}
+    token = _pair(api)
+    assert api.status()[1]["sync"]["paired_devices"] == 1
+    # a pull updates last_seen, which then shows as the most recent sync
+    api.sync_pull(token, {"since_seq": "0"})
+    sync = api.status()[1]["sync"]
+    assert sync["paired_devices"] == 1
+    assert sync["last_peer_sync_at"] is not None
+
+
 def test_h2_socket_auth_end_to_end(cfg):
     """Real socket: unauthorized sync push is 401; management route from
     loopback still works on a fresh connection after the rejected request."""
