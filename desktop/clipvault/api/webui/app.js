@@ -130,7 +130,9 @@ $("#pair-btn").addEventListener("click", async () => {
   const r = await api("/api/pair/code");
   const banner = $("#pair-banner");
   banner.hidden = false;
-  banner.textContent = `配对码：${r.code}（${Math.round(r.ttl_seconds / 60)} 分钟内有效，在 Android 端输入）`;
+  let text = `配对码：${r.code}（${Math.round(r.ttl_seconds / 60)} 分钟内有效，在 Android 端输入）`;
+  if (r.lan_reachable === false && r.hint) text += `\n⚠️ ${r.hint}`;
+  banner.textContent = text;
 });
 
 $("#q").addEventListener("input", () => { clearTimeout(window._t); window._t = setTimeout(refresh, 200); });

@@ -72,6 +72,17 @@ def _int_param(params: dict, name: str, default: int, *, min_value: int, max_val
     return min(value, max_value)
 
 
+# Hosts that make the server reachable only from this machine. A loopback bind
+# means a paired phone on the LAN cannot reach /api/pair or /api/sync/*, so the
+# Web UI surfaces this when minting a pairing code (the default since v1.5.16 is
+# loopback for safety; the user opts in to LAN exposure via config.host).
+_LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+
+
+def _lan_reachable(host: str) -> bool:
+    return host not in _LOOPBACK_HOSTS
+
+
 class Api:
     def __init__(self, service: ClipVaultService, pairing: Pairing | None = None):
         self.service = service
@@ -230,7 +241,19 @@ class Api:
 
     def mint_pair_code(self) -> tuple[int, dict]:
         """Web UI (loopback) mints a one-time code to show the user."""
-        return 200, {"code": self.pairing.mint_code(), "ttl_seconds": self.pairing.ttl}
+        host = self.service.config.host
+        reachable = _lan_reachable(host)
+        resp = {
+            "code": self.pairing.mint_code(),
+            "ttl_seconds": self.pairing.ttl,
+            "lan_reachable": reachable,
+        }
+        if not reachable:
+            resp["hint"] = (
+                f"server.host 当前绑定回环（{host}），局域网设备无法配对或同步。"
+                "请在可信网络下把 config.toml 的 [server] host 改为 0.0.0.0 并重启 ClipVault。"
+            )
+        return 200, resp
 
     def pair(self, body: dict) -> tuple[int, dict]:
         code = str(body.get("code", ""))
@@ -287,4 +310,5 @@ class Api:
             "quarantined": counts["secret"],
             "backup_pending": pending,
             "last_backup_at": last_backup,
+            "lan_reachable": _lan_reachable(self.service.config.host),
         }

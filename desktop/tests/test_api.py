@@ -144,6 +144,26 @@ def test_d7_status_matches_db(api):
     assert st["backup_pending"] == 2  # secret not queued
 
 
+def test_pair_code_warns_when_bound_to_loopback(conn, cfg):
+    # Default (loopback) bind: the phone on the LAN can't reach the server, so
+    # the pairing response must flag it and explain how to opt into LAN sync.
+    cfg.host = "127.0.0.1"
+    loop = Api(ClipVaultService(conn, cfg))
+    _, body = loop.mint_pair_code()
+    assert body["lan_reachable"] is False
+    assert "host" in body["hint"]
+    assert loop.status()[1]["lan_reachable"] is False
+
+
+def test_pair_code_ok_when_bound_to_lan(conn, cfg):
+    cfg.host = "0.0.0.0"
+    lan = Api(ClipVaultService(conn, cfg))
+    _, body = lan.mint_pair_code()
+    assert body["lan_reachable"] is True
+    assert "hint" not in body
+    assert lan.status()[1]["lan_reachable"] is True
+
+
 def test_d8_loopback_guard_and_routing(api):
     """End-to-end: real socket, verify health route works from loopback."""
     stop = threading.Event()
