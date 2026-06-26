@@ -72,3 +72,20 @@ class PeersRepo:
             "SELECT COUNT(*) AS n, MAX(last_seen_at) AS last FROM sync_peers"
         ).fetchone()
         return {"paired_devices": int(row["n"]), "last_peer_sync_at": row["last"]}
+
+    def list_peers(self) -> list[dict]:
+        """Paired devices for the management UI. The token hash is never exposed."""
+        rows = self.conn.execute(
+            "SELECT device_id, device_name, paired_at, last_seen_at "
+            "FROM sync_peers ORDER BY paired_at"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def unpair(self, device_id: str) -> bool:
+        """Revoke a device: delete its row so the bearer token it holds no longer
+        authenticates (by_token_hash will miss). Returns whether a row was removed."""
+        cur = self.conn.execute(
+            "DELETE FROM sync_peers WHERE device_id = ?", (device_id,)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0

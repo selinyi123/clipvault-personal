@@ -239,6 +239,17 @@ class Api:
 
     # --- pairing + sync (S006, SYNC-2) ---
 
+    def list_peers(self) -> tuple[int, dict]:
+        """Management (loopback-only): paired devices, without token hashes."""
+        return 200, {"peers": self.peers.list_peers()}
+
+    def unpair(self, device_id: str) -> tuple[int, dict]:
+        """Management (loopback-only): revoke a paired device. Its bearer token
+        stops authenticating immediately (lost/compromised-device recovery)."""
+        if not self.peers.unpair(device_id):
+            return 404, {"error": {"code": "not_found", "message": device_id}}
+        return 200, {"device_id": device_id, "unpaired": True}
+
     def mint_pair_code(self) -> tuple[int, dict]:
         """Web UI (loopback) mints a one-time code to show the user."""
         host = self.service.config.host
