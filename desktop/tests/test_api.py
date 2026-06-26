@@ -4,7 +4,10 @@ http.client test for routing + loopback guard (D8)."""
 import http.client
 import json
 import logging
+import os
+import tempfile
 import threading
+import time
 
 import pytest
 
@@ -141,6 +144,26 @@ def test_d7_status_matches_db(api):
     assert st["backup_pending"] == 2  # secret not queued
 
 
+def test_pair_code_warns_when_bound_to_loopback(conn, cfg):
+    # Default (loopback) bind: the phone on the LAN can't reach the server, so
+    # the pairing response must flag it and explain how to opt into LAN sync.
+    cfg.host = "127.0.0.1"
+    loop = Api(ClipVaultService(conn, cfg))
+    _, body = loop.mint_pair_code()
+    assert body["lan_reachable"] is False
+    assert "host" in body["hint"]
+    assert loop.status()[1]["lan_reachable"] is False
+
+
+def test_pair_code_ok_when_bound_to_lan(conn, cfg):
+    cfg.host = "0.0.0.0"
+    lan = Api(ClipVaultService(conn, cfg))
+    _, body = lan.mint_pair_code()
+    assert body["lan_reachable"] is True
+    assert "hint" not in body
+    assert lan.status()[1]["lan_reachable"] is True
+
+
 def test_d8_loopback_guard_and_routing(api):
     """End-to-end: real socket, verify health route works from loopback."""
     stop = threading.Event()
@@ -191,22 +214,35 @@ def test_d8_pair_rejects_large_body(api):
         stop.set()
 
 
-def test_d8_release_endpoint_remains_bodyless(api):
-    _, obj = api.create_clip({"content": FAKE_AWS_KEY})
-    cid = obj["clip"]["id"]
+def test_d8_release_endpoint_remains_bodyless(cfg):
+    # Drive the real server (serve() owns its connection on the serving thread,
+    # S004) so /release is exercised end-to-end: a non-JSON body must be ignored,
+    # not parsed, so the call still returns 200 instead of 400. Uses a file DB so
+    # the clip created over the socket is visible to the same serving thread.
+    cfg.db_path = os.path.join(tempfile.mkdtemp(), "cv.db")
+    cfg.port = 8796
     stop = threading.Event()
-    httpd = api_server.build_server(api, "127.0.0.1", 0)
-    port = httpd.server_address[1]
-    t = threading.Thread(target=_serve_until, args=(httpd, stop), daemon=True)
-    t.start()
+    threading.Thread(target=api_server.serve, args=(cfg, stop), daemon=True).start()
+    time.sleep(0.5)
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request("POST", f"/api/clips/{cid}/release", body="not-json", headers={"Content-Type": "application/json"})
-        resp = conn.getresponse()
-        assert resp.status == 200
-        conn.close()
+        c = http.client.HTTPConnection("127.0.0.1", 8796, timeout=5)
+        c.request("POST", "/api/clips", body=json.dumps({"content": FAKE_AWS_KEY}),
+                  headers={"Content-Type": "application/json"})
+        resp = c.getresponse()
+        assert resp.status == 201
+        cid = json.loads(resp.read())["clip"]["id"]
+        c.close()
+
+        # FAKE_AWS_KEY is quarantined as a secret, so releasing it yields 200; the
+        # invalid body proves the route never tries to JSON-parse the request.
+        c = http.client.HTTPConnection("127.0.0.1", 8796, timeout=5)
+        c.request("POST", f"/api/clips/{cid}/release", body="not-json",
+                  headers={"Content-Type": "application/json"})
+        assert c.getresponse().status == 200
+        c.close()
     finally:
         stop.set()
+        time.sleep(0.6)
 
 
 def test_d9_api_logs_no_content(api, caplog):

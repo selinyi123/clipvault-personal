@@ -55,6 +55,27 @@ This file records the repository evidence for v1.5.16.
 - Desktop HTTP server version follows package metadata.
 - Release endpoint remains bodyless for compatibility.
 
+## Post-review hardening (PR #4)
+
+A follow-up review of the v1.5.16 diff produced these fixes:
+
+- Android pull now skips only events that fail JSON parsing (permanently bad
+  payloads). Other failures propagate so `SyncWorker` retries instead of
+  advancing the sync cursor past an event it did not actually apply. This
+  refines the earlier "ignore malformed events" change, which could otherwise
+  drop a valid event on a transient DB error.
+- Desktop JSON body cap raised above `max_clip_bytes` so a maximum-size clip
+  still round-trips once wrapped in JSON and escaped (was a spurious 413).
+- Desktop bodyless routes (`/release`, `/memory/{id}/use`, `DELETE /memory`)
+  drain any unread request body, so a stray body cannot desync a reused
+  connection if HTTP keep-alive is ever enabled.
+- `test_d8_release_endpoint_remains_bodyless` was rewritten to drive the real
+  server over a socket with a per-thread connection; it previously failed on a
+  clean checkout with a cross-thread SQLite error.
+- The loopback-bind default is now discoverable: `/api/pair/code` and
+  `/api/status` report `lan_reachable`, the Web UI shows a warning, and the
+  Android pairing-failure message points at `server.host`.
+
 ## Verification workflow status
 
 - CI workflow supports `workflow_dispatch` for manual verification on main.
@@ -63,8 +84,29 @@ This file records the repository evidence for v1.5.16.
 
 ## Remaining review risks
 
-- CI and manual QA evidence are not recorded in this repository yet.
-- Android changes still need Gradle unit/build validation.
+- CI is green on PR #4 head (Actions run 28230052875): "Desktop tests" and
+  "Android tests and debug build" both pass, which covers desktop tests, Android
+  unit tests, and the Android debug build.
+- Manual QA (Full Keyboard / Panel IME on a device) is still human-pending and
+  is the only remaining v1.5 close-criterion.
+
+## User-facing release note: default bind is now loopback
+
+v1.5.16 changes the default `[server] host` from `0.0.0.0` to `127.0.0.1`
+(secure by default). Impact and guidance:
+
+- Existing `config.toml` files are unaffected: the loopback default only applies
+  to newly written templates and configs that omit the `host` key.
+- With the loopback default, a paired Android device on the LAN cannot reach
+  `/api/pair` or `/api/sync/*` — pairing and sync will fail with a connection
+  error until the user opts in.
+- To re-enable LAN sync, set `[server] host = "0.0.0.0"` (only on a trusted
+  LAN/Tailscale network) and restart ClipVault. The management API stays
+  loopback-only regardless, enforced by the per-route handler guard.
+- Discoverability: the desktop Web UI pairing code now shows a warning when the
+  server is bound to loopback (`lan_reachable` / `hint` fields on
+  `/api/pair/code` and `lan_reachable` on `/api/status`), and the Android
+  pairing-failure message points the user at the `server.host` setting.
 
 ## Result
 
@@ -72,4 +114,6 @@ v1.5.16 is not only a version-number bump. The repository contains version metad
 
 ## Remaining gate
 
-Issue 3 should remain open until CI status or manual QA evidence is recorded.
+CI status is now recorded (Actions run 28230052875, green). Per the workflow the
+QA role does not close the release issue alone, so Issue 3 should remain open
+until the manual Full Keyboard / Panel IME checks are recorded by a human.
