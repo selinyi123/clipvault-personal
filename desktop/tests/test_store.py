@@ -1,5 +1,9 @@
 """A1 (migration), A2 (full save), A3 (dedup, no resurrection)."""
 
+import sqlite3
+
+import pytest
+
 from clipvault.core import normalize
 from clipvault.pipeline import ingest as pipeline
 from clipvault.store import db
@@ -29,6 +33,32 @@ def test_a1_migration_from_zero(conn):
 
 def test_a1_migration_idempotent(conn):
     assert db.migrate(conn) == 3  # second run is a no-op, returns current version
+
+
+def test_a1_migration_atomic_rolls_back_on_failure(tmp_path):
+    """A failing migration must leave the version unchanged and apply none of its
+    DDL (no half-migrated schema that would re-run and fail on the next boot)."""
+    mig = tmp_path / "migrations"
+    mig.mkdir()
+    (mig / "0001_boom.sql").write_text(
+        "CREATE TABLE schema_meta (version INTEGER NOT NULL);\n"
+        "CREATE TABLE good (x);\n"
+        "CREATE TABLE good (x);\n",  # duplicate name -> mid-script failure
+        encoding="utf-8",
+    )
+    dbfile = str(tmp_path / "m.db")
+    conn = db.connect(dbfile)
+    with pytest.raises(sqlite3.OperationalError):
+        db.migrate(conn, migrations_dir=mig)
+    conn.close()  # simulate the process dying before any commit
+
+    fresh = db.connect(dbfile)
+    assert db.schema_version(fresh) == 0  # version never advanced
+    tables = {
+        r[0]
+        for r in fresh.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    assert "good" not in tables  # partial DDL rolled back
 
 
 def test_a2_save_clip_full_fields(conn):

@@ -56,7 +56,9 @@ interval_minutes = 15
 enabled          = false
 
 [server]
-host = "0.0.0.0"
+# 默认只监听本机（回环），手机配对/同步前请改为 0.0.0.0 并确认只在可信 LAN/Tailscale 使用。
+# Web UI 点"配对"时若局域网不可达，会提示你如何切换。
+host = "127.0.0.1"
 port = 8787
 
 [log]

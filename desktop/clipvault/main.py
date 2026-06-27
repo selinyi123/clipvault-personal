@@ -85,8 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with InstanceLock():
             conn = db.connect(cfg.db_path)
-            db.migrate(conn)
-            service = ClipVaultService(conn, cfg)
+            db.migrate(conn)  # startup migration only; each worker thread opens its own connection
 
             stop = threading.Event()
             signal.signal(signal.SIGINT, lambda *_: stop.set())
@@ -136,8 +135,19 @@ def main(argv: list[str] | None = None) -> int:
                 daemon=True, name="api",
             ).start()
 
-            watcher = PollingWatcher(service.handle_clipboard_text, interval_ms=cfg.poll_ms)
-            threading.Thread(target=watcher.run, args=(stop,), daemon=True, name="watcher").start()
+            def watch_loop() -> None:
+                # The watcher runs on its own thread, so it must own its DB
+                # connection: a sqlite3 connection cannot cross threads
+                # (check_same_thread). Mirrors sweep/backup/api, which each
+                # connect inside their own thread.
+                watch_conn = db.connect(cfg.db_path)
+                watch_service = ClipVaultService(watch_conn, cfg)
+                watcher = PollingWatcher(
+                    watch_service.handle_clipboard_text, interval_ms=cfg.poll_ms
+                )
+                watcher.run(stop)
+
+            threading.Thread(target=watch_loop, daemon=True, name="watcher").start()
             log.info("clipvault started device=%s poll=%dms panel=http://127.0.0.1:%d/",
                      cfg.device_name, cfg.poll_ms, cfg.port)
 

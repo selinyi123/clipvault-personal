@@ -73,6 +73,32 @@ def test_h1_expired_code(conn, cfg):
     assert api.pair({"code": code, "device_id": PEER})[0] == 403
 
 
+def test_pair_rate_limit_locks_then_recovers():
+    clk = {"t": 0.0}
+    p = Pairing(ttl_seconds=300, clock=lambda: clk["t"], max_attempts=5,
+                attempt_window_seconds=60.0)
+    code = p.mint_code()
+    for _ in range(5):  # exhaust the attempt budget with bad codes
+        assert p.redeem("00000000") is None
+    assert p.locked()
+    assert p.redeem(code) is None  # even the valid code is refused while locked
+    clk["t"] = 61.0                # window drains
+    assert not p.locked()
+    assert p.redeem(code) is not None  # valid code still usable after recovery
+
+
+def test_pair_success_resets_failure_counter():
+    clk = {"t": 0.0}
+    p = Pairing(clock=lambda: clk["t"], max_attempts=5, attempt_window_seconds=60.0)
+    for _ in range(4):  # below the threshold
+        assert p.redeem("00000000") is None
+    code = p.mint_code()
+    assert p.redeem(code) is not None  # success clears prior failures
+    for _ in range(4):  # a fresh budget, so still not locked
+        assert p.redeem("00000000") is None
+    assert not p.locked()
+
+
 def test_h2_auth_required(api):
     assert api.sync_pull(None, {})[0] == 401
     assert api.sync_push("wrong-token", {"events": []})[0] == 401
