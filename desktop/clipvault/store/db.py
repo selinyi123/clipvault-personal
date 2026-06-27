@@ -32,9 +32,19 @@ def migrate(conn: sqlite3.Connection, migrations_dir: Path = MIGRATIONS_DIR) -> 
         number = int(script.name.split("_", 1)[0])
         if number <= current:
             continue
-        conn.executescript(script.read_text(encoding="utf-8"))
-        conn.execute("DELETE FROM schema_meta")
-        conn.execute("INSERT INTO schema_meta(version) VALUES (?)", (number,))
-        conn.commit()
+        body = script.read_text(encoding="utf-8")
+        # Apply the DDL and the schema_meta version bump as ONE transaction, so a
+        # crash can never leave the schema migrated but the version stale (which
+        # would re-run the migration and fail on the next boot). executescript
+        # disregards isolation_level and runs the script verbatim, so the
+        # transaction control is written explicitly here. (number is an int
+        # parsed from the filename, so the f-string is injection-safe.)
+        conn.executescript(
+            "BEGIN;\n"
+            f"{body}\n"
+            "DELETE FROM schema_meta;\n"
+            f"INSERT INTO schema_meta(version) VALUES ({number});\n"
+            "COMMIT;"
+        )
         current = number
     return current

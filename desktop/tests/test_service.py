@@ -1,14 +1,30 @@
 """B2/B3/B4/B7: service orchestration, obsidian retry, log hygiene."""
 
 import logging
+import sqlite3
+import threading
 
 import pytest
 
 from clipvault.config import Config
 from clipvault.service import ClipVaultService
+from clipvault.store import db as db_mod
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 
 FAKE_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+
+
+def _file_cfg(tmp_path):
+    """Config backed by an on-disk DB so connections opened on different threads
+    share the same database (unlike :memory:, which is per-connection)."""
+    return Config(
+        device_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        device_name="test-desktop",
+        db_path=str(tmp_path / "clipvault.db"),
+        max_clip_bytes=1_048_576,
+        poll_ms=500,
+        vault_path=str(tmp_path / "vault"),
+    )
 
 
 @pytest.fixture
@@ -79,3 +95,47 @@ def test_duplicate_does_not_rewrite_obsidian(service, tmp_path):
     service.handle_clipboard_text("dup me")
     service.handle_clipboard_text("dup me")
     assert len(list((tmp_path / "vault").rglob("*.md"))) == 1
+
+
+def test_watcher_captures_with_own_thread_connection(tmp_path):
+    """Regression for the watcher cross-thread bug: the watcher runs on its own
+    thread, so it must own its DB connection (as main.watch_loop now does). A
+    capture dispatched from a worker thread must succeed and persist."""
+    cfg = _file_cfg(tmp_path)
+    db_mod.migrate(db_mod.connect(cfg.db_path))
+    captured: dict[str, str] = {}
+
+    def worker() -> None:
+        # Mirrors main.watch_loop: connect *inside* the thread, then capture.
+        svc = ClipVaultService(db_mod.connect(cfg.db_path), cfg)
+        captured["id"] = svc.handle_clipboard_text("from the watcher thread", "notepad.exe").clip.id
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+
+    # Visible through a separate connection -> the capture really persisted.
+    verify = ClipVaultService(db_mod.connect(cfg.db_path), cfg)
+    assert verify.clips.get(captured["id"]) is not None
+
+
+def test_connection_shared_across_threads_is_rejected(tmp_path):
+    """Documents what the fix avoids: a connection created on one thread cannot
+    be used from another (sqlite3 check_same_thread), which previously made every
+    real clipboard capture on the watcher thread raise."""
+    cfg = _file_cfg(tmp_path)
+    shared = db_mod.connect(cfg.db_path)  # created on the main (test) thread
+    db_mod.migrate(shared)
+    svc = ClipVaultService(shared, cfg)  # service bound to a foreign-thread conn
+    errors: dict[str, Exception] = {}
+
+    def worker() -> None:
+        try:
+            svc.handle_clipboard_text("cross-thread use")
+        except Exception as exc:  # noqa: BLE001 - asserting the failure mode
+            errors["e"] = exc
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+    assert isinstance(errors.get("e"), sqlite3.ProgrammingError)
