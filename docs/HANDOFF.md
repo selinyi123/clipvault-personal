@@ -15,8 +15,8 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
-| Current slice | v1.5.16 release metadata aligned；Panel IME 已接入 PanelCandidateTabs；剩余 gate 为 CI 可见性与 MANUAL_QA_V1_5_16 手动验证。 |
-| Last updated | 2026-06-25 |
+| Current slice | Issue #3（v1.5 gate）已关闭（2026-06-26，A+B 签收）。其后 main 上并入 v1.6–v1.8 **加固支线**（PRs #4–#15，详见下方快照）。源码 `__version__` 仍为 **1.5.16**（未 bump；v1.6/1.7/1.8 为里程碑标签而非版本号）。最新**已发布**二进制仍是 **v1.5.10**。 |
+| Last updated | 2026-06-27 |
 
 ## Product Constraints（全部 Active）
 
@@ -31,7 +31,9 @@
 | Suggestions are deterministic in v1 | Active |
 | Self-use comfort beats commercial completeness | Active |
 
-## Current v1.5.16 Status
+## Current Version Status
+
+源码树（main HEAD）的版本元数据全部对齐在 **1.5.16**：
 
 - Desktop runtime version: 1.5.16
 - Desktop package metadata: 1.5.16
@@ -39,7 +41,35 @@
 - Android versionCode: 12
 - Windows installer AppVersion: 1.5.16
 - Panel IME service uses PanelCandidateTabs.filter with PANEL_CANDIDATE_POOL_LIMIT
-- Remaining blockers: CI result visibility and manual QA evidence
+
+**版本号 vs 发布状态（需 Owner 决策）**：
+
+- v1.6–v1.8 加固支线（PRs #4–#15）已并入 main，但 `__version__` **未** bump，仍是 1.5.16。
+  这些 "v1.6/1.7/1.8" 是路线图里程碑标签，**不是**版本号变更。
+- 最新**已发布**（GitHub Releases）二进制是 **v1.5.10**（2026-06-23，桌面 134 测试）。
+  即 main HEAD（1.5.16，166 项可在 Linux 跑通 + 4 项 Windows-only）**领先于**最新发布二进制。
+- 待 Owner 裁决：是否把 `__version__` bump 到 v1.6（反映加固支线）并切一个新的二进制 Release。
+  在裁决前，本支线只在 main，未对外发版。
+
+## Hardening Support Line Snapshot（v1.6–v1.8，已并入 main）
+
+> 这是 **支线**：可在 Linux/桌面验证的安全/同步/隐私加固，**从属于** keyboard 主线
+> （[ROADMAP_V2_KEYBOARD.md](ROADMAP_V2_KEYBOARD.md) = 北极星：做完整中文输入法）。
+> 研究记录与本支线路线见 [RESEARCH_AND_ROADMAP.md](RESEARCH_AND_ROADMAP.md)。
+
+| PR | 主题 | 落点 |
+|---|---|---|
+| #4 | code-review diff 修复（首轮审查发现项） | desktop |
+| #5 | sync-meta 测试加固 | desktop tests |
+| #6 | 自动化 release-QA gate（test_release_alignment.py） | desktop tests |
+| #7 | 版本单一源（scripts/bump_version.py + --check） | desktop tools |
+| #8 | suggest 来源上限（origin source-cap）+ Android CandidateMixer 对齐 | desktop + android |
+| #9 | /api/status + Web UI 暴露 sync/peer 状态 | desktop api/webui |
+| #10 | 设备解绑（PeersRepo list/unpair + /api/peers GET/DELETE，仅 loopback） | desktop |
+| #12 | 安全/隐私加固（配对限流、DNS-rebind Host 守卫、IME incognito）+ 研究路线 | desktop + android + docs |
+| #13 | 拓宽 Secret Guard（高置信 provider key 规则，两端 + 向量） | desktop + android + contracts |
+| #14 | clip_meta 同步改 per-field LWW（migration 0004） | desktop |
+| #15 | DNS-rebind 守卫加第二层 Referer 检查 | desktop |
 
 ## Completed Slices Snapshot
 
@@ -90,30 +120,34 @@
 
 ## Verification Snapshot
 
-Historical desktop verification reached 128 passing pytest cases across core pipeline, service, backup, API/UI, memory, suggestion, context-action, sync, and hardening slices. Android Kotlin core vectors historically passed 100/100. Current v1.5.16 still requires fresh CI visibility or local command evidence plus manual QA before Issue #3 can close.
+main HEAD desktop suite: **166 passed** on Linux/CI-portable runners
+(`python -m pytest -q --ignore=tests/test_watcher.py --ignore=tests/test_instance_lock.py`,
+verified 2026-06-27). 另有 **4** 项 Windows-only 用例（`test_watcher.py` 3 + `test_instance_lock.py` 1，
+依赖 `ctypes.WinDLL`，仅 windows-latest CI 可跑）→ 桌面总计 **170** 项。
+（历史参考：v1.0 时为 128，v1.5.10 发布时 134。）Android Kotlin core 向量历史 100/100。
+Issue #3 已于 2026-06-26 关闭（A+B 签收，CI 绿；Actions 28230052875 / 28231364251 / 28238873009）。
 
-## v1.5 Release Gate
+## v1.5 Release Gate — ✅ CLOSED
 
-Issue #3 may close only when:
+Issue #3 closed 2026-06-26（state_reason: completed，closed_by: selinyi123，A+B 签收）。
+关闭判据处置（见 Issue #3 正文）：
 
-- desktop tests pass;
-- Android unit tests pass;
-- Android debug build passes;
-- Full Keyboard manual checks pass;
-- Panel IME manual checks pass;
-- visible version metadata is aligned;
-- no v1.5 blocker remains open.
+- desktop tests pass — ✅ CI 绿；
+- Android unit tests pass — ✅ CI 绿；
+- Android debug build passes — ✅ CI 绿；
+- Full Keyboard manual checks — 决策逻辑已单测；UI render/tap 顺延到 instrumented 任务（B，见 docs/INSTRUMENTED_QA_BACKLOG.md）；
+- Panel IME manual checks — 决策逻辑已单测；UI switch/tap 顺延到 instrumented 任务（B）；
+- visible version metadata aligned — ✅ 全对齐 1.5.16；
+- no v1.5 blocker open — ✅。
 
-## v1.6 Entry Gate
+## v1.6 Entry Gate — ✅ 已满足
 
-Do not start v1.6 until Issue #3 is closed.
+Issue #3 已关闭 → v1.6 may now proceed。门后实际交付的，是上方 **Hardening Support Line Snapshot**
+（PRs #4–#15，安全/同步/隐私加固）。这条支线**从属于** keyboard 主线，主线见
+[ROADMAP_V2_KEYBOARD.md](ROADMAP_V2_KEYBOARD.md)（北极星 = 完整中文输入法），其 v2.1 起接 librime/fcitx5
+底座，需 Android/原生设备或 CI 验证（本地无法编译 Kotlin/native）。
 
-Candidate v1.6 tracks after closure:
-
-- candidate source caps and tab weighting;
-- source toggles in keyboard UI;
-- query-aware transient candidate filtering;
-- improved release-state display;
-- safer version metadata single-source strategy.
+> 注：上述 v1.6 候选轨（source caps/tab weighting、source toggles、query-aware filtering、
+> release-state display、version single-source）多数已在 #7–#9 落地；其余并入 RESEARCH_AND_ROADMAP 支线路线。
 
 Typed text learning, behavioral profiling, cloud keyboard intelligence, and analytics remain out of scope unless a separate privacy design is approved first.

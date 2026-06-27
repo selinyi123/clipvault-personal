@@ -9,26 +9,32 @@
 
 非商业 · 单用户 · 本地优先。架构师：Claude Fable 5 ｜ 实现：Claude Fable 5（原 Codex 故障接管）｜ 最终裁决：Owner。
 
-**状态：v1.0** — 桌面端 128 项测试全绿、可独立日用；Android core 与桌面**跨平台一致性已证（VEC-1 100/100）**，
-app 整体编译产出已签名 APK。唯一剩余：Android 真机体验确认（需设备）。
+**状态**：源码树 `__version__` = **1.5.16**；桌面端 **166** 项测试在 Linux/CI 跑通（另有 4 项 Windows-only，共 170），
+可独立日用；Android core 与桌面**跨平台一致性已证（VEC-1 100/100）**，app 整体编译产出已签名 APK。
+最新**已发布**二进制为 [v1.5.10](https://github.com/selinyi123/clipvault-personal/releases/tag/v1.5.10)（main 领先于它）。
+v1.5 release gate（Issue #3）已关闭；其后 main 上并入 v1.6–v1.8 安全/同步/隐私加固支线（见 [docs/HANDOFF.md](docs/HANDOFF.md)）。
+唯一长期剩余：Android 真机体验确认（需设备）。
 
 ---
 
 ## ⬇️ 下载与安装（Releases）
 
-到 [**Releases**](https://github.com/selinyi123/clipvault-personal/releases) 下载安装包：
+到 [**Releases**](https://github.com/selinyi123/clipvault-personal/releases) 下载**最新版**安装包（以 Releases 页为准；
+下表文件名取自当前最新发布 [v1.5.10](https://github.com/selinyi123/clipvault-personal/releases/tag/v1.5.10)）：
 
 | 平台 | 文件 | 说明 |
 |---|---|---|
-| Windows 桌面 | `ClipVault-Desktop-v1.0.0.exe` | 单文件,无需安装 Python。双击或命令行运行 |
-| Android | `ClipVault-Android-v1.0.0.apk` | 侧载安装。已签名（self-use 证书） |
+| Windows 桌面（推荐，有图标） | `ClipVault-Setup-v1.5.10.exe` | 安装器；桌面图标 + 开始菜单，可选开机自启 |
+| Windows 桌面（便携） | `ClipVault-Desktop-v1.5.10-portable.exe` | 单文件,无需安装 Python。双击或命令行运行 |
+| Android | `ClipVault-Android-v1.5.10.apk` | 侧载安装。已签名（self-use 证书，versionCode 11） |
 
 ### 桌面端
 
 ```powershell
-# 首次运行生成 config.toml 模板并退出（提示填 obsidian.vault_path）
-.\ClipVault-Desktop-v1.0.0.exe --config config.toml
+# 便携版：首次运行生成 config.toml 模板并退出（提示填 obsidian.vault_path）
+.\ClipVault-Desktop-v1.5.10-portable.exe --config config.toml
 # 填好 vault_path 后再次运行；浏览器打开 http://127.0.0.1:8787/
+# （安装器版 ClipVault-Setup 首次启动会自动建好配置并打开面板，无需手动改）
 ```
 
 详见 [docs/INSTALL.md](docs/INSTALL.md)（配置、GitHub 备份仓库、配对、开机自启、恢复、隐私）。
@@ -74,7 +80,7 @@ App 内填桌面 IP + 码完成配对。详见 [android/README.md](android/READM
 clipvault/
   desktop/      Python 桌面主节点（零运行时依赖：stdlib + ctypes）
     clipvault/  core·store·pipeline·watcher·obsidian·backup·sync·api(+webui)
-    tests/      128 项 pytest
+    tests/      170 项 pytest（166 Linux/CI + 4 Windows-only）
     packaging/  PyInstaller 入口
   android/      Kotlin
     core/       与桌面对应的 normalize/classify/secret-guard（通过 VEC-1）
@@ -89,7 +95,9 @@ clipvault/
 ```powershell
 # 桌面测试
 cd desktop; python -m venv .venv; .\.venv\Scripts\python -m pip install pytest
-.\.venv\Scripts\python -m pytest -q                    # 128 passed
+.\.venv\Scripts\python -m pytest -q                    # 170 passed (Windows)
+# Linux/CI（无 ctypes.WinDLL）跳过 4 项 Windows-only：
+#   python -m pytest -q --ignore=tests/test_watcher.py --ignore=tests/test_instance_lock.py  # 166 passed
 
 # 桌面打包（单文件 exe）
 .\.venv\Scripts\python -m pip install pyinstaller
