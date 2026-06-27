@@ -38,7 +38,9 @@ def emit_clip_new(conn, clip: Clip, when: str) -> int | None:
 
 
 def emit_clip_meta(conn, content_hash: str, patch: dict, ts: str, when: str) -> int:
-    _set_meta_ts(conn, content_hash, ts)
+    for field in ("pinned", "favorite", "deleted"):
+        if field in patch:
+            _set_meta_ts(conn, content_hash, field, ts)
     return OutboxRepo(conn).append(
         "clip_meta", {"content_hash": content_hash, "patch": patch, "ts": ts}, when
     )
@@ -64,19 +66,20 @@ def emit_memory_delete(conn, kind: str, text: str, ts: str, when: str) -> int:
 
 # --- meta LWW bookkeeping ---
 
-def _get_meta_ts(conn, content_hash: str) -> str:
+def _get_meta_ts(conn, content_hash: str, field: str) -> str:
     row = conn.execute(
-        "SELECT ts FROM clip_meta_ts WHERE content_hash = ?", (content_hash,)
+        "SELECT ts FROM clip_meta_ts WHERE content_hash = ? AND field = ?",
+        (content_hash, field),
     ).fetchone()
     return row[0] if row else ""
 
 
-def _set_meta_ts(conn, content_hash: str, ts: str) -> None:
+def _set_meta_ts(conn, content_hash: str, field: str, ts: str) -> None:
     conn.execute(
-        "INSERT INTO clip_meta_ts(content_hash, ts) VALUES (?,?) "
-        "ON CONFLICT(content_hash) DO UPDATE SET ts=excluded.ts "
+        "INSERT INTO clip_meta_ts(content_hash, field, ts) VALUES (?,?,?) "
+        "ON CONFLICT(content_hash, field) DO UPDATE SET ts=excluded.ts "
         "WHERE excluded.ts >= clip_meta_ts.ts",
-        (content_hash, ts),
+        (content_hash, field, ts),
     )
     conn.commit()
 
@@ -192,19 +195,23 @@ def _apply_memory_delete(conn, data: dict) -> None:
 def _apply_clip_meta(conn, data: dict) -> None:
     content_hash = data["content_hash"]
     ts = data["ts"]
-    local_ts = _get_meta_ts(conn, content_hash)
-    # LWW: newer ts wins; on equal ts a delete wins (handled by ordering below)
-    is_delete = bool(data["patch"].get("deleted"))
-    if ts < local_ts or (ts == local_ts and not is_delete):
-        return  # stale; do not overwrite newer state
+    patch = data["patch"]
     clips = ClipsRepo(conn)
     row = clips.get_by_hash(content_hash)
     if row is None:
         return
+    # Per-field LWW (v1.8): each field's newest ts wins independently, so a newer
+    # change to one field is never masked by an older change to another. On an
+    # exact ts tie a delete wins (SYNC-2 delete-wins semantics).
     for field in ("pinned", "favorite", "deleted"):
-        if field in data["patch"]:
-            clips.set_flag(row.id, field, bool(data["patch"][field]))
-    _set_meta_ts(conn, content_hash, ts)
+        if field not in patch:
+            continue
+        local_ts = _get_meta_ts(conn, content_hash, field)
+        is_delete = field == "deleted" and bool(patch[field])
+        if ts < local_ts or (ts == local_ts and not is_delete):
+            continue  # stale for this field
+        clips.set_flag(row.id, field, bool(patch[field]))
+        _set_meta_ts(conn, content_hash, field, ts)
 
 
 # --- pull side ---

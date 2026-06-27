@@ -14,7 +14,7 @@ EXPECTED_TABLES = {
 
 
 def test_a1_migration_from_zero(conn):
-    assert db.schema_version(conn) == 3  # 0001_init + 0002_clip_meta_ts + 0003_memory_meta_ts
+    assert db.schema_version(conn) == 4  # 0001_init + 0002/0003 meta_ts + 0004 per-field clip_meta_ts
     names = {
         r[0]
         for r in conn.execute(
@@ -28,7 +28,25 @@ def test_a1_migration_from_zero(conn):
 
 
 def test_a1_migration_idempotent(conn):
-    assert db.migrate(conn) == 3  # second run is a no-op, returns current version
+    assert db.migrate(conn) == 4  # second run is a no-op, returns current version
+
+
+def test_a1_clip_meta_ts_upgrade_seeds_every_field():
+    # 0004 must preserve an existing coarse timestamp across all fields, so no
+    # previously-rejected update becomes accepted after the upgrade.
+    import sqlite3
+    raw = sqlite3.connect(":memory:")
+    for prefix in ("0001", "0002", "0003"):
+        script = next(db.MIGRATIONS_DIR.glob(f"{prefix}_*.sql"))
+        raw.executescript(script.read_text(encoding="utf-8"))
+    raw.execute("INSERT INTO clip_meta_ts(content_hash, ts) VALUES (?,?)", ("h1", "2026-01-01T00:00:00Z"))
+    raw.executescript(next(db.MIGRATIONS_DIR.glob("0004_*.sql")).read_text(encoding="utf-8"))
+    got = dict(raw.execute("SELECT field, ts FROM clip_meta_ts WHERE content_hash='h1'").fetchall())
+    assert got == {
+        "pinned": "2026-01-01T00:00:00Z",
+        "favorite": "2026-01-01T00:00:00Z",
+        "deleted": "2026-01-01T00:00:00Z",
+    }
 
 
 def test_a2_save_clip_full_fields(conn):

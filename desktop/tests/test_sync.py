@@ -225,6 +225,28 @@ def test_h7_local_patch_emits_clip_meta_for_pull(api, conn):
     assert payload["patch"].get("favorite") is True
 
 
+def test_h7_clip_meta_per_field_lww(api, conn):
+    # v1.8: a newer change to one field must not be masked by an older change to a
+    # different field that happened to bump a shared timestamp.
+    token = _pair(api)
+    api.sync_push(token, {"events": [_clip_new_event(1, "field lww", hash="fl1")]})
+    clip = ClipsRepo(conn).get_by_hash("fl1")
+
+    def meta(seq, patch, ts):
+        return {"origin_device": PEER, "seq": seq, "kind": "clip_meta", "ts": ts,
+                "data": {"content_hash": "fl1", "patch": patch, "ts": ts}}
+
+    api.sync_push(token, {"events": [meta(2, {"pinned": True}, "2026-06-13T10:10:00Z")]})
+    api.sync_push(token, {"events": [meta(3, {"favorite": True}, "2026-06-13T10:20:00Z")]})
+    row = ClipsRepo(conn).get(clip.id)
+    assert row.pinned is True and row.favorite is True
+    # un-pin at t=15 is newer than the pin (t=10); the favorite's t=20 must not mask it
+    api.sync_push(token, {"events": [meta(4, {"pinned": False}, "2026-06-13T10:15:00Z")]})
+    row = ClipsRepo(conn).get(clip.id)
+    assert row.pinned is False   # the fix: independent per-field timestamps
+    assert row.favorite is True  # untouched
+
+
 def test_h8_cursor_resume(api, conn):
     token = _pair(api)
     for i in range(5):
