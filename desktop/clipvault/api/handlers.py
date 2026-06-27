@@ -272,6 +272,8 @@ class Api:
         device_name = body.get("device_name", "device")
         if not device_id:
             return 400, {"error": {"code": "bad_request", "message": "device_id required"}}
+        if self.pairing.is_rate_limited():
+            return 429, {"error": {"code": "rate_limited", "message": "too many attempts, try again shortly"}}
         token = self.pairing.redeem(code)
         if token is None:
             return 403, {"error": {"code": "bad_code", "message": "invalid or expired code"}}

@@ -13,7 +13,15 @@ import android.view.inputmethod.EditorInfo
  */
 object PrivacyAwareFilter {
     fun shouldSuppressCandidates(info: EditorInfo?): Boolean =
-        info?.let { shouldSuppressCandidates(it.inputType) } ?: false
+        info?.let { shouldSuppress(it.inputType, it.imeOptions) } ?: false
+
+    internal fun shouldSuppress(inputType: Int, imeOptions: Int): Boolean {
+        // Incognito keyboard (IME_FLAG_NO_PERSONALIZED_LEARNING, API 26+): the
+        // field asked the IME not to record or personalise typing. ClipVault
+        // candidates are personal clips/memory, so hide them in such fields.
+        if (imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING != 0) return true
+        return shouldSuppressCandidates(inputType)
+    }
 
     internal fun shouldSuppressCandidates(inputType: Int): Boolean {
         val klass = inputType and InputType.TYPE_MASK_CLASS
