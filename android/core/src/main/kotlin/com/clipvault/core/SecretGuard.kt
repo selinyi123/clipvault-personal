@@ -14,6 +14,13 @@ object SecretGuard {
         "SG-OPENAI" to Regex("""\bsk-(proj-|ant-)?[A-Za-z0-9_-]{20,}\b"""),
         "SG-GOOGLE" to Regex("""\bAIza[0-9A-Za-z_-]{35}\b"""),
         "SG-JWT" to Regex("""\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b"""),
+        // High-confidence distinctive-prefix provider keys. Must mirror desktop secret_guard.py.
+        "SG-STRIPE" to Regex("""\b[sr]k_(live|test)_[0-9A-Za-z]{16,}\b"""),
+        "SG-GITLAB" to Regex("""\bglpat-[A-Za-z0-9_-]{20,}\b"""),
+        "SG-SENDGRID" to Regex("""\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b"""),
+        "SG-NPM" to Regex("""\bnpm_[A-Za-z0-9]{36}\b"""),
+        "SG-DIGITALOCEAN" to Regex("""\bdop_v1_[a-f0-9]{64}\b"""),
+        "SG-SLACK-URL" to Regex("""https://hooks\.slack\.com/services/[A-Za-z0-9_/+-]{24,}"""),
         "SG-ASSIGN" to Regex(
             """(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key""" +
                 """|client[_-]?secret|auth)\b\s*[:=]\s*\S{8,}"""
