@@ -50,6 +50,19 @@ def make_handler(api: Api):
         def _is_loopback(self) -> bool:
             return self.client_address[0] in _LOOPBACK
 
+        def _host_is_local(self) -> bool:
+            """DNS-rebinding guard: a site that rebinds its name to 127.0.0.1
+            reaches us with a loopback source IP but a foreign Host header.
+            Legitimate local access uses a loopback Host."""
+            host = self.headers.get("Host", "").strip()
+            if host.startswith("[") and "]" in host:        # [::1] or [::1]:port
+                name = host[1:host.index("]")]
+            elif host.count(":") == 1:                       # host:port
+                name = host.rsplit(":", 1)[0]
+            else:
+                name = host
+            return name.lower() in ("127.0.0.1", "localhost", "::1")
+
         def _bearer(self) -> str | None:
             h = self.headers.get("Authorization", "")
             return h[7:].strip() if h.startswith("Bearer ") else None
@@ -113,8 +126,12 @@ def make_handler(api: Api):
                 self.close_connection = True
 
         def _guard(self, route: str) -> bool:
-            # Sync/pair are auth-gated in the handler; everything else is loopback-only.
-            if _remote_allowed(route) or self._is_loopback():
+            # Sync/pair are auth-gated in the handler. Everything else is
+            # loopback-only AND requires a loopback Host header, so a DNS-rebinding
+            # site cannot drive the management API from the user's own browser.
+            if _remote_allowed(route):
+                return True
+            if self._is_loopback() and self._host_is_local():
                 return True
             self._send_json(403, {"error": {"code": "forbidden", "message": "loopback only"}})
             return False

@@ -266,6 +266,29 @@ def test_d8_peers_route_is_loopback_reachable(cfg):
         time.sleep(0.6)
 
 
+def test_d8_rejects_forged_host_header(cfg):
+    # DNS-rebinding guard: a loopback request with a foreign Host header (what a
+    # rebinding site sends) is refused on the management API.
+    cfg.db_path = os.path.join(tempfile.mkdtemp(), "cv.db")
+    cfg.port = 8799
+    stop = threading.Event()
+    threading.Thread(target=api_server.serve, args=(cfg, stop), daemon=True).start()
+    time.sleep(0.5)
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", 8799, timeout=5)
+        c.request("GET", "/api/status", headers={"Host": "attacker.example"})
+        assert c.getresponse().status == 403
+        c.close()
+        # a normal loopback Host is still served
+        c = http.client.HTTPConnection("127.0.0.1", 8799, timeout=5)
+        c.request("GET", "/api/status")  # http.client sets Host: 127.0.0.1:8799
+        assert c.getresponse().status == 200
+        c.close()
+    finally:
+        stop.set()
+        time.sleep(0.6)
+
+
 def test_d9_api_logs_no_content(api, caplog):
     with caplog.at_level(logging.INFO, logger="clipvault"):
         api.create_clip({"content": "topsecretwords in content"})

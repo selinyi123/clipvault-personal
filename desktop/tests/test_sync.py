@@ -65,6 +65,26 @@ def test_h1_pairing(api):
     assert api.pair({"code": code, "device_id": PEER})[0] == 403  # single use
 
 
+def test_h1_pair_rate_limited_after_repeated_bad_codes(api):
+    # /api/pair is LAN-reachable; repeated bad codes must lock out (429), not just
+    # 403 forever, to bound brute-force and flood of the single-threaded server.
+    for _ in range(10):
+        assert api.pair({"code": "00000000", "device_id": PEER})[0] == 403
+    assert api.pair({"code": "00000000", "device_id": PEER})[0] == 429
+
+
+def test_h1_rate_limit_clears_after_window(conn, cfg):
+    clk = {"t": 0.0}
+    api = Api(ClipVaultService(conn, cfg),
+              pairing=Pairing(clock=lambda: clk["t"], max_failures=3, lockout_seconds=60))
+    for _ in range(3):
+        assert api.pair({"code": "00000000", "device_id": PEER})[0] == 403
+    assert api.pair({"code": "00000000", "device_id": PEER})[0] == 429
+    clk["t"] = 61.0  # window elapsed
+    code = api.pairing.mint_code()
+    assert api.pair({"code": code, "device_id": PEER})[0] == 200  # pairing works again
+
+
 def test_h1_expired_code(conn, cfg):
     clk = {"t": 0.0}
     api = Api(ClipVaultService(conn, cfg), pairing=Pairing(ttl_seconds=300, clock=lambda: clk["t"]))
