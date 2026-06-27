@@ -289,6 +289,32 @@ def test_d8_rejects_forged_host_header(cfg):
         time.sleep(0.6)
 
 
+def test_d8_rejects_foreign_referer(cfg):
+    # Second DNS-rebinding layer: a loopback request whose Referer is a foreign
+    # origin (what a rebinding page sends) is refused; loopback or absent is fine.
+    cfg.db_path = os.path.join(tempfile.mkdtemp(), "cv.db")
+    cfg.port = 8800
+    stop = threading.Event()
+    threading.Thread(target=api_server.serve, args=(cfg, stop), daemon=True).start()
+    time.sleep(0.5)
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", 8800, timeout=5)
+        c.request("GET", "/api/status", headers={"Referer": "http://attacker.example/x"})
+        assert c.getresponse().status == 403
+        c.close()
+        c = http.client.HTTPConnection("127.0.0.1", 8800, timeout=5)
+        c.request("GET", "/api/status", headers={"Referer": "http://127.0.0.1:8800/"})
+        assert c.getresponse().status == 200
+        c.close()
+        c = http.client.HTTPConnection("127.0.0.1", 8800, timeout=5)
+        c.request("GET", "/api/status")  # no Referer -> allowed (Host is primary)
+        assert c.getresponse().status == 200
+        c.close()
+    finally:
+        stop.set()
+        time.sleep(0.6)
+
+
 def test_d9_api_logs_no_content(api, caplog):
     with caplog.at_level(logging.INFO, logger="clipvault"):
         api.create_clip({"content": "topsecretwords in content"})

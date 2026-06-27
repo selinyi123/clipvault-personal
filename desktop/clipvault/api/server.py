@@ -63,6 +63,16 @@ def make_handler(api: Api):
                 name = host
             return name.lower() in ("127.0.0.1", "localhost", "::1")
 
+        def _referer_ok(self) -> bool:
+            """Second DNS-rebinding layer: if a Referer is present it must be
+            loopback (a rebinding page's requests carry the attacker's origin).
+            Absent is allowed — many legitimate navigations omit Referer, and the
+            Host check above is the primary guard."""
+            ref = self.headers.get("Referer", "")
+            if not ref:
+                return True
+            return (urlparse(ref).hostname or "").lower() in ("127.0.0.1", "localhost", "::1")
+
         def _bearer(self) -> str | None:
             h = self.headers.get("Authorization", "")
             return h[7:].strip() if h.startswith("Bearer ") else None
@@ -131,7 +141,7 @@ def make_handler(api: Api):
             # site cannot drive the management API from the user's own browser.
             if _remote_allowed(route):
                 return True
-            if self._is_loopback() and self._host_is_local():
+            if self._is_loopback() and self._host_is_local() and self._referer_ok():
                 return True
             self._send_json(403, {"error": {"code": "forbidden", "message": "loopback only"}})
             return False
