@@ -22,6 +22,13 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("SG-OPENAI", re.compile(r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}\b")),
     ("SG-GOOGLE", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
     ("SG-JWT", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b")),
+    # High-confidence distinctive-prefix provider keys (low false-positive shape).
+    ("SG-STRIPE", re.compile(r"\b[sr]k_(?:live|test)_[0-9A-Za-z]{16,}\b")),
+    ("SG-GITLAB", re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b")),
+    ("SG-SENDGRID", re.compile(r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b")),
+    ("SG-NPM", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
+    ("SG-DIGITALOCEAN", re.compile(r"\bdop_v1_[a-f0-9]{64}\b")),
+    ("SG-SLACK-URL", re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9_/+-]{24,}")),
     (
         "SG-ASSIGN",
         re.compile(
