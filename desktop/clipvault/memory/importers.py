@@ -57,6 +57,13 @@ def apply(repo: MemoryRepo, items: list[tuple[str, str]], source: str) -> int:
     created = 0
     for kind, text in items:
         before = repo.by_kind_text(kind, text)
+        # Idempotency + "deleted stays deleted": an automated importer must not
+        # resurrect a memory item the user soft-deleted (re-running the Obsidian /
+        # GitHub import is contractually repeatable, GATES v0.4). Explicit re-add
+        # (manual create / promote-from-clip) still un-deletes via upsert — only
+        # the importer respects the deletion.
+        if before is not None and before.deleted:
+            continue
         item = repo.upsert(kind, text, source=source)
         if before is None:
             created += 1

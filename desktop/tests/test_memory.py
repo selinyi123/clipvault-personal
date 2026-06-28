@@ -83,6 +83,20 @@ def test_e6_obsidian_title_import_idempotent(repo, tmp_path):
     assert created1 == len(items) and created2 == 0
 
 
+def test_e6_import_does_not_resurrect_deleted(repo):
+    # A re-run of an automated importer must not bring back a memory item the user
+    # soft-deleted (idempotency + "deleted stays deleted").
+    items = [("path", "project notes")]
+    importers.apply(repo, items, "obsidian_import")
+    repo.soft_delete(repo.by_kind_text("path", "project notes").id)
+    assert importers.apply(repo, items, "obsidian_import") == 0   # not re-created
+    assert repo.by_kind_text("path", "project notes").deleted is True
+    assert all(m.text != "project notes" for m in repo.list())     # stays out of suggestions
+    # but an explicit upsert (manual re-add / promote) still un-deletes:
+    repo.upsert("path", "project notes", source="manual")
+    assert repo.by_kind_text("path", "project notes").deleted is False
+
+
 def test_e6_from_names_dedup(repo):
     items = importers.from_names(["repo-a", "repo-b", "repo-a", " "])
     assert sorted(t for _, t in items) == ["repo-a", "repo-b"]
