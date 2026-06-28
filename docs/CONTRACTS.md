@@ -379,6 +379,12 @@ score = 3.0 * pinned
 - 排序：**SUG-1.1（2026-06-13，D-008）**：pinned 为硬置顶层（PRODUCT_SPEC "pinned 永远置顶"），
   排序键 = (pinned, score, last_used_at) 全部 DESC。pinned 不再只是 +3.0 加权——极高频项也不得越过
   pinned 项（ADR-0007"可预期即舒适"）。默认 half_life_days=14，权重全部可在 config 覆盖。
+- **SUG-1.2（来源配额，2026-06-25）**：结果超过 limit 且两类来源（memory/clip）都存在时，
+  各来源保底 `max(1, limit//4)` 个名额，使一类来源的洪泛不能完全饿死另一类。pinned 优先级顺序不变，
+  保底的少数派项占最低名额，不挤掉更高优先级项。
+- **SUG-1.3（确定性末位仲裁，2026-06-28）**：排序键追加唯一 ULID `id` 作最后一项（DESC）。
+  当 (pinned, score, last_used_at) 全相等时（秒级时间戳下常见，或从未使用的项），原先会落到
+  SQL 任意行序 → 建议非确定。以 id 收尾保证两端/多次运行结果一致（SUG-1"确定性、可解释"）。
 - 实现：SQL 预筛（LIKE prefix / FTS prefix）→ 取 ≤200 候选 → 内存重排。**IME 端只查本地 Room，不发网络。**
 
 ## 12. 桌面配置（CFG-1，config.toml）

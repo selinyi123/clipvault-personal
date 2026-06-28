@@ -80,8 +80,13 @@ def score(c: Candidate, query: str, app: str | None, w: Weights,
 def _priority(cs: tuple[Candidate, float]) -> tuple:
     # SUG-1.1: pinned is a hard top tier (PRODUCT_SPEC "pinned 永远置顶"),
     # then by score, then most-recently-used. Predictable ordering > raw score.
+    # SUG-1.3: the unique ULID id is the final tiebreak. Without it, candidates
+    # that tie on (pinned, score, last_used_at) — common at second-precision
+    # timestamps, or for never-used items — fell through to the arbitrary SQL
+    # row order, making suggestions non-deterministic (violates SUG-1's
+    # "确定性、可解释"). ULIDs sort by creation time, so DESC = newer-first.
     c, s = cs
-    return (c.pinned, s, c.last_used_at or "")
+    return (c.pinned, s, c.last_used_at or "", c.id)
 
 
 def rank(candidates: list[Candidate], query: str, app: str | None, w: Weights,
