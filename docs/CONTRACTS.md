@@ -296,7 +296,11 @@ CREATE INDEX idx_clips_created ON clips(created_at DESC);
 CREATE INDEX idx_clips_type    ON clips(content_type);
 
 -- FTS 由 store 层代码维护（不用触发器）；不变量：is_secret=1 或 deleted=1 的行不得存在于此表
-CREATE VIRTUAL TABLE clips_fts USING fts5(id UNINDEXED, content);
+-- DB-1.1（migration 0005）：用 trigram 分词器（SQLite 内置，无新依赖）。默认 unicode61 会把
+-- 整串 CJK 当作单 token，导致中文子串/短语搜不到（"天气"搜不到"今天天气很好"）。trigram 索引
+-- 3 字窗，支持中英文子串（≥3 字）。<3 字查询（如 2 字中文词"天气"）由 ClipsRepo 走 LIKE 回退；
+-- secret 视图搜索亦走 LIKE（密钥从不进 FTS）。两条 LIKE 路径都显式过滤 is_secret=0/deleted=0（G1）。
+CREATE VIRTUAL TABLE clips_fts USING fts5(id UNINDEXED, content, tokenize='trigram');
 
 CREATE TABLE memory_items (
   id           TEXT PRIMARY KEY,
@@ -350,7 +354,7 @@ Base：`http://{host}:{port}/api`，仅本机与配对设备使用。除 `/pair`
 |---|---|---|
 | GET | `/health` | `{status, version, db_ok}` |
 | POST | `/pair` | §5.3 |
-| GET | `/clips?q=&type=&secret=&limit=50&before_id=` | 列表/FTS 搜索（q 走 FTS，密钥项只在 secret=1 时返回且内容脱敏） |
+| GET | `/clips?q=&type=&secret=&limit=50&before_id=` | 列表/全文搜索（q≥3 字走 FTS trigram，<3 字或 secret 视图走 LIKE，见 DB-1.1；密钥项只在 secret=1 时返回且内容脱敏） |
 | POST | `/clips` | `{content, source_app?}` 手动添加，走完整 ingest 管线 |
 | PATCH | `/clips/{id}` | `{pinned?|favorite?|deleted?}` → 产生 clip_meta 事件 |
 | POST | `/clips/{id}/release` | 释放隔离（§4.3） |
