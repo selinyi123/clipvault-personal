@@ -68,8 +68,10 @@ App 内填桌面 IP + 码完成配对。详见 [android/README.md](android/READM
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 系统长什么样、模块怎么分、失败怎么办 |
 | [docs/CONTRACTS.md](docs/CONTRACTS.md) | 所有数据结构/协议/格式的精确定义 |
 | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | 密钥与隐私如何被保护 |
-| [docs/GATES.md](docs/GATES.md) | 每个版本怎样才算"做完了" |
+| [docs/GATES.md](docs/GATES.md) | 每个版本怎样才算"做完了"（含 keyboard 主线门禁） |
 | [docs/ROADMAP.md](docs/ROADMAP.md) · [docs/SLICES/](docs/SLICES/) | S001–S012 切片与各片规格 |
+| [docs/ROADMAP_V2_KEYBOARD.md](docs/ROADMAP_V2_KEYBOARD.md) | v2 keyboard 主线（北极星：完整输入法）分期路线 |
+| [docs/CONTRACTS_KEYBOARD.md](docs/CONTRACTS_KEYBOARD.md) · [docs/KEYBOARD_PRIVACY.md](docs/KEYBOARD_PRIVACY.md) | 键盘接口契约 · L0–L4 输入隐私规格 |
 | [docs/ADR/](docs/ADR/) | 关键决策及理由 |
 | [docs/HANDOFF.md](docs/HANDOFF.md) | 项目当前状态（repo 记忆） |
 | [docs/INSTALL.md](docs/INSTALL.md) · [docs/RUNBOOK_PURGE.md](docs/RUNBOOK_PURGE.md) | 安装运维 · 密钥泄漏清除 |
