@@ -126,6 +126,18 @@ def test_f11c_single_origin_overflow_is_plain_topn():
     assert [c.id for c, _ in ranked] == ["m0", "m1", "m2", "m3", "m4"]  # plain top-5
 
 
+def test_f12_fully_tied_candidates_rank_deterministically():
+    # SUG-1.3: candidates tying on (pinned, score, last_used_at) must rank the
+    # same regardless of input order — the SQL row order is not stable at
+    # second precision. Final tiebreak is the unique id, DESC (newer ULID first).
+    w = sg.Weights()
+    base = dict(use_count=5, last_used_at=_iso(NOW))
+    a, b, c = cand("a", **base), cand("b", **base), cand("c", **base)
+    order1 = [t.id for t, _ in sg.rank([a, b, c], "", None, w, NOW)]
+    order2 = [t.id for t, _ in sg.rank([c, a, b], "", None, w, NOW)]
+    assert order1 == order2 == ["c", "b", "a"]  # id DESC, input-order-independent
+
+
 # --- integration: candidate assembly + API ---
 
 @pytest.fixture
