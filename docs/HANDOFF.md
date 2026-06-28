@@ -125,7 +125,7 @@ main HEAD desktop suite: **183 passed** on Linux/CI-portable runners
 verified 2026-06-28；含 #19 SG-1.2、#21 SUG-1.3、CJK-FTS 7 例、及 GHB-1.1 备份-删除 4 例）。另有 **4** 项
 Windows-only 用例（`test_watcher.py` 3 + `test_instance_lock.py` 1，依赖 `ctypes.WinDLL`，仅 windows-latest CI 可跑）
 → 桌面总计 **187** 项。schema 版本 = **5**（migration 0005：clips_fts 改 trigram 分词器，修中文全文搜索）。
-GHB-1.1：clip 元数据变化（含 deleted）重新入队备份，restore 不再复活已删除 clip。
+GHB-1.1：clip 的 deleted 变化重新入队备份（仅 deleted；pin/favorite 不重备），restore 不再复活已删除 clip。
 （历史参考：v1.0 时为 128，v1.5.10 发布时 134。）Android Kotlin core 向量历史 100/100。
 Issue #3 已于 2026-06-26 关闭（A+B 签收，CI 绿；Actions 28230052875 / 28231364251 / 28238873009）。
 

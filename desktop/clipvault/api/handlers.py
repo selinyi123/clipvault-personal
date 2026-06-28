@@ -139,10 +139,11 @@ class Api:
         # Emit a clip_meta event so the change propagates to paired devices (SYNC-2).
         now = _now_iso()
         sync_engine.emit_clip_meta(self.conn, clip.content_hash, applied, now, now)
-        # Re-back-up so the GitHub JSONL reflects the new state (e.g. a deletion);
-        # otherwise restore.py resurrects the clip (GHB-1). Secrets are never backed
-        # up, so skip them (re-enqueue would also raise gate B).
-        if not clip.is_secret:
+        # Re-back-up only when the deletion state changed, so restore.py reflects
+        # the deletion and never resurrects deleted content (GHB-1.1). Cosmetic
+        # flags (pinned/favorite) are NOT re-backed-up — backup stays a recovery
+        # snapshot, not a full mirror. Secrets are never backed up.
+        if "deleted" in applied and not clip.is_secret:
             BackupQueueRepo(self.conn).reenqueue(clip_id, now)
         return 200, {"id": clip_id, "applied": applied}
 

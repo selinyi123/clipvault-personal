@@ -233,16 +233,17 @@ def test_c6_delete_reflected_in_backup_restore(conn, work_repo, tmp_path):
     assert restored.deleted is True                    # no resurrection
 
 
-def test_c6_pin_reflected_in_backup_restore(conn, work_repo, tmp_path):
+def test_c6_pin_only_patch_does_not_rebackup(conn, work_repo, tmp_path):
+    # GHB-1.1 is deliberately narrow: only deletion is re-backed-up. Cosmetic
+    # flags (pinned/favorite) are NOT mirrored — backup stays a recovery snapshot.
     repo, _ = work_repo
     api = _api(conn, tmp_path)
     cid = api.create_clip({"content": "pin me"})[1]["clip"]["id"]
     worker = BackupWorker(conn, str(repo), push_enabled=False)
     worker.run_once()
     api.patch_clip(cid, {"pinned": True, "favorite": True})
-    worker.run_once()
-    restored = _restore(repo, tmp_path / "r.db").get(cid)
-    assert restored.pinned is True and restored.favorite is True
+    assert BackupQueueRepo(conn).state_of(cid) == "done"  # not re-activated
+    assert worker.run_once()["written"] == 0              # nothing re-backed-up
 
 
 def test_c6_sync_delete_reflected_in_backup_restore(conn, work_repo, tmp_path):
