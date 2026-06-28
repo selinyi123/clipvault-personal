@@ -49,7 +49,7 @@
 ## v0.4 门禁（Personal Memory）
 
 - memory CRUD（Web UI + API）可用；(kind,text) 唯一。
-- Obsidian 标题导入、GitHub 仓库名导入可重复执行且幂等。
+- Obsidian 标题导入、GitHub 仓库名导入可重复执行且幂等；**重跑不复活用户已软删除的 memory 项**（importers.apply 跳过已删除项；显式手动/提升仍可 un-delete）。
 - memory_upsert/delete 经同步到达 Android Room。
 - 从 clip 一键提升为 memory 项。
 
