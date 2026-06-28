@@ -248,7 +248,10 @@ meta/
 
 - worker 周期（默认 15 分钟）：取 backup_queue 中 state=pending → 闸门 C 复扫 Secret Guard（用当前规则集对 content 再判，命中→丢弃+ERROR）→ 追加当日 JSONL → `git add -A && git commit -m "backup: {n} clips {iso_ts}"` → `git push`。
 - push 失败：commit 保留在本地，queue 条目标记 done（数据已在本地 git），下轮重试 push；退避 1m→2m→4m→…→30m 封顶。
-- 同一 clip 终生只备份一次（按 id）；clip_meta 变化不重备（备份是灾难恢复，不是镜像）。
+- **GHB-1.1 修订（2026-06-28）**：clip 的元数据变化（pinned/favorite/**deleted**）会**重新入队**，
+  worker 把当前状态追加为新的 JSONL 行（按 id 去重，restore 取最后一次=最新状态）。原设计"clip_meta 变化不重备"
+  会导致**首次备份后被删除的 clip 在 restore 时复活**（违反 NORM-1"已删除的不复活"，且把用户删掉的内容找回来）。
+  密钥永不备份（闸门 B/C 不变），故 secret clip 的 patch 不入队。追加按行去重，状态数有限→JSONL 不会无界膨胀。
 - 禁止：pull、force push、rebase、amend。唯一例外见 docs/RUNBOOK_PURGE.md。
 - 恢复合同：`tools/restore.py` 读全部 JSONL → 重建 SQLite → 可选重建 Markdown。v1.0 门禁要求演练通过。
 

@@ -28,6 +28,25 @@ class BackupQueueRepo:
         self.conn.commit()
         return cur.rowcount > 0
 
+    def reenqueue(self, clip_id: str, when: str) -> None:
+        """Re-activate a clip for backup after its metadata changed (pin/favorite/
+        delete). Unlike enqueue(), this resets an already-'done' row back to
+        'pending' so the worker re-serializes the current state — otherwise a
+        deletion made after the first backup is never reflected in the JSONL and
+        the clip resurrects on restore (GHB-1). Gate B still applies: secrets must
+        not be backed up, so callers skip secret clips and this re-checks."""
+        secret = self.conn.execute(
+            "SELECT is_secret FROM clips WHERE id = ?", (clip_id,)
+        ).fetchone()
+        if secret is not None and secret[0]:
+            raise SecretEnqueueError(f"secret clip must not be backed up: {clip_id}")
+        self.conn.execute(
+            "INSERT INTO backup_queue(clip_id, created_at, state) VALUES (?, ?, 'pending') "
+            "ON CONFLICT(clip_id) DO UPDATE SET state='pending', done_at=NULL",
+            (clip_id, when),
+        )
+        self.conn.commit()
+
     def pending_clip_ids(self) -> list[str]:
         rows = self.conn.execute(
             "SELECT clip_id FROM backup_queue WHERE state = 'pending' ORDER BY id"

@@ -203,6 +203,7 @@ def _apply_clip_meta(conn, data: dict) -> None:
     # Per-field LWW (v1.8): each field's newest ts wins independently, so a newer
     # change to one field is never masked by an older change to another. On an
     # exact ts tie a delete wins (SYNC-2 delete-wins semantics).
+    changed = False
     for field in ("pinned", "favorite", "deleted"):
         if field not in patch:
             continue
@@ -212,6 +213,11 @@ def _apply_clip_meta(conn, data: dict) -> None:
             continue  # stale for this field
         clips.set_flag(row.id, field, bool(patch[field]))
         _set_meta_ts(conn, content_hash, field, ts)
+        changed = True
+    # Re-back-up the new state (e.g. a peer's deletion) so restore.py doesn't
+    # resurrect it (GHB-1). Secrets are never backed up, so skip them.
+    if changed and not row.is_secret:
+        BackupQueueRepo(conn).reenqueue(row.id, ts)
 
 
 # --- pull side ---
