@@ -84,3 +84,84 @@
 - [ ] 连续运行 7 天无崩溃 —— **运行期观察项**（无法在构建期断言；靠日志佐证，交 Owner 验证）。
 
 Android 侧（S005/S008/S009）与端到端双端联调在 Android 完成后复验。
+
+---
+
+# Keyboard 主线门禁（v1.1 → v3.0）
+
+> 北极星：**做一个完整的（中文）输入法**。主线定义见 [ROADMAP_V2_KEYBOARD.md](ROADMAP_V2_KEYBOARD.md)，
+> 隐私分层见 [ADR-0008](ADR/0008-v1-as-runtime.md)（键入用于输入、显式保存才成资产、L0–L4）。
+> 本段是"先冻验收标准、再开工"的门禁登记处；**门禁先冻结，结果后判断**（Builder 不自我验收）。
+> 全局门禁 **G1–G8 仍逐 PR 适用**（IME 模块无网络、密钥不外泄、日志无正文、core 无 IO、新行为有测试）。
+>
+> **可验证性标签**（本仓库环境约束）：
+> - 🟢 **本地可验**：桌面 Python / contracts 向量 / host-JVM 单测，能在 Linux 跑命令断言。
+> - 🟡 **CI 可验**：需 Android SDK 编译 / windows-latest，本地编译不了，靠 CI 产出佐证。
+> - 🔵 **设备/人工**：需真机或人工体验，交 Owner 验证（Builder 不代签）。
+
+## v1.1 门禁（Runtime 收口）— 现状：PR2/PR3 已落地
+
+- 🟡 Android 经 `ClipVaultFacade`（`listRecentClips`/`listMemory`/`saveExplicit`）访问数据，
+  Panel IME 不再直接碰 Room DAO / Capture / SyncScheduler；行为不变（同样查询与 take(40)）。
+- 🔵 模拟器/真机：App 启动无崩溃，IME 仍注册可用。
+- 🟢 文档：v1 明确为 Runtime（ADR-0008 在 repo），原则 P2/P7 演进已记录。
+
+## v1.2 门禁（SyncTransport 抽象）— 未开工
+
+- 🟢 HTTP push/pull 抽象为 `SyncTransport` 接口，既有同步行为与契约**不变**（既有 sync 测试全绿、
+  contracts/vectors 既有用例不删改）。
+- 🟢 抽象层不引入云、不改变"桌面是事实源、密钥不进 outbox"语义（单测覆盖）。
+- 🟢 文档：ADR-0009（sync-transport-abstraction）+ CONTRACTS_SYNC_TRANSPORT.md 落地。
+
+## v2.0 门禁（双 IME 入口）— 现状：PR4 Full Keyboard Lab 已落地
+
+- 🔵 同一 APK 内两个 InputMethodService 均可在系统输入法列表启用：ClipVault Panel + ClipVault Keyboard Lab。
+- 🔵 Keyboard Lab：可用英文 QWERTY（一次性 shift + ?123 符号层 + 空格/回车/退格）+ ClipVault 工具栏
+  （"最近剪切板"经 facade 调取一键粘贴 + 切回键）。
+- 🟢/🔵 **隐私（L0–L4）**：普通键入默认不存、不传、不学；输入普通文本后 Room/同步/日志**无按键流痕迹**
+  （host-JVM 决策逻辑单测 🟢 + 真机痕迹核查 🔵）。
+- 🟢 文档：ADR-0011（input-context-privacy）+ KEYBOARD_PRIVACY.md + CONTRACTS_KEYBOARD.md 落地。
+
+## v2.1 门禁（底座 Spike → ADR-0010）— 未开工（需 build PoC）
+
+- 🟡 **build PoC**：在一个最小 Android 工程中跑通 librime（BSD）拼音候选产出（paper spike 已有，PR5）。
+- 🟢 文档：ADR-0010 终裁——引擎=librime；长期框架 (A) 自建 librime 前端 / (B) fcitx5 插件二选一，
+  附 license/build/integration 评分表（评分依据落在 repo，不口头）。
+- 🟢 `InputEngineAdapter`(RimeAdapter) 目标接口签名冻结在 CONTRACTS_KEYBOARD.md（仅接口，不绑实现）。
+- ⚖️ **A/B 选择尚未裁定**：本门禁只要求"做完 PoC 并产出 ADR-0010"，不预判结论。
+
+## v2.2 门禁（CandidateMixer）— 未开工
+
+- 🟢 排序公式可验（共享评分向量，两端一致）：
+  `final = engine_score + prefix + recency + frequency + pinned_boost + app_context_boost
+  + remote_freshness + explicit_saved_boost − secret_risk_penalty − sensitive_field_penalty`。
+- 🟢 **pinned 硬置顶**（沿用 SUG-1.1）；**Secret 不进候选**；**密码框（sensitive field）不展示 ClipVault 候选**
+  ——三条均有断言用例（既有 PrivacyAwareFilter / 来源上限逻辑复用，不另造）。
+- 🟢 ClipVault 内容（剪切板/词库/Prompt/命令/路径）与引擎候选混排，确定性、可解释、权重可配。
+
+## v2.3 门禁（本地学习）— 未开工（开工时细化）
+
+- 🟢 只存**可解释统计事件**（词频/短语/Prompt/命令/场景/最近），**绝不存普通键入正文**
+  （schema 审查 + 单测断言无正文字段）。
+- 🟢 学习全本地、可关闭、可清除；不外传、不上云（G1/G2 复验）。
+- ⏳ 具体事件 schema 与权重在该阶段开工时随 slice 冻结。
+
+## v2.4 门禁（Cloud Relay POC）— 未开工（开工时细化，需威胁模型先行）
+
+- 🟢 **端到端加密**：云只中继密文，服务端无法还原明文（密钥不出设备，G1 复验；加密/解密单测）。
+- 🟢 云中继为**可选、默认关**；关闭时所有核心功能照常（本地优先）。
+- 🟢 文档：ADR-0012（cloud-relay-threat-model）先于实现落地。
+- ⏳ 协议细节随该阶段 slice 冻结。
+
+## v3.0 门禁（智能输入）— 未开工（开工时细化）
+
+- 🔵/🟢 纠错/长句补全/Prompt 改写/语音/云 AI：**全部可关、默认关、显式触发**；
+  关闭时退回 v2.x 确定性行为（回归测试）。
+- 🟢 AI 调用不携带密钥、不静默上传普通键入正文（G1/G2 复验）。
+- ⏳ 能力清单与触发契约随该阶段 slice 冻结。
+
+## 范围刹车（主线明确暂不做，违反即范围外）
+
+商业 SaaS、多用户账号、支付、插件市场、皮肤商店、云端明文索引、云端知识库、
+自动上传普通键入、自动保存所有上屏文本、多人协同编辑、CRDT 笔记编辑器。
+（与 ROADMAP_V2_KEYBOARD「范围刹车」一致；G5 范围门禁对主线同样适用。）
