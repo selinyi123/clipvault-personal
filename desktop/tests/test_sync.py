@@ -337,3 +337,30 @@ def test_h2_socket_auth_end_to_end(cfg):
     finally:
         stop.set()
         time.sleep(0.6)
+
+
+def test_h10_malformed_event_does_not_wedge_batch(api, conn):
+    # One malformed event from a version-skewed/buggy peer must not crash the
+    # whole push or drop the valid events around it; it is acked as an
+    # unprocessable no-op so it is not resent forever.
+    token = _pair(api)
+    events = [
+        _clip_new_event(1, "before bad", hash="ok1"),
+        {"origin_device": PEER, "seq": 2, "kind": "clip_meta", "data": {}},  # missing keys
+        _clip_new_event(3, "after bad", hash="ok3"),
+    ]
+    s, body = api.sync_push(token, {"events": events})
+    assert s == 200 and body["acked_upto"] == 3          # malformed #2 acked, no wedge
+    assert ClipsRepo(conn).get_by_hash("ok1") is not None
+    assert ClipsRepo(conn).get_by_hash("ok3") is not None  # valid event after the bad one still lands
+
+
+def test_h10_event_without_seq_is_dropped(api, conn):
+    token = _pair(api)
+    events = [
+        {"origin_device": PEER, "kind": "clip_new", "data": {}},  # no seq -> unorderable
+        _clip_new_event(1, "valid one", hash="okv"),
+    ]
+    s, body = api.sync_push(token, {"events": events})
+    assert s == 200 and body["acked_upto"] == 1
+    assert ClipsRepo(conn).get_by_hash("okv") is not None

@@ -183,6 +183,9 @@ LWW 时间戳记于 `clip_meta_ts(content_hash, ts)`（migration 0002）。
 不变量：
 - is_secret=1 的 clip **永不**出现在 events 中；接收端若收到（对端实现 bug），必须本地隔离并记 ERROR。
 - 接收端持久化 `peer_cursor[origin_device] = max contiguous seq applied`，ack 该值；发送端只清除已 ack 的 outbox 条目。
+- **畸形事件韧性（apply_push）**：单个畸形/未知事件不得使整批 push 崩溃。无法排序的（非对象、无整数 seq）→ 记 ERROR 丢弃；
+  结构损坏但 seq 合法的（如 data 缺字段、未知 kind）→ 记 ERROR 当作不可处理的 no-op 并照常 ack（推进 cursor），
+  使版本错位/有 bug 的对端的一个坏事件不会卡死同步。已应用事件本就幂等，重发安全。
 
 ### 5.3 配对（PAIR-1）
 
