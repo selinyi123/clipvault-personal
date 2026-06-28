@@ -103,33 +103,58 @@ def _set_mem_ts(conn, kind: str, text: str, ts: str) -> None:
 
 # --- remote application (called by /api/sync/push) ---
 
+def _apply_one(conn, ev: dict, service) -> None:
+    """Apply a single peer event. A malformed or unknown event is logged and
+    treated as an unprocessable no-op (the caller still acks it) so one bad event
+    from a version-skewed/buggy peer cannot crash the whole push batch and wedge
+    sync — consistent with how unknown event kinds are already tolerated."""
+    kind = ev.get("kind")
+    data = ev.get("data")
+    if not isinstance(data, dict):
+        log.error("malformed sync event (data not object) kind=%s", kind)
+        return
+    try:
+        if kind == "clip_new":
+            _apply_clip_new(conn, data, service)
+        elif kind == "clip_meta":
+            _apply_clip_meta(conn, data)
+        elif kind == "memory_upsert":
+            _apply_memory_upsert(conn, data)
+        elif kind == "memory_delete":
+            _apply_memory_delete(conn, data)
+        else:
+            log.error("unknown sync event kind=%s", kind)
+    except KeyError as exc:
+        log.error("malformed sync event kind=%s missing key %s", kind, exc)
+
+
 def apply_push(conn, device_id: str, events: list[dict], service) -> int:
     """Apply a peer's events idempotently; return highest contiguous seq applied.
 
     A gap must not advance the ack cursor. Otherwise the sender may delete an
     unacknowledged event and permanently lose it. Out-of-order/gapped events are
-    still safe to apply because every event kind is idempotent.
+    still safe to apply because every event kind is idempotent. A malformed event
+    (not an object, or no integer seq) cannot be ordered or acked, so it is
+    dropped with a log; a structurally-bad-but-seq-valid event is acked as an
+    unprocessable no-op (see _apply_one) so it does not wedge the batch.
     """
     peers = PeersRepo(conn)
     peer = peers.get(device_id)
     cursor = peer["peer_cursor"] if peer else 0
     acked = cursor
 
-    for ev in sorted(events, key=lambda e: e["seq"]):
+    orderable = []
+    for ev in events:
+        if isinstance(ev, dict) and isinstance(ev.get("seq"), int) and not isinstance(ev.get("seq"), bool):
+            orderable.append(ev)
+        else:
+            log.error("sync event without integer seq, dropped")
+
+    for ev in sorted(orderable, key=lambda e: e["seq"]):
         seq = ev["seq"]
         if seq <= cursor:
             continue  # already applied
-        kind = ev["kind"]
-        if kind == "clip_new":
-            _apply_clip_new(conn, ev["data"], service)
-        elif kind == "clip_meta":
-            _apply_clip_meta(conn, ev["data"])
-        elif kind == "memory_upsert":
-            _apply_memory_upsert(conn, ev["data"])
-        elif kind == "memory_delete":
-            _apply_memory_delete(conn, ev["data"])
-        else:
-            log.error("unknown sync event kind=%s", kind)
+        _apply_one(conn, ev, service)
         if seq == acked + 1:
             acked = seq
         elif seq > acked + 1:
