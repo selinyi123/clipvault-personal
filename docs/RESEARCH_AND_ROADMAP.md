@@ -1,4 +1,15 @@
-# ClipVault — Research Log & Roadmap
+# ClipVault — Research Log & Roadmap（加固支线）
+
+> **定位（2026-06-27 厘清）**：本文是 **v1.x 安全/同步/隐私加固支线** 的研究记录与路线，
+> **从属于** keyboard 主线 [ROADMAP_V2_KEYBOARD.md](ROADMAP_V2_KEYBOARD.md)。
+> 北极星不变：**做一个完整的（中文）输入法**——主线 v2.1 起接 librime/fcitx5 底座。
+> 本支线只做"可在桌面/Linux 验证、且不偏离 local-first 与 secrets-never-leave"的加固，
+> 为主线提供稳固 Runtime，不替代主线。
+>
+> **版本标签澄清**：下文 "v1.6 / v1.7 / v1.8" 是**里程碑/PR 标签**，**不是**版本号变更。
+> 截至 2026-06-27，源码 `__version__` 仍为 **1.5.16**（未 bump），最新已发布二进制为 **v1.5.10**。
+> 各项落地状态见 [docs/HANDOFF.md](HANDOFF.md) 的 *Hardening Support Line Snapshot*（PRs #4–#15）。
+> 是否 bump 版本号 + 切新 Release 由 Owner 裁决。
 
 ## Core goal (the anchor for all research)
 
@@ -32,29 +43,32 @@ introduced this file.)
 
 ## Roadmap
 
-### v1.6 — privacy & security hardening *(this cycle)*
-- Pairing rate-limit (R6) · DNS-rebinding `Host` guard (R4) · IME incognito suppression (R2).
-- Already merged this cycle: version single-source, candidate source caps,
-  release-state display, device revocation.
+### v1.6 — privacy & security hardening — ✅ 已并入 main
+- Pairing rate-limit (R6) · DNS-rebinding `Host` guard (R4) · IME incognito suppression (R2) — **#12**。
+- 同期并入：version single-source (**#7**)、candidate source caps (**#8**)、
+  sync/peer 状态可见 (**#9**)、device revocation (**#10**)。
 
 ### v1.7 — capture-layer privacy + Secret Guard depth
-- Honour Windows clipboard-exclusion formats
+- ✅ **已并入 (#13)**：Widen Secret Guard with a gitleaks-inspired rule set + entropy tuning,
+  backed by golden test vectors (R3). *Desktop-testable.*
+- ⏳ **未做**：Honour Windows clipboard-exclusion formats
   (`ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory=0`)
   in the watcher → never capture what a password manager marked sensitive (R1).
   *Windows-only; needs Windows-CI / manual verification.*
-- Widen Secret Guard with a gitleaks-inspired rule set + entropy tuning, backed by
-  golden test vectors (R3). *Desktop-testable.*
-- Extend IME incognito to the **save** path (no save-clipboard in incognito fields).
+- ⏳ **未做**：Extend IME incognito to the **save** path (no save-clipboard in incognito fields).
 
-### v1.8 — sync correctness
-- Per-field LWW for `clip_meta`: track the meta timestamp per field
+### v1.8 — sync correctness — ✅ 已并入 main
+- ✅ **#14**：Per-field LWW for `clip_meta`: track the meta timestamp per field
   (pinned / favorite / deleted) so a newer change to one field can't be masked by
-  an older change to another (R5). *Desktop-testable.*
-- Optional `Referer` check as a second DNS-rebinding layer.
+  an older change to another (R5). *Desktop-testable (migration 0004).*
+- ✅ **#15**：Optional `Referer` check as a second DNS-rebinding layer.
 
-### v2.0 — opt-in transport security
+### v2.0 — opt-in transport security — ⏳ 未做（候选）
 - Optional self-signed TLS for the LAN sync/pair socket (R4 defence-in-depth), with
   the Android client pinning the desktop certificate at pair time.
+
+> 主线优先级高于本支线剩余项：keyboard 主线（ROADMAP_V2_KEYBOARD）的 v2.1 底座 spike（ADR-0010）
+> 是北极星路径；本支线 v1.7 残项与 v2.0 为机会性加固，不阻塞主线。
 
 ### Explicitly out of scope (keeps us on the core goal)
 - Cloud sync / server-side storage — ClipVault is local-first.
