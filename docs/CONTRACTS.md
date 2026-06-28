@@ -81,6 +81,12 @@
 | SG-OPENAI | `\bsk-(proj-\|ant-)?[A-Za-z0-9_-]{20,}\b` |
 | SG-GOOGLE | `\bAIza[0-9A-Za-z_-]{35}\b` |
 | SG-JWT | `\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b` |
+| SG-STRIPE | `\b[sr]k_(live\|test)_[0-9A-Za-z]{16,}\b` |
+| SG-GITLAB | `\bglpat-[A-Za-z0-9_-]{20,}\b` |
+| SG-SENDGRID | `\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b` |
+| SG-NPM | `\bnpm_[A-Za-z0-9]{36}\b` |
+| SG-DIGITALOCEAN | `\bdop_v1_[a-f0-9]{64}\b` |
+| SG-SLACK-URL | `https://hooks\.slack\.com/services/[A-Za-z0-9_/+-]{24,}` |
 | SG-ASSIGN | `(?i)\b(password\|passwd\|pwd\|secret\|token\|api[_-]?key\|access[_-]?key\|client[_-]?secret\|auth)\b\s*[:=]\s*\S{8,}` |
 | SG-CONNSTR | `(?i)\b(postgres(ql)?\|mysql\|mongodb(\+srv)?\|redis\|amqp)://[^\s:@/]+:[^\s@]+@` |
 | SG-ENV | ≥2 行匹配 `^[A-Z][A-Z0-9_]{2,}=\S+$` 且其中至少一行变量名含 `KEY\|TOKEN\|SECRET\|PASS\|PWD` |
@@ -94,6 +100,12 @@
 - UUID 格式（8-4-4-4-12 hex）
 - 以 `/` 或 `~` 开头的 token（unix 路径形态）
 - 以已知图片 base64 魔数开头：`iVBORw0KGgo`（PNG）、`/9j/`（JPEG）、`R0lGOD`（GIF）
+
+**SG-1.2 修订（2026-06-28）**：4.2 的整体熵规则只看"整段内容是单 token"，会漏掉**嵌在文字中**的
+高熵凭据（例如 `deploy key is <token>`，因含空白故整段不是单 token，且未命中任何命名规则）。新增：
+对每个**空白分隔 token** 单独判熵，但门槛比整段规则更严——token 必须**同时含字母和数字**（凭据形态），
+以免误伤散文中的普通长词。命中仍记 `SG-ENTROPY`、level=suspect。沿用 SG-1.1 的全部排除项。
+（整段规则行为不变；本修订只新增检出，不改既有判定。）
 
 ### 4.3 判定与隔离语义
 
