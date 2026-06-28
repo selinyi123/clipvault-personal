@@ -15,8 +15,8 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
-| Current slice | Issue #3（v1.5 gate）已关闭（2026-06-26，A+B 签收）。其后 main 上并入 v1.6–v1.8 **加固支线**（PRs #4–#15，详见下方快照）。源码 `__version__` 仍为 **1.5.16**（未 bump；v1.6/1.7/1.8 为里程碑标签而非版本号）。最新**已发布**二进制仍是 **v1.5.10**。 |
-| Last updated | 2026-06-27 |
+| Current slice | Issue #3（v1.5 gate）已关闭（2026-06-26，A+B 签收）。其后 main 上并入 v1.6–v1.8 **加固支线**（PRs #4–#15，详见下方快照）。源码 `__version__` 已 bump 到 **1.6.0**（Owner 裁定，2026-06-28，反映累计加固；**不发版**）。最新**已发布**二进制仍是 **v1.5.10**。 |
+| Last updated | 2026-06-28 |
 
 ## Product Constraints（全部 Active）
 
@@ -33,23 +33,23 @@
 
 ## Current Version Status
 
-源码树（main HEAD）的版本元数据全部对齐在 **1.5.16**：
+源码树（main HEAD）的版本元数据全部对齐在 **1.6.0**：
 
-- Desktop runtime version: 1.5.16
-- Desktop package metadata: 1.5.16
-- Android versionName: 1.5.16
-- Android versionCode: 12
-- Windows installer AppVersion: 1.5.16
+- Desktop runtime version: 1.6.0
+- Desktop package metadata: 1.6.0
+- Android versionName: 1.6.0
+- Android versionCode: 13
+- Windows installer AppVersion: 1.6.0
 - Panel IME service uses PanelCandidateTabs.filter with PANEL_CANDIDATE_POOL_LIMIT
 
-**版本号 vs 发布状态（需 Owner 决策）**：
+**版本号 vs 发布状态**：
 
-- v1.6–v1.8 加固支线（PRs #4–#15）已并入 main，但 `__version__` **未** bump，仍是 1.5.16。
-  这些 "v1.6/1.7/1.8" 是路线图里程碑标签，**不是**版本号变更。
-- 最新**已发布**（GitHub Releases）二进制是 **v1.5.10**（2026-06-23，桌面 134 测试）。
-  即 main HEAD（1.5.16，166 项可在 Linux 跑通 + 4 项 Windows-only）**领先于**最新发布二进制。
-- 待 Owner 裁决：是否把 `__version__` bump 到 v1.6（反映加固支线）并切一个新的二进制 Release。
-  在裁决前，本支线只在 main，未对外发版。
+- v1.6–v1.8 加固支线（PRs #4–#15）已并入 main。Owner 裁定（2026-06-28）把 `__version__`
+  从 1.5.16 **bump 到 1.6.0**（一次 minor，反映自 1.5.x 以来的累计加固；"v1.6/1.7/1.8" 原是路线图里程碑标签）。
+  经 `scripts/bump_version.py 1.6.0` 一处改、四文件对齐（versionCode 12→13），`test_release_alignment.py` 守。
+- **不发版**：本次只在仓内 bump，**未**切 GitHub Release。最新**已发布**二进制仍是 **v1.5.10**
+  （2026-06-23，桌面 134 测试）。即 main HEAD（1.6.0，166 项 Linux 跑通 + 4 项 Windows-only）**领先于**最新发布二进制。
+- 是否切 1.6.0 二进制 Release 仍待 Owner 显式决定（对外动作；签名 exe/APK 仅 CI 产出）。
 
 ## Hardening Support Line Snapshot（v1.6–v1.8，已并入 main）
 
@@ -86,7 +86,7 @@
 | S012 Desktop Hardening | PASS: outbox pruning, peer ack tracking, docs/gates |
 | S005 Android Capture + Kotlin Core | Source complete; Kotlin core vector tests historically passed; device validation remains owner-run |
 | S008 Memory to Android Sync | Desktop side tested; Android mirror/source complete |
-| S009 Keyboard Personal | IME source complete; current v1.5.16 Panel/Full Keyboard gates remain manual QA |
+| S009 Keyboard Personal | IME source complete; Panel/Full Keyboard gates remain manual QA (device-only) |
 
 ## Current Contracts
 

@@ -7,7 +7,7 @@
 > 为主线提供稳固 Runtime，不替代主线。
 >
 > **版本标签澄清**：下文 "v1.6 / v1.7 / v1.8" 是**里程碑/PR 标签**，**不是**版本号变更。
-> 截至 2026-06-27，源码 `__version__` 仍为 **1.5.16**（未 bump），最新已发布二进制为 **v1.5.10**。
+> 截至 2026-06-28，源码 `__version__` 已 bump 到 **1.6.0**（Owner 裁定，反映累计加固；未切 Release），最新已发布二进制仍为 **v1.5.10**。
 > 各项落地状态见 [docs/HANDOFF.md](HANDOFF.md) 的 *Hardening Support Line Snapshot*（PRs #4–#15）。
 > 是否 bump 版本号 + 切新 Release 由 Owner 裁决。
 

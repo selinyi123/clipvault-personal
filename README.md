@@ -9,7 +9,7 @@
 
 非商业 · 单用户 · 本地优先。架构师：Claude Fable 5 ｜ 实现：Claude Fable 5（原 Codex 故障接管）｜ 最终裁决：Owner。
 
-**状态**：源码树 `__version__` = **1.5.16**；桌面端 **166** 项测试在 Linux/CI 跑通（另有 4 项 Windows-only，共 170），
+**状态**：源码树 `__version__` = **1.6.0**（2026-06-28 由 1.5.16 bump，反映累计加固；尚未切二进制 Release）；桌面端 **166** 项测试在 Linux/CI 跑通（另有 4 项 Windows-only，共 170），
 可独立日用；Android core 与桌面**跨平台一致性已证（VEC-1 100/100）**，app 整体编译产出已签名 APK。
 最新**已发布**二进制为 [v1.5.10](https://github.com/selinyi123/clipvault-personal/releases/tag/v1.5.10)（main 领先于它）。
 v1.5 release gate（Issue #3）已关闭；其后 main 上并入 v1.6–v1.8 安全/同步/隐私加固支线（见 [docs/HANDOFF.md](docs/HANDOFF.md)）。
