@@ -14,7 +14,7 @@ EXPECTED_TABLES = {
 
 
 def test_a1_migration_from_zero(conn):
-    assert db.schema_version(conn) == 4  # 0001_init + 0002/0003 meta_ts + 0004 per-field clip_meta_ts
+    assert db.schema_version(conn) == 5  # 0001_init + 0002/0003 meta_ts + 0004 per-field clip_meta_ts + 0005 fts trigram
     names = {
         r[0]
         for r in conn.execute(
@@ -28,7 +28,7 @@ def test_a1_migration_from_zero(conn):
 
 
 def test_a1_migration_idempotent(conn):
-    assert db.migrate(conn) == 4  # second run is a no-op, returns current version
+    assert db.migrate(conn) == 5  # second run is a no-op, returns current version
 
 
 def test_a1_clip_meta_ts_upgrade_seeds_every_field():

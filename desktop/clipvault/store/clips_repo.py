@@ -14,6 +14,26 @@ _COLUMNS = (
     "obsidian_path, backed_up_at"
 )
 
+# The clips_fts trigram tokenizer (migration 0005) indexes 3-char sequences, so
+# it can only match queries of length >= 3. Shorter queries (common for CJK, e.g.
+# 2-char words like "天气") fall back to a LIKE scan, which is fine at personal
+# scale and the only option for secret-view search (secrets are never in FTS).
+_FTS_MIN_LEN = 3
+
+
+def _fts_match(query: str) -> str:
+    """Wrap a query as an FTS5 phrase so the whole thing is matched as one literal
+    substring (spaces and query operators included), escaping embedded quotes.
+    With the trigram tokenizer this yields literal substring search."""
+    return '"' + query.replace('"', '""') + '"'
+
+
+def _like_term(query: str) -> str:
+    """LIKE pattern matching `query` as a literal substring; %/_/\\ are escaped so
+    they are not treated as wildcards (use with ESCAPE '\\')."""
+    esc = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{esc}%"
+
 
 def _row_to_clip(row: sqlite3.Row) -> Clip:
     return Clip(
@@ -114,14 +134,26 @@ class ClipsRepo:
         return [_row_to_clip(r) for r in rows]
 
     def search_fts(self, query: str, limit: int = 50) -> list[Clip]:
-        rows = self.conn.execute(
-            f"""
-            SELECT {_COLUMNS} FROM clips
-            WHERE id IN (SELECT id FROM clips_fts WHERE clips_fts MATCH ?)
-            ORDER BY last_seen_at DESC LIMIT ?
-            """,
-            (query, limit),
-        ).fetchall()
+        q = query.strip()
+        if not q:
+            return []
+        if len(q) >= _FTS_MIN_LEN:
+            rows = self.conn.execute(
+                f"SELECT {_COLUMNS} FROM clips "
+                "WHERE id IN (SELECT id FROM clips_fts WHERE clips_fts MATCH ?) "
+                "ORDER BY last_seen_at DESC LIMIT ?",
+                (_fts_match(q), limit),
+            ).fetchall()
+        else:
+            # Short query (e.g. a 2-char CJK word): trigram cannot match < 3 chars,
+            # so scan with LIKE. Filter is_secret/deleted explicitly here because we
+            # bypass clips_fts, which is the index that normally excludes them (G1).
+            rows = self.conn.execute(
+                f"SELECT {_COLUMNS} FROM clips "
+                "WHERE is_secret = 0 AND deleted = 0 AND content LIKE ? ESCAPE '\\' "
+                "ORDER BY last_seen_at DESC LIMIT ?",
+                (_like_term(q), limit),
+            ).fetchall()
         return [_row_to_clip(r) for r in rows]
 
     def fts_contains(self, clip_id: str) -> bool:
@@ -146,9 +178,17 @@ class ClipsRepo:
         if before_id:
             where.append("id < ?")
             params.append(before_id)
-        if query:
-            where.append("id IN (SELECT id FROM clips_fts WHERE clips_fts MATCH ?)")
-            params.append(query)
+        q = (query or "").strip()
+        if q:
+            # FTS (trigram) only for the non-secret view with a >= 3-char query;
+            # otherwise LIKE — secrets are never in clips_fts, and trigram can't
+            # match < 3 chars (common for CJK).
+            if not secret and len(q) >= _FTS_MIN_LEN:
+                where.append("id IN (SELECT id FROM clips_fts WHERE clips_fts MATCH ?)")
+                params.append(_fts_match(q))
+            else:
+                where.append("content LIKE ? ESCAPE '\\'")
+                params.append(_like_term(q))
         sql = (f"SELECT {_COLUMNS} FROM clips WHERE " + " AND ".join(where)
                + " ORDER BY pinned DESC, last_seen_at DESC LIMIT ?")
         params.append(limit)

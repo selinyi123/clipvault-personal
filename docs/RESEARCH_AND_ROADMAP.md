@@ -41,6 +41,15 @@ Platforms consulted this round: GitHub, Hacker News, Medium, Substack, Microsoft
 Learn, Android Developers, and security vendor blogs. (URLs are in the PR that
 introduced this file.)
 
+## Research log — round 2 (2026-06-28)
+
+| # | Direction | Key finding | Decision |
+|---|---|---|---|
+| R7 | CJK full-text search in SQLite FTS5 | 默认 `unicode61` 分词器把整串 CJK 当**单 token**，中文子串/短语**搜不到**（实测："天气"搜不到"今天天气很好"，英文中段子串也搜不到）。社区方案：**trigram**（SQLite 内置，3 字窗，支持 CJK/英文子串，但 <3 字不行）；**ICU 分词器**（需重编 SQLite 链接 ICU，不可移植）；**jieba/cppjieba**（[wangfenjin/simple](https://github.com/wangfenjin/simple)，中文+拼音，质量最好但是 C 扩展依赖）；**bigram 预处理**（纯 SQL，2 字也行，但需改写入路径）。 | **Adopt（已并入）：** clips_fts 改 **trigram**（零新依赖，符合 stdlib-only 原则）+ <2 字/secret 视图 **LIKE 回退**（个人规模可接受）。**Reject** jieba/ICU（依赖/不可移植，违反零依赖原则）。 |
+| R8 | librime 在 Android 的嵌入（v2.1 build PoC 前置） | Trime（JNI 直接嵌 librime）与 fcitx5-android（插件式提供 RIME）是两条成熟参考。构建需 **Android NDK 25 + CMake 3.22 + SDK 35**；librime 自身是 CMake/C++ 工程经 JNI 暴露。证实 v2.1 build PoC 必须在 Android 工具链/CI/真机上做，本地（无 NDK）编不了。 | **记录，未动手：** v2.1 开工时按此清单做 build PoC（NDK 编 librime + JNI 喂一次拼音取候选），输出 ADR-0010 终裁。仍是 CI/设备-only。 |
+
+Platforms/sources consulted: GitHub（wangfenjin/simple、streetwriters/sqlite-better-trigram、rime/librime、fcitx5-android、osfans/trime）、DEV.to（FTS5 bigram fix）、SQLite users 邮件列表、F-Droid（fcitx5 RIME plugin）。
+
 ## Roadmap
 
 ### v1.6 — privacy & security hardening — ✅ 已并入 main
@@ -63,9 +72,16 @@ introduced this file.)
   an older change to another (R5). *Desktop-testable (migration 0004).*
 - ✅ **#15**：Optional `Referer` check as a second DNS-rebinding layer.
 
+### 搜索质量（CJK）— ✅ trigram 已并入（本轮，R7）
+- ✅ **已并入**：clips_fts 改 trigram 分词器 + 短查询 LIKE 回退 → 中文全文搜索可用（migration 0005，DB-1.1）。
+  *Desktop-testable（test_fts_cjk）。*
+- ⏳ **候选**：若 2 字中文查询的 LIKE 扫描在大库下变慢，再评估 **bigram 预处理**（纯 SQL，2 字也进 FTS 索引）。
+- ⏳ **候选**：Android Room 端中文搜索一致性（Room FTS4/FTS5 的 CJK 同样问题；与桌面对齐，需设备/CI 验证）。
+
 ### v2.0 — opt-in transport security — ⏳ 未做（候选）
 - Optional self-signed TLS for the LAN sync/pair socket (R4 defence-in-depth), with
   the Android client pinning the desktop certificate at pair time.
+  *注：自签证书生成在 stdlib-only 约束下无现成方案（需 openssl 或 cryptography 依赖），开工前需 Architect 定生成方式。*
 
 > 主线优先级高于本支线剩余项：keyboard 主线（ROADMAP_V2_KEYBOARD）的 v2.1 底座 spike（ADR-0010）
 > 是北极星路径；本支线 v1.7 残项与 v2.0 为机会性加固，不阻塞主线。
