@@ -20,10 +20,18 @@ class GitPushError(GitError):
 
 
 def _run(repo, args: list[str], timeout: int = _TIMEOUT) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True, text=True, timeout=timeout,
-    )
+    cmd = ["git", "-C", str(repo), *args]
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # A hung git op (most likely a network push) must surface as a normal
+        # non-zero result so callers handle it through their existing returncode
+        # paths — push() -> GitPushError (backoff), add_commit() -> GitError
+        # (queue stays pending, retried) — instead of an uncaught TimeoutExpired
+        # crashing the backup worker thread.
+        return subprocess.CompletedProcess(
+            cmd, returncode=124, stdout="", stderr=f"git timed out after {timeout}s",
+        )
 
 
 def init(repo) -> None:

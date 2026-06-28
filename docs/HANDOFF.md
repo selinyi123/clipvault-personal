@@ -120,12 +120,13 @@
 
 ## Verification Snapshot
 
-main HEAD desktop suite: **184 passed** on Linux/CI-portable runners
+main HEAD desktop suite: **188 passed** on Linux/CI-portable runners
 (`python -m pytest -q --ignore=tests/test_watcher.py --ignore=tests/test_instance_lock.py`,
-verified 2026-06-28；含 #19 SG-1.2、#21 SUG-1.3、CJK-FTS 7 例、GHB-1.1 备份-删除 4 例、memory 导入不复活 1 例）。
-另有 **4** 项 Windows-only 用例（`test_watcher.py` 3 + `test_instance_lock.py` 1，依赖 `ctypes.WinDLL`，仅
-windows-latest CI 可跑）→ 桌面总计 **188** 项。schema 版本 = **5**（migration 0005：clips_fts 改 trigram，修中文搜索）。
-最近修复：GHB-1.1（clip deleted 重新入队备份，restore 不复活已删 clip）；memory 导入重跑不复活用户已删词条。
+verified 2026-06-28）。另有 **4** 项 Windows-only 用例（`test_watcher.py` 3 + `test_instance_lock.py` 1，
+依赖 `ctypes.WinDLL`，仅 windows-latest CI 可跑）→ 桌面总计 **192** 项。
+schema 版本 = **5**（migration 0005：clips_fts 改 trigram，修中文搜索）。
+近期审计修复（每个先复现）：SUG-1.3 建议确定性 · CJK 全文搜索 · GHB-1.1 删除不复活 ·
+memory 导入不复活 · sync 畸形事件不卡批（CONTRACTS §5 韧性不变量）· git 超时不崩备份 worker（转 GitPushError 退避）。
 （历史参考：v1.0 时为 128，v1.5.10 发布时 134。）Android Kotlin core 向量历史 100/100。
 Issue #3 已于 2026-06-26 关闭（A+B 签收，CI 绿；Actions 28230052875 / 28231364251 / 28238873009）。
 
