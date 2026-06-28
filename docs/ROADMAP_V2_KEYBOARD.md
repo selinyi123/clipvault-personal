@@ -43,17 +43,18 @@
 - **PR5（docs，✅ 完成）**：`docs/SLICES/V2-S003-keyboard-base-spike.md`——Trime / Fcitx5 Android spike 清单 +
   `InputEngineAdapter`(RimeAdapter) 目标接口 + license/build/integration 评分表 + 预期裁决（输出 ADR-0010）。
 
-## 待写文档（对应阶段开工时再写，不一次性产出）
+## 文档清单（对应阶段开工时再写，不一次性产出）
 
 ```text
-docs/ADR/0009-sync-transport-abstraction.md     (v1.2)
-docs/ADR/0010-keyboard-base-selection.md        (v2.1)
-docs/ADR/0011-input-context-privacy.md          (v2.0)
-docs/ADR/0012-cloud-relay-threat-model.md       (v2.4)
-docs/CONTRACTS_KEYBOARD.md                        (v2.0)
-docs/CONTRACTS_SYNC_TRANSPORT.md                  (v1.2)
-docs/KEYBOARD_PRIVACY.md                          (v2.0)
-docs/SLICES/V2-S00N-*.md                          (各阶段开工时)
+[done] docs/ADR/0010-keyboard-base-selection.md      (v2.1，paper spike；A/B 终裁待 build PoC)
+[done] docs/CONTRACTS_KEYBOARD.md                     (v2.0，接口与不变式冻结)
+[done] docs/KEYBOARD_PRIVACY.md                       (v2.0，L0–L4 操作化 + 可验断言)
+[done] docs/GATES.md「Keyboard 主线门禁」            (v1.1→v3.0 验收门冻结)
+[todo] docs/ADR/0009-sync-transport-abstraction.md   (v1.2)
+[todo] docs/ADR/0011-input-context-privacy.md        (v2.0，把 KEYBOARD_PRIVACY 决策升格为 ADR)
+[todo] docs/ADR/0012-cloud-relay-threat-model.md     (v2.4)
+[todo] docs/CONTRACTS_SYNC_TRANSPORT.md               (v1.2)
+[todo] docs/SLICES/V2-S00N-*.md                       (各阶段开工时)
 ```
 
 ## CandidateMixer 排序（v2.2 目标公式）
