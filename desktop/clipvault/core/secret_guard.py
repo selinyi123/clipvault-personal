@@ -46,6 +46,8 @@ _ENV_LINE = re.compile(r"^[A-Z][A-Z0-9_]{2,}=\S+$")
 _ENV_SENSITIVE = re.compile(r"KEY|TOKEN|SECRET|PASS|PWD")
 
 _TOKEN_CHARS = re.compile(r"^[A-Za-z0-9+/=_\-]+$")
+_HAS_LETTER = re.compile(r"[A-Za-z]")
+_HAS_DIGIT = re.compile(r"[0-9]")
 _HEX = re.compile(r"^[0-9a-fA-F]+$")
 _UUID = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -64,6 +66,10 @@ def shannon_entropy(s: str) -> float:
         counts[ch] = counts.get(ch, 0) + 1
     n = len(s)
     return -sum((c / n) * math.log2(c / n) for c in counts.values())
+
+
+def _has_letter_and_digit(s: str) -> bool:
+    return bool(_HAS_LETTER.search(s) and _HAS_DIGIT.search(s))
 
 
 def _is_known_non_secret_format(token: str) -> bool:
@@ -99,6 +105,22 @@ def scan(content: str) -> SecretVerdict:
         and shannon_entropy(token) >= ENTROPY_THRESHOLD
     ):
         return SecretVerdict(True, SECRET_LEVEL_SUSPECT, ["SG-ENTROPY"])
+
+    # SG-1.2: a high-entropy credential-shaped token embedded in surrounding
+    # text (e.g. "deploy key is <token>") is missed by the whole-content rule
+    # above, because content containing spaces is never a single token. Scan
+    # each whitespace-separated token, but gate it stricter than the
+    # whole-content rule — the token must look credential-shaped (contain both
+    # letters and digits) — so ordinary long words in prose are not flagged.
+    for tok in content.split():
+        if (
+            len(tok) >= ENTROPY_MIN_LEN
+            and _TOKEN_CHARS.match(tok)
+            and _has_letter_and_digit(tok)
+            and not _is_known_non_secret_format(tok)
+            and shannon_entropy(tok) >= ENTROPY_THRESHOLD
+        ):
+            return SecretVerdict(True, SECRET_LEVEL_SUSPECT, ["SG-ENTROPY"])
 
     return SecretVerdict(False, None, [])
 

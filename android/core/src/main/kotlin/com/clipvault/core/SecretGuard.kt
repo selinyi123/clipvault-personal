@@ -33,6 +33,9 @@ object SecretGuard {
     private val ENV_LINE = Regex("""^[A-Z][A-Z0-9_]{2,}=\S+$""")
     private val ENV_SENSITIVE = Regex("""KEY|TOKEN|SECRET|PASS|PWD""")
     private val TOKEN_CHARS = Regex("""^[A-Za-z0-9+/=_\-]+$""")
+    private val HAS_LETTER = Regex("""[A-Za-z]""")
+    private val HAS_DIGIT = Regex("""[0-9]""")
+    private val WHITESPACE = Regex("""\s+""")
     private val HEX = Regex("""^[0-9a-fA-F]+$""")
     private val UUID = Regex(
         """^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"""
@@ -54,6 +57,9 @@ object SecretGuard {
         }
         return h
     }
+
+    private fun hasLetterAndDigit(s: String): Boolean =
+        HAS_LETTER.containsMatchIn(s) && HAS_DIGIT.containsMatchIn(s)
 
     private fun isKnownNonSecret(token: String): Boolean {
         if (UUID.matches(token)) return true
@@ -82,6 +88,22 @@ object SecretGuard {
             shannonEntropy(token) >= ENTROPY_THRESHOLD
         ) {
             return SecretVerdict(true, SECRET_LEVEL_SUSPECT, listOf("SG-ENTROPY"))
+        }
+
+        // SG-1.2: high-entropy credential-shaped token embedded in surrounding
+        // text is missed by the whole-content rule above (content with spaces is
+        // never a single token). Scan each whitespace token, gated stricter than
+        // the whole-content rule (must contain both letters and digits) so
+        // ordinary long words in prose are not flagged. Mirrors secret_guard.py.
+        for (tok in content.split(WHITESPACE)) {
+            if (tok.length >= ENTROPY_MIN_LEN &&
+                TOKEN_CHARS.matches(tok) &&
+                hasLetterAndDigit(tok) &&
+                !isKnownNonSecret(tok) &&
+                shannonEntropy(tok) >= ENTROPY_THRESHOLD
+            ) {
+                return SecretVerdict(true, SECRET_LEVEL_SUSPECT, listOf("SG-ENTROPY"))
+            }
         }
         return SecretVerdict(false, null, emptyList())
     }
