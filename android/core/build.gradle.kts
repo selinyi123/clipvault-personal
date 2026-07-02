@@ -17,4 +17,7 @@ tasks.test {
     systemProperty("clipvault.vectors", "${rootDir.parent}/contracts/vectors")
 }
 
-kotlin { jvmToolchain(21) }
+// :app compiles and runs host-JVM tests on Java 17. A Java 21 core jar loads in
+// core's own test task but fails with UnsupportedClassVersionError when app
+// tests execute shared SG-1 code, so the shared runtime boundary must match.
+kotlin { jvmToolchain(17) }

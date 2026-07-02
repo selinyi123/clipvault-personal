@@ -140,10 +140,16 @@ document.addEventListener("click", async (e) => {
   else if (b.id === "mem-add") {
     const text = $("#mem-text").value.trim();
     if (!text) return;
-    await api("/api/memory", {
+    const response = await fetch("/api/memory", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ kind: $("#mem-kind").value, text }),
     });
+    const result = await response.json();
+    if (!response.ok) {
+      $("#status").textContent = result.error?.message || "添加词条失败";
+      $("#mem-text").focus();
+      return;
+    }
     $("#mem-text").value = ""; refresh();
   }
   else if (b.dataset.unpair) {

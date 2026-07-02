@@ -60,6 +60,8 @@ Platforms/sources consulted: GitHub（wangfenjin/simple、streetwriters/sqlite-b
 ### v1.7 — capture-layer privacy + Secret Guard depth
 - ✅ **已并入 (#13)**：Widen Secret Guard with a gitleaks-inspired rule set + entropy tuning,
   backed by golden test vectors (R3). *Desktop-testable.*
+- ✅ **本分支（SG-1.3）**：Personal Memory 的 `text`/`label` 在 repo 写入、导入、同步出口与两端接收处
+  统一过 Secret Guard；历史 secret-shaped 行不进候选，历史 outbox 事件不下发但游标继续推进。
 - ⏳ **未做**：Honour Windows clipboard-exclusion formats
   (`ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory=0`)
   in the watcher → never capture what a password manager marked sensitive (R1).

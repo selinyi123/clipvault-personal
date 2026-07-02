@@ -34,15 +34,15 @@
 | T5 | LAN 上恶意设备连接同步端口 | 配对 token（哈希存储）+ auth 失败即断；推荐 Tailscale 加密通道 |
 | T6 | 手机丢失 | token 存 Android Keystore；桌面 Web UI 一键解除配对使 token 失效 |
 | T7 | 备份仓库误设为 public | 安装文档强制检查；backup worker 启动时调 `gh repo view --json visibility` 校验（失败仅告警不阻断，离线可用优先） |
-| T8 | 同步对端实现 bug 把密钥发过来 | 接收端独立再过 Secret Guard，命中即本地隔离 + ERROR |
+| T8 | 同步对端实现 bug 把密钥 clip/memory 发过来 | 接收端独立再过 Secret Guard；clip 本地隔离，memory 安全拒绝，均记内容安全的 ERROR |
 | T9 | 误判放行（false negative） | 熵启发兜底 + 规则集可独立升级 + 闸门 C 用"当时最新规则"复扫 |
 | T10 | 误判拦截（false positive）烦人 | suspect 级别 + 一键释放流程，释放留审计字段 |
 
 ## 4. Secret Guard 三道闸门（ADR-0006）
 
 ```text
-闸门 A（捕获）：ingest 管线内，落库前判定 is_secret → 决定 FTS/派生是否发生
-闸门 B（出口）：sync outbox 入队、obsidian 写入、backup_queue 入队三处统一拒绝 is_secret=1
+闸门 A（捕获）：clip ingest / memory upsert 落库前判定 secret → 决定 FTS/派生/候选是否发生
+闸门 B（出口）：sync outbox 入队、obsidian 写入、backup_queue 入队统一拒绝 secret 内容
 闸门 C（备份序列化）：backup worker 写 JSONL 前用当前规则集对 content 复扫，命中即丢弃
 ```
 

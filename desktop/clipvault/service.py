@@ -13,7 +13,7 @@ from clipvault.obsidian import writer
 from clipvault.pipeline import ingest as pipeline
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
-from clipvault.store.memory_repo import MemoryRepo
+from clipvault.store.memory_repo import MemoryRepo, SecretMemoryError
 
 log = logging.getLogger("clipvault.service")
 
@@ -107,9 +107,14 @@ class ClipVaultService:
         if clip is None or clip.is_secret:
             return None
         target = kind or _PROMOTE_KIND.get(clip.content_type, "phrase")
-        return MemoryRepo(self.conn).upsert(
-            target, clip.content[:200], source="derived"
-        )
+        try:
+            return MemoryRepo(self.conn).upsert(
+                target, clip.content[:200], source="derived"
+            )
+        except SecretMemoryError:
+            # A legacy clip may predate a newer SG-1 rule and still carry
+            # is_secret=0. Re-scan at the Memory boundary and fail closed.
+            return None
 
     def retry_obsidian_sweep(self) -> int:
         """The DB is the retry queue: any public clip without obsidian_path

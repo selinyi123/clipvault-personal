@@ -80,6 +80,18 @@ class CandidateMixerTest {
         assertEquals("clip", out.first().source)  // pinned clip leads; no cap reshuffle
     }
 
+    @Test
+    fun legacySecretMemoryNeverBecomesCandidate() {
+        val memories = listOf(
+            memory(kind = "term", text = "safe term"),
+            memory(kind = "term", text = "AKIAIOSFODNN7EXAMPLE"),
+        )
+
+        val out = CandidateMixer.mix(emptyList(), memories, query = "", limit = 10)
+
+        assertEquals(listOf("safe term"), out.map { it.text })
+    }
+
     private fun clip(
         id: String,
         text: String,
