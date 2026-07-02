@@ -15,8 +15,8 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
-| Current slice | Issue #3（v1.5 gate）已关闭（2026-06-26，A+B 签收）。其后 main 上并入 v1.6–v1.8 **加固支线**（PRs #4–#15，详见下方快照）。源码 `__version__` 已 bump 到 **1.6.0**（Owner 裁定，2026-06-28，反映累计加固；**不发版**）。最新**已发布**二进制仍是 **v1.5.10**。 |
-| Last updated | 2026-06-28 |
+| Current slice | SG-1.3 Memory 出入口加固：阻止 secret-shaped Personal Memory 进入持久化、同步与 Android IME 候选；不改 schema/版本号。Issue #3（v1.5 gate）历史上已于 2026-06-26 按 A+B 签收关闭。 |
+| Last updated | 2026-07-02 |
 
 ## Product Constraints（全部 Active）
 
@@ -119,6 +119,14 @@
 | D-008 | Treat pinned suggestions as hard priority layer |
 
 ## Verification Snapshot
+
+当前 SG-1.3 分支桌面全套：**204 passed**（Windows，
+`desktop/.venv/Scripts/python -m pytest -q`，2026-07-02）。新增覆盖：Memory `text`/`label` 写入拒绝、
+导入跳过、API 422、历史行候选隐藏/分页补位、outbox 出口复扫、远端 secret memory 安全 no-op、
+历史 pull 过滤且游标推进；Web UI 被拒绝时保留输入并显示通用错误。
+Android 增加纯 JVM `MemorySecretGuardTest`；单测/构建需 GitHub Actions 验证（本机无 Android SDK）。
+
+历史 main 快照：
 
 main HEAD desktop suite: **184 passed** on Linux/CI-portable runners
 (`python -m pytest -q --ignore=tests/test_watcher.py --ignore=tests/test_instance_lock.py`,

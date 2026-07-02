@@ -6,10 +6,14 @@ import pytest
 
 from clipvault.api.handlers import Api
 from clipvault.config import Config
+from clipvault.core.models import MemoryItem
 from clipvault.service import ClipVaultService
 from clipvault.store.memory_repo import MemoryRepo
 from clipvault.store.outbox_repo import OutboxRepo
 from clipvault.sync import engine
+
+
+FAKE_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
 
 
 @pytest.fixture
@@ -104,3 +108,66 @@ def test_k8_no_content_in_logs(api, caplog):
     with caplog.at_level(logging.DEBUG, logger="clipvault"):
         api.create_memory({"kind": "command", "text": "secretmemorywords"})
     assert "secretmemorywords" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("text", "label"),
+    [(FAKE_AWS_KEY, None), ("production credential", FAKE_AWS_KEY)],
+)
+def test_k9_memory_emit_rescans_secret_at_outbox_boundary(conn, text, label):
+    item = MemoryItem(
+        id="01SECRETBOUNDARY000000000000",
+        kind="term",
+        text=text,
+        label=label,
+    )
+
+    assert engine.emit_memory_upsert(conn, item, "2026-06-13T10:00:00Z") is None
+    assert OutboxRepo(conn).list_since(0) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "label"),
+    [(FAKE_AWS_KEY, None), ("production credential", FAKE_AWS_KEY)],
+)
+def test_k9_remote_secret_memory_is_acked_but_not_persisted(conn, caplog, text, label):
+    event = {
+        "origin_device": "peer",
+        "seq": 1,
+        "kind": "memory_upsert",
+        "ts": "2026-06-13T10:00:00Z",
+        "data": {
+            "kind": "term",
+            "text": text,
+            "label": label,
+            "pinned": False,
+            "use_count": 0,
+            "source": "manual",
+        },
+    }
+
+    assert engine.apply_push(conn, "peer", [event], service=None) == 1
+    assert MemoryRepo(conn).by_kind_text("term", text) is None
+    assert FAKE_AWS_KEY not in caplog.text
+
+
+def test_k9_pull_filters_legacy_secret_memory_event_and_advances_cursor(conn, caplog):
+    OutboxRepo(conn).append(
+        "memory_upsert",
+        {
+            "kind": "term",
+            "text": FAKE_AWS_KEY,
+            "label": None,
+            "pinned": False,
+            "use_count": 0,
+            "source": "manual",
+        },
+        "2026-06-13T10:00:00Z",
+    )
+
+    pulled = engine.build_pull(conn, since_seq=0)
+
+    assert pulled["events"] == []
+    assert pulled["next_seq"] == 1
+    assert pulled["has_more"] is False
+    assert FAKE_AWS_KEY not in caplog.text

@@ -5,6 +5,7 @@ import com.clipvault.app.ClipVaultApp
 import com.clipvault.app.capture.Capture
 import com.clipvault.app.data.ClipEntity
 import com.clipvault.app.data.MemoryEntity
+import com.clipvault.app.data.MemoryPrivacy
 import com.clipvault.app.sync.SyncScheduler
 
 /**
@@ -49,7 +50,9 @@ internal object CandidateMixer {
 
     fun mix(clips: List<ClipEntity>, memories: List<MemoryEntity>, query: String, limit: Int): List<Candidate> {
         val q = query.trim()
-        val ranked = (clips.map { fromClip(it, q) } + memories.map { fromMemory(it, q) })
+        val ranked = (clips.map { fromClip(it, q) } + memories
+            .filterNot { MemoryPrivacy.containsSecret(it.text, it.label) }
+            .map { fromMemory(it, q) })
             .filter { q.isEmpty() || it.text.contains(q, ignoreCase = true) || it.label.contains(q, ignoreCase = true) }
             .sortedWith(compareByDescending<Candidate> { it.score }
                 .thenBy { it.source }
@@ -155,6 +158,7 @@ class RoomClipVaultFacade(context: Context) : ClipVaultFacade {
 
     override fun listMemory(kind: String, limit: Int): List<MemoryCandidate> = safe(emptyList()) {
         ClipVaultApp.db(ctx).memory().list(kind)
+            .filterNot { MemoryPrivacy.containsSecret(it.text, it.label) }
             .take(limit)
             .map { MemoryCandidate("${it.kind}:${it.text}", it.text, it.kind, it.label) }
     }

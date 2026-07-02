@@ -123,6 +123,12 @@ is_secret=1 的 clip：
 | UI 预览 | 脱敏：前 4 字符 + `••••`（长度不泄露） |
 | 日志 | 永不打印正文 |
 
+**SG-1.3 修订（2026-07-02，Memory 覆盖）**：上述隔离语义同样适用于 Personal Memory。
+`text` 与可选 `label` 在所有写入入口都必须过 SG-1；命中时手工 API 返回 422、自动导入跳过，且不得进入
+memory 候选或 sync outbox。同步出口必须独立复扫；接收端收到旧版/错误对端发来的 secret-shaped
+`memory_upsert` 时按安全 no-op 处理并推进游标，不持久化、不回显。升级前遗留的 Memory 行只留在本地，
+列表/建议隐藏；遗留 outbox 事件不得下发，但 pull 游标必须越过它，避免同步永久卡住。
+
 **释放（release）**：用户在 Web UI / App 显式点击"非密钥，释放"→ `is_secret=0, released=1, released_at` 落库 → 重新走 Obsidian/备份/同步管线。释放是唯一出口，且留审计字段。
 
 ## 5. 同步协议（SYNC-2，2026-06-13 D-007 覆盖 SYNC-1 的传输层）

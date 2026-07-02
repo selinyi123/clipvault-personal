@@ -6,6 +6,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import com.clipvault.app.data.AppDatabase
 import com.clipvault.app.data.ClipEntity
+import com.clipvault.app.data.MemoryPrivacy
 import com.clipvault.core.SecretGuard
 import org.json.JSONArray
 import org.json.JSONObject
@@ -230,10 +231,17 @@ object SyncApply {
     }
 
     private fun applyMemoryUpsert(db: AppDatabase, d: JSONObject) {
+        val text = d.getString("text")
+        val label = if (d.isNull("label")) null else d.optString("label")
+        if (MemoryPrivacy.containsSecret(text, label)) {
+            // Gate A on arrival, mirroring clip_new. Never log the payload.
+            android.util.Log.w("clipvault.sync", "ignored secret memory event")
+            return
+        }
         db.memory().upsert(
             com.clipvault.app.data.MemoryEntity(
-                kind = d.getString("kind"), text = d.getString("text"),
-                label = if (d.isNull("label")) null else d.optString("label"),
+                kind = d.getString("kind"), text = text,
+                label = label,
                 pinned = d.optBoolean("pinned", false),
                 useCount = d.optInt("use_count", 0),
                 source = d.optString("source", "manual"),
