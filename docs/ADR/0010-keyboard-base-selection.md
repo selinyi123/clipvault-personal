@@ -1,6 +1,8 @@
 # ADR-0010: 中文输入底座选型 — librime 为引擎，长期底座二选一
 
-状态：Accepted（2026-06-20）。依据 V2-S003 paper spike（primary-source 调研）。
+状态：Accepted（2026-06-20，engine=librime）；A/B 长期底座终裁仍待 build PoC。
+2026-07-02 工具链/许可/验证增补见 [V2-S004](../SLICES/V2-S004-librime-build-poc.md) 与
+[build PoC 去重调研](../RESEARCH_V2_1_BUILD_POC_2026_07_02.md)。
 
 ## 背景
 
@@ -41,10 +43,16 @@ ClipVault **不从零做拼音引擎**，要接成熟开源引擎。需裁决：
 
 ## 后果与下一步
 
-- v2.1 下一子片 = **build PoC**（需真机/NDK）：在仓库内试编最小 librime-for-Android，经 JNI 喂一次
-  拼音取候选，量出 (A) 的真实构建成本。PoC 通过则定 (A)，否则回退 (B)。
-- License 红线：在 build PoC 与最终接入前，**不向 ClipVault 主 APK 合入任何 GPL 代码**；保持 ClipVault
-  自有许可的可选性。
+- v2.1 下一子片 = **V2-S004 build PoC**（需 16KB emulator/device + NDK）：分别验证 (A) 最小
+  librime JNI 与 (B) 外部 fcitx5 addon 候选注入，两边证据齐全后按冻结算法终裁；A 通过全部硬门和
+  工程预算则选 A，A 失败而 B 全部通过才选 B，两边都失败则保持未裁定/阻塞。
+- Build PoC 固定 **NDK r28** 并验证所有传递 `.so`/APK 的 16KB page-size 对齐；输出逐 ABI 构建元数据。
+- “librime=BSD-3”不等于“中文数据整包 BSD”：schema/dictionary 分别钉 SHA、license、NOTICE，
+  未许可内容不复制，浮动 `master` 不进入构建。
+- (B) 回退需先证明独立 fcitx5 addon 能注入候选；现有插件以 native addon 为主，不能预设 Kotlin facade
+  有现成候选提供器 API。
+- License 红线覆盖 A/B spike APK、addon、全部传递依赖和 Rime 数据：逐项确认 license/NOTICE/源码或
+  relink 等交付义务；清单未经 reviewer 批准前不上传二进制 artifact，不向 production APK 合入。
 - 不变量延续：无论 (A)/(B)，主输入法处理普通键入仍遵守 L0–L4（ADR-0008），普通键入不持久化；
   Secret/密码框不出候选（CandidateMixer 的 PrivacyAwareFilter，v2.2）。
 
