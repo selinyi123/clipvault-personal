@@ -124,7 +124,9 @@
 `desktop/.venv/Scripts/python -m pytest -q`，2026-07-02）。新增覆盖：Memory `text`/`label` 写入拒绝、
 导入跳过、API 422、历史行候选隐藏/分页补位、outbox 出口复扫、远端 secret memory 安全 no-op、
 历史 pull 过滤且游标推进；Web UI 被拒绝时保留输入并显示通用错误。
-Android 增加纯 JVM `MemorySecretGuardTest`；单测/构建需 GitHub Actions 验证（本机无 Android SDK）。
+Android 增加纯 JVM `MemoryPrivacyTest`；单测/构建需 GitHub Actions 验证（本机无 Android SDK）。
+CI 首轮暴露 `:core` Java 21 与 `:app` Java 17 的运行时不兼容；本分支把共享 core toolchain 对齐到 17，
+等待后续 Actions 复验。
 
 历史 main 快照：
 
