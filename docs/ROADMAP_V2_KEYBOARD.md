@@ -11,7 +11,7 @@
 | v1.0/1.1 | Runtime 收口 | 现有 v1 明确为 Runtime；Android 引入 ClipVaultFacade；panel IME 改走 facade |
 | v1.2 | SyncTransport 抽象 | 不做云，但把 HTTP push/pull 抽象为 transport，为云预留接口 |
 | v2.0 | 双 IME 入口 | 同一 APK 内：ClipVault Panel + ClipVault Keyboard Lab（基础英文键盘 + 工具栏） |
-| v2.1 | 底座 Spike | **paper spike 完成（ADR-0010）**：引擎=librime(BSD)；Trime 仅参考(GPL)；长期(A)自建 librime 前端 / (B) fcitx5 插件二选一，待 **build PoC** 终裁 |
+| v2.1 | 底座 Spike | **paper spike 完成（ADR-0010）**：引擎=librime；待 NDK r28/16KB/许可/确定性与工程预算 **A/B 双 build PoC** 终裁 |
 | v2.2 | CandidateMixer | ClipVault 内容（剪切板/词库/Prompt/命令/路径）进入候选栏 |
 | v2.3 | 本地学习 | 词频/短语/Prompt/命令/场景/最近，仅存可解释统计事件，不存普通键入正文 |
 | v2.4 | Cloud Relay POC | 可选端到端加密中继；云只中继密文，看不到明文 |
@@ -52,6 +52,7 @@
 [done] docs/GATES.md「Keyboard 主线门禁」            (v1.1→v3.0 验收门冻结)
 [todo] docs/ADR/0009-sync-transport-abstraction.md   (v1.2)
 [done] docs/ADR/0011-input-context-privacy.md        (v2.0，敏感上下文 session token + 候选/保存闸门)
+[done] docs/SLICES/V2-S004-librime-build-poc.md      (v2.1，A/B build PoC 执行门与终裁算法)
 [todo] docs/ADR/0012-cloud-relay-threat-model.md     (v2.4)
 [todo] docs/CONTRACTS_SYNC_TRANSPORT.md               (v1.2)
 [todo] docs/SLICES/V2-S00N-*.md                       (各阶段开工时)
@@ -65,6 +66,13 @@ final = engine_score + prefix + recency + frequency + pinned_boost
       - secret_risk_penalty - sensitive_field_penalty
 ```
 pinned 硬置顶（沿用 SUG-1.1）；Secret 不进候选；密码框不展示 ClipVault 候选。
+
+## v2.1 下一执行节点（2026-07-02 冻结）
+
+按 [V2-S004](SLICES/V2-S004-librime-build-poc.md) 执行隔离 A/B build PoC；新增调研与来源见
+[RESEARCH_V2_1_BUILD_POC_2026_07_02](RESEARCH_V2_1_BUILD_POC_2026_07_02.md)。在 PoC 产出 alignment、
+license、clean-state golden vectors、reproducible metadata 与冻结预算测量前，不把 librime 接进
+production IME，也不启动 v2.2；A/B 都失败时保持阻塞，不降低门禁制造结论。
 
 ## 范围刹车（明确暂不做）
 商业 SaaS、多用户账号、支付、插件市场、皮肤商店、云端明文索引、云端知识库、
