@@ -15,7 +15,7 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
-| Current slice | IME 敏感上下文生命周期收口（堆叠在 SG-1.3 分支上）：generation token 取消过期候选，敏感字段清空候选并禁用保存；不改 schema/版本号。Issue #3 历史上已于 2026-06-26 按 A+B 签收关闭。 |
+| Current slice | v2.1 V2-S004 双 build PoC 规划收口（堆叠在 SG-1.3 + IME privacy 分支上）：NDK r28/16KB、全依赖许可、干净黄金向量、可复现规则、工程预算与 A/B 阻塞态已冻结；尚未接 production 引擎，不改版本号。 |
 | Last updated | 2026-07-02 |
 
 ## Product Constraints（全部 Active）
