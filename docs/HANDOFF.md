@@ -15,7 +15,7 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
-| Current slice | SG-1.3 Memory 出入口加固：阻止 secret-shaped Personal Memory 进入持久化、同步与 Android IME 候选；不改 schema/版本号。Issue #3（v1.5 gate）历史上已于 2026-06-26 按 A+B 签收关闭。 |
+| Current slice | IME 敏感上下文生命周期收口（堆叠在 SG-1.3 分支上）：generation token 取消过期候选，敏感字段清空候选并禁用保存；不改 schema/版本号。Issue #3 历史上已于 2026-06-26 按 A+B 签收关闭。 |
 | Last updated | 2026-07-02 |
 
 ## Product Constraints（全部 Active）
