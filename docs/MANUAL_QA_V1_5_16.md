@@ -33,6 +33,8 @@ planned"):
 - FK #1–2: candidate strip is visible; tapping a candidate commits text.
 - Panel #1–2, #5: switching to the Panel IME; tapping a candidate commits text.
 - Panel #8: the explicit save action requires a user tap (no implicit save).
+- Sensitive transition: already-rendered/in-flight candidates are cleared when
+  the same IME moves from a normal field to password/incognito; Panel save is disabled.
 
 The decision logic behind every residual item is unit-tested above; only the
 view rendering and input-connection wiring are unverified by automation.
@@ -111,9 +113,10 @@ Expected result:
 3. Confirm Recent tab shows clip candidates.
 4. Confirm term, phrase, prompt, and command tabs show matching memory candidates when data exists.
 5. Tap a candidate and confirm it commits text.
-6. Open a sensitive field.
-7. Confirm Panel candidate list is replaced by the suppression message.
-8. Confirm the explicit save action still requires a user tap.
+6. With candidates already visible, move focus to a sensitive field without switching IMEs.
+7. Confirm the previous candidate list is immediately replaced by the suppression message and does not refill.
+8. Confirm “保存剪贴板” is disabled and Room/outbox do not change.
+9. Return to a normal field and confirm explicit save still requires a user tap.
 
 ## Release-state checks
 
@@ -140,6 +143,7 @@ Residual (physical device only — see "Residual checks" above):
 
 - Full Keyboard strip render + tap-commit.
 - Panel IME switch + tap-commit + explicit-save-requires-tap.
+- Normal→sensitive transition clears rendered/in-flight candidates and blocks save.
 
 If no device is available, the automated gate above is fully green and the
 residual items are the only thing left. They should be signed off by the
