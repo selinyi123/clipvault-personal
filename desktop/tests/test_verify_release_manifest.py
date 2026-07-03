@@ -1,0 +1,123 @@
+"""Unit tests for release manifest/checksum verification."""
+
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+
+_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_script(name):
+    script = _ROOT / "scripts" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+release_candidate_manifest = _load_script("release_candidate_manifest")
+verify_release_manifest = _load_script("verify_release_manifest")
+
+
+def _build_fixture(tmp_path):
+    (tmp_path / "ClipVault-Desktop-v1.6.0-portable.exe").write_bytes(b"portable")
+    (tmp_path / "ClipVault-Setup-v1.6.0.exe").write_bytes(b"installer")
+    release_candidate_manifest.build_manifest(
+        tmp_path,
+        platform="windows",
+        version="1.6.0",
+        commit="abc123",
+    )
+
+
+def test_verify_accepts_matching_dry_run_manifest(tmp_path):
+    _build_fixture(tmp_path)
+
+    manifest = verify_release_manifest.verify_manifest(
+        tmp_path,
+        platform="windows",
+        version="1.6.0",
+        commit="abc123",
+        expect_dry_run=True,
+    )
+
+    assert manifest["kind"] == "release-candidate-dry-run"
+    assert manifest["signed"] is False
+    assert manifest["published"] is False
+    assert [row["name"] for row in manifest["artifacts"]] == [
+        "ClipVault-Desktop-v1.6.0-portable.exe",
+        "ClipVault-Setup-v1.6.0.exe",
+    ]
+
+
+def test_verify_rejects_changed_artifact_hash(tmp_path):
+    _build_fixture(tmp_path)
+    (tmp_path / "ClipVault-Setup-v1.6.0.exe").write_bytes(b"tamper!!!")
+
+    with pytest.raises(ValueError, match="sha256 mismatch"):
+        verify_release_manifest.verify_manifest(tmp_path, expect_dry_run=True)
+
+
+def test_verify_rejects_checksum_file_drift(tmp_path):
+    _build_fixture(tmp_path)
+    (tmp_path / "SHA256SUMS.txt").write_text("wrong\n", encoding="ascii")
+
+    with pytest.raises(ValueError, match="SHA256SUMS"):
+        verify_release_manifest.verify_manifest(tmp_path, expect_dry_run=True)
+
+
+def test_verify_rejects_dry_run_signed_flag_drift(tmp_path):
+    _build_fixture(tmp_path)
+    path = tmp_path / "RELEASE_MANIFEST.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["signed"] = True
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="dry-run manifest must be unsigned"):
+        verify_release_manifest.verify_manifest(tmp_path, expect_dry_run=True)
+
+
+def test_verify_rejects_manifest_artifact_path_traversal(tmp_path):
+    _build_fixture(tmp_path)
+    path = tmp_path / "RELEASE_MANIFEST.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["artifacts"][0]["name"] = "../ClipVault-Desktop-v1.6.0-portable.exe"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="plain file name"):
+        verify_release_manifest.verify_manifest(tmp_path, expect_dry_run=True)
+
+
+def test_verify_rejects_symlink_artifacts(tmp_path):
+    _build_fixture(tmp_path)
+    artifact = tmp_path / "ClipVault-Desktop-v1.6.0-portable.exe"
+    target = tmp_path / "target.exe"
+    target.write_bytes(artifact.read_bytes())
+    artifact.unlink()
+    try:
+        artifact.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable in this environment: {exc}")
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        verify_release_manifest.verify_manifest(tmp_path, expect_dry_run=True)
+
+
+def test_cli_returns_nonzero_for_mismatched_version(tmp_path, capsys):
+    _build_fixture(tmp_path)
+
+    rc = verify_release_manifest.main([
+        "--artifact-dir",
+        str(tmp_path),
+        "--platform",
+        "windows",
+        "--version",
+        "9.9.9",
+        "--expect-dry-run",
+    ])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "manifest version mismatch" in captured.err
