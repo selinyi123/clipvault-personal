@@ -75,6 +75,7 @@ def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
     assert "ANDROID_RELEASE_KEY_PASSWORD" in workflow
     assert "apksigner" in workflow
     assert "verify --print-certs" in workflow
+    assert "trap 'rm -f \"${keystore:-}\"' EXIT" in workflow
     assert "actions/attest-build-provenance@v2" in workflow
     assert "create_draft_release" in workflow
     assert "upload-assets" in workflow
