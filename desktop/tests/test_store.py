@@ -1,5 +1,9 @@
 """A1 (migration), A2 (full save), A3 (dedup, no resurrection)."""
 
+import sqlite3
+
+import pytest
+
 from clipvault.core import normalize
 from clipvault.pipeline import ingest as pipeline
 from clipvault.store import db
@@ -29,6 +33,33 @@ def test_a1_migration_from_zero(conn):
 
 def test_a1_migration_idempotent(conn):
     assert db.migrate(conn) == 5  # second run is a no-op, returns current version
+
+
+def test_a1_failed_migration_rolls_back_script_and_schema_version(tmp_path):
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    (migrations / "0001_broken.sql").write_text(
+        """
+        CREATE TABLE schema_meta (version INTEGER NOT NULL);
+        CREATE TABLE leaked_table (id INTEGER PRIMARY KEY);
+        INSERT INTO leaked_table(id) VALUES (1);
+        SELECT missing_column FROM missing_table;
+        """,
+        encoding="utf-8",
+    )
+    raw = sqlite3.connect(":memory:")
+
+    with pytest.raises(sqlite3.OperationalError):
+        db.migrate(raw, migrations)
+
+    names = {
+        r[0]
+        for r in raw.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    assert "leaked_table" not in names
+    assert db.schema_version(raw) == 0
 
 
 def test_a1_clip_meta_ts_upgrade_seeds_every_field():

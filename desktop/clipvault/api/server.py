@@ -82,6 +82,8 @@ def make_handler(api: Api):
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
+            if self.close_connection:
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(payload)
 
@@ -117,7 +119,7 @@ def make_handler(api: Api):
                 self._send_json(400, {"error": {"code": "bad_request", "message": "invalid json"}})
                 return None
 
-        def _drain(self) -> None:
+        def _drain(self, max_bytes: int = _MAX_JSON_BODY) -> None:
             """Discard an unread request body so leftover bytes do not corrupt the
             next request on a kept-alive connection (bodyless routes ignore it)."""
             try:
@@ -127,7 +129,7 @@ def make_handler(api: Api):
                 return
             if length <= 0:
                 return
-            if length > _MAX_JSON_BODY:
+            if length > max_bytes:
                 self.close_connection = True  # don't read unbounded junk
                 return
             try:
@@ -210,6 +212,7 @@ def make_handler(api: Api):
             if route == "/api/sync/push":
                 token = self._bearer()
                 if not api.auth_ok(token):
+                    self._drain(_MAX_SYNC_PUSH_BODY)
                     self.close_connection = True
                     self._send_json(401, {"error": {"code": "unauthorized", "message": "bad token"}})
                     return
