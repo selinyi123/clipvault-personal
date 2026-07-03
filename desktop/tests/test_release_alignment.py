@@ -81,3 +81,12 @@ def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
     assert "windows-${base}" in workflow
     assert "android-${base}" in workflow
     assert "--draft" in workflow
+
+
+def test_manual_qa_links_v1_6_release_runbook():
+    runbook = _ROOT / "docs/RELEASE_RUNBOOK_V1_6_0.md"
+    manual_qa = _read("docs/MANUAL_QA_V1_6_0.md")
+
+    assert runbook.exists()
+    assert "RELEASE_RUNBOOK_V1_6_0.md" in manual_qa
+    assert "Release artifact build" in runbook.read_text(encoding="utf-8")
