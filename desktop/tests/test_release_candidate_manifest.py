@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "release_candidate_manifest.py"
 _spec = importlib.util.spec_from_file_location("release_candidate_manifest", _SCRIPT)
 release_candidate_manifest = importlib.util.module_from_spec(_spec)
@@ -65,3 +67,85 @@ def test_existing_manifest_files_are_not_hashed_again(tmp_path):
     manifest = json.loads((tmp_path / "RELEASE_MANIFEST.json").read_text(encoding="utf-8"))
     assert [row["name"] for row in manifest["artifacts"]] == ["ClipVault-Android-v1.6.0-debug.apk"]
     assert "SHA256SUMS.txt" not in (tmp_path / "SHA256SUMS.txt").read_text(encoding="ascii")
+
+
+def test_cli_can_record_signed_release_manifest(tmp_path):
+    (tmp_path / "ClipVault-Android-v1.6.0-release-signed.apk").write_bytes(b"signed apk")
+
+    release_candidate_manifest.main([
+        "--artifact-dir", str(tmp_path),
+        "--platform", "android",
+        "--version", "1.6.0",
+        "--commit", "123release",
+        "--kind", "release",
+        "--signed",
+    ])
+
+    manifest = json.loads((tmp_path / "RELEASE_MANIFEST.json").read_text(encoding="utf-8"))
+    assert manifest["kind"] == "release"
+    assert manifest["platform"] == "android"
+    assert manifest["version"] == "1.6.0"
+    assert manifest["commit"] == "123release"
+    assert manifest["signed"] is True
+    assert manifest["published"] is False
+    assert manifest["artifacts"] == [{
+        "name": "ClipVault-Android-v1.6.0-release-signed.apk",
+        "bytes": 10,
+        "sha256": "230d29b45dd68dffa113b7384d853b8b690b8fce660d2d88b6a30f5d243d3dc7",
+    }]
+
+
+def test_build_manifest_rejects_missing_artifact_directory(tmp_path):
+    with pytest.raises(ValueError, match="artifact directory"):
+        release_candidate_manifest.build_manifest(
+            tmp_path / "missing",
+            platform="windows",
+            version="1.6.0",
+            commit="abc123",
+        )
+
+
+@pytest.mark.parametrize(("field", "kwargs", "message"), [
+    ("version", {"version": "", "commit": "abc123"}, "version must not be empty"),
+    ("version", {"version": " 1.6.0", "commit": "abc123"}, "version must not have leading"),
+    ("commit", {"version": "1.6.0", "commit": "abc\n123"}, "commit must not contain control"),
+])
+def test_build_manifest_rejects_invalid_manifest_metadata(tmp_path, field, kwargs, message):
+    (tmp_path / "ClipVault-Desktop-v1.6.0-portable.exe").write_bytes(b"portable")
+
+    with pytest.raises(ValueError, match=message):
+        release_candidate_manifest.build_manifest(
+            tmp_path,
+            platform="windows",
+            **kwargs,
+        )
+
+
+def test_build_manifest_rejects_non_ascii_artifact_names(tmp_path):
+    (tmp_path / "ClipVault-v1.6.0-portablé.exe").write_bytes(b"portable")
+
+    with pytest.raises(ValueError, match="artifact name must be ASCII"):
+        release_candidate_manifest.build_manifest(
+            tmp_path,
+            platform="windows",
+            version="1.6.0",
+            commit="abc123",
+        )
+
+
+def test_build_manifest_rejects_symlink_artifacts(tmp_path):
+    target = tmp_path / "real.exe"
+    target.write_bytes(b"portable")
+    link = tmp_path / "ClipVault-Desktop-v1.6.0-portable.exe"
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable in this environment: {exc}")
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        release_candidate_manifest.build_manifest(
+            tmp_path,
+            platform="windows",
+            version="1.6.0",
+            commit="abc123",
+        )

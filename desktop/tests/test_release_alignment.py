@@ -60,3 +60,24 @@ def test_panel_candidate_tabs_helper_and_test_exist():
     base = _ROOT / "android/app/src"
     assert (base / "main/kotlin/com/clipvault/app/ime/PanelCandidateTabs.kt").exists()
     assert (base / "test/kotlin/com/clipvault/app/ime/PanelCandidateTabsTest.kt").exists()
+
+
+def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
+    workflow = _read(".github/workflows/release.yml")
+
+    assert "workflow_dispatch:" in workflow
+    assert "\n  push:" not in workflow
+    assert "\n  pull_request:" not in workflow
+    assert "environment: release" in workflow
+    assert "ANDROID_RELEASE_KEYSTORE_B64" in workflow
+    assert "ANDROID_RELEASE_KEYSTORE_PASSWORD" in workflow
+    assert "ANDROID_RELEASE_KEY_ALIAS" in workflow
+    assert "ANDROID_RELEASE_KEY_PASSWORD" in workflow
+    assert "apksigner" in workflow
+    assert "verify --print-certs" in workflow
+    assert "actions/attest-build-provenance@v2" in workflow
+    assert "create_draft_release" in workflow
+    assert "upload-assets" in workflow
+    assert "windows-${base}" in workflow
+    assert "android-${base}" in workflow
+    assert "--draft" in workflow

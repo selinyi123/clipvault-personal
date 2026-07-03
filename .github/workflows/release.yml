@@ -1,0 +1,242 @@
+name: Release artifact build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to prepare, for example v1.6.0"
+        required: true
+        default: "v1.6.0"
+      create_draft_release:
+        description: "Create a draft GitHub Release with the generated artifacts"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  windows-release-artifacts:
+    name: Windows release artifacts
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: desktop/pyproject.toml
+
+      - name: Install packaging dependencies
+        working-directory: desktop
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Build portable executable
+        working-directory: desktop
+        run: >
+          python -m PyInstaller --onefile --name clipvault
+          --workpath build_pyi
+          --specpath packaging
+          --add-data "../clipvault/store/migrations;clipvault/store/migrations"
+          --add-data "../clipvault/api/webui;clipvault/api/webui"
+          packaging/run_clipvault.py
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        working-directory: installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $iscc = "iscc"
+          }
+          & $iscc clipvault.iss
+
+      - name: Stage Windows release artifacts
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.version }}"
+          $version = $tag -replace '^v',''
+          $sourceVersion = python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("desktop/pyproject.toml").read_text())["project"]["version"])'
+          if ($version -ne $sourceVersion) {
+            throw "workflow input $version does not match desktop package version $sourceVersion"
+          }
+          Remove-Item release-artifacts -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
+          Copy-Item desktop/dist/clipvault.exe "release-artifacts/ClipVault-Desktop-v$version-portable.exe"
+          Copy-Item "installer/dist/ClipVault-Setup-v$version.exe" "release-artifacts/ClipVault-Setup-v$version.exe"
+          python scripts/release_candidate_manifest.py --artifact-dir release-artifacts --platform windows --version $version --commit "${{ github.sha }}" --kind release
+          python scripts/verify_release_manifest.py --artifact-dir release-artifacts --platform windows --version $version --commit "${{ github.sha }}"
+
+      - name: Attest Windows release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release-artifacts/*
+
+      - name: Upload Windows release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipvault-windows-release-artifacts
+          path: release-artifacts/*
+
+  android-signed-release:
+    name: Android signed release APK
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            android/*.gradle*
+            android/**/*.gradle*
+            android/**/gradle-wrapper.properties
+
+      - name: Ensure Gradle wrapper is executable
+        run: chmod +x ./gradlew
+
+      - name: Validate release signing secrets
+        shell: bash
+        env:
+          ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
+          ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in ANDROID_RELEASE_KEYSTORE_B64 ANDROID_RELEASE_KEYSTORE_PASSWORD ANDROID_RELEASE_KEY_ALIAS ANDROID_RELEASE_KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing required GitHub secret: ${name}"
+              exit 1
+            fi
+          done
+
+      - name: Build signed Android release APK
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.version }}
+          ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
+          ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          source_version="$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)"
+          if [[ "${version}" != "${source_version}" ]]; then
+            echo "::error::workflow input ${version} does not match Android versionName ${source_version}"
+            exit 1
+          fi
+          keystore="${RUNNER_TEMP}/clipvault-release.jks"
+          printf '%s' "${ANDROID_RELEASE_KEYSTORE_B64}" | base64 -d > "${keystore}"
+          ./gradlew :core:test :app:testDebugUnitTest :app:assembleRelease --no-daemon \
+            -PCV_KEYSTORE="${keystore}" \
+            -PCV_KEYSTORE_PASS="${ANDROID_RELEASE_KEYSTORE_PASSWORD}" \
+            -PCV_KEY_ALIAS="${ANDROID_RELEASE_KEY_ALIAS}" \
+            -PCV_KEY_PASS="${ANDROID_RELEASE_KEY_PASSWORD}"
+
+          rm -rf ../release-artifacts
+          mkdir -p ../release-artifacts
+          release_apk="$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' | sort | head -n 1)"
+          if [[ -z "${release_apk}" ]]; then
+            echo "::error::No release APK produced under app/build/outputs/apk/release"
+            exit 1
+          fi
+          signed_apk="../release-artifacts/ClipVault-Android-v${version}-release-signed.apk"
+          cp "${release_apk}" "${signed_apk}"
+          apksigner="$(find "${ANDROID_HOME}/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          "${apksigner}" verify --print-certs "${signed_apk}" | tee ../release-artifacts/ANDROID_APKSIGNER_VERIFY.txt
+          cd ..
+          python scripts/release_candidate_manifest.py --artifact-dir release-artifacts --platform android --version "${version}" --commit "${GITHUB_SHA}" --kind release --signed
+          python scripts/verify_release_manifest.py --artifact-dir release-artifacts --platform android --version "${version}" --commit "${GITHUB_SHA}" --require-signed
+
+      - name: Attest Android signed release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release-artifacts/*
+
+      - name: Upload Android signed release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipvault-android-signed-release-artifacts
+          path: release-artifacts/*
+
+  draft-github-release:
+    name: Draft GitHub Release
+    runs-on: ubuntu-latest
+    environment: release
+    needs:
+      - windows-release-artifacts
+      - android-signed-release
+    if: ${{ inputs.create_draft_release }}
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Create draft GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "::error::Release ${RELEASE_TAG} already exists"
+            exit 1
+          fi
+          mkdir -p upload-assets
+          while IFS= read -r -d '' file; do
+            parent="$(basename "$(dirname "${file}")")"
+            base="$(basename "${file}")"
+            asset="${base}"
+            if [[ "${base}" == "SHA256SUMS.txt" || "${base}" == "RELEASE_MANIFEST.json" ]]; then
+              case "${parent}" in
+                *windows*) asset="windows-${base}" ;;
+                *android*) asset="android-${base}" ;;
+                *) asset="${parent}-${base}" ;;
+              esac
+            fi
+            cp "${file}" "upload-assets/${asset}"
+          done < <(find release-artifacts -type f -print0)
+          cat > release-notes.md <<'EOF'
+          ClipVault Personal release draft.
+
+          Do not publish this draft until Issue #36 has signed APK evidence and
+          manual Android IME/privacy/sync and Windows clipboard privacy evidence.
+          EOF
+          files=()
+          while IFS= read -r -d '' file; do
+            files+=("${file}")
+          done < <(find upload-assets -type f -print0)
+          gh release create "${RELEASE_TAG}" "${files[@]}" \
+            --draft \
+            --target "${GITHUB_SHA}" \
+            --title "ClipVault Personal ${RELEASE_TAG}" \
+            --notes-file release-notes.md

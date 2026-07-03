@@ -67,6 +67,7 @@ jobs:
           Copy-Item desktop/dist/clipvault.exe "release-candidate/ClipVault-Desktop-v$version-portable.exe"
           Copy-Item "installer/dist/ClipVault-Setup-v$version.exe" "release-candidate/ClipVault-Setup-v$version.exe"
           python scripts/release_candidate_manifest.py --artifact-dir release-candidate --platform windows --version $version --commit "${{ github.sha }}"
+          python scripts/verify_release_manifest.py --artifact-dir release-candidate --platform windows --version $version --commit "${{ github.sha }}" --expect-dry-run
 
       - name: Upload Windows release candidate artifacts
         uses: actions/upload-artifact@v4
@@ -117,6 +118,7 @@ jobs:
           cp "${release_apk}" "../release-candidate/ClipVault-Android-v${version}-release-unsigned.apk"
           cd ..
           python scripts/release_candidate_manifest.py --artifact-dir release-candidate --platform android --version "${version}" --commit "${GITHUB_SHA}"
+          python scripts/verify_release_manifest.py --artifact-dir release-candidate --platform android --version "${version}" --commit "${GITHUB_SHA}" --expect-dry-run
 
       - name: Upload Android release candidate artifacts
         uses: actions/upload-artifact@v4
