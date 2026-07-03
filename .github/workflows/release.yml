@@ -65,8 +65,8 @@ jobs:
           python -m PyInstaller --onefile --name clipvault
           --workpath build_pyi
           --specpath packaging
-          --add-data "../clipvault/store/migrations;clipvault/store/migrations"
-          --add-data "../clipvault/api/webui;clipvault/api/webui"
+          --add-data "$PWD/clipvault/store/migrations;clipvault/store/migrations"
+          --add-data "$PWD/clipvault/api/webui;clipvault/api/webui"
           packaging/run_clipvault.py
 
       - name: Install Inno Setup
@@ -172,6 +172,7 @@ jobs:
             echo "::error::workflow input ${version} does not match Android versionName ${source_version}"
             exit 1
           fi
+          umask 077
           keystore="${RUNNER_TEMP}/clipvault-release.jks"
           printf '%s' "${ANDROID_RELEASE_KEYSTORE_B64}" | base64 -d > "${keystore}"
           ./gradlew :core:test :app:testDebugUnitTest :app:assembleRelease --no-daemon \

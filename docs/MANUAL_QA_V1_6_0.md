@@ -45,10 +45,10 @@ build alone:
 - The manual "Release artifact build" GitHub Actions workflow can prepare the
   signed Android release APK when the Owner has configured
   `ANDROID_RELEASE_KEYSTORE_B64`, `ANDROID_RELEASE_KEYSTORE_PASSWORD`,
-  `ANDROID_RELEASE_KEY_ALIAS`, and `ANDROID_RELEASE_KEY_PASSWORD` in GitHub
-  Secrets. It is `workflow_dispatch` only, uses the `release` environment, and
-  creates at most a draft GitHub Release unless the Owner completes the final
-  publication step.
+  `ANDROID_RELEASE_KEY_ALIAS`, and `ANDROID_RELEASE_KEY_PASSWORD` as `release`
+  environment secrets. It is `workflow_dispatch` only, uses the `release`
+  environment, and creates at most a draft GitHub Release unless the Owner
+  completes the final publication step.
 - Generate checksums for every release artifact.
 - Verify the signed APK with `apksigner verify --print-certs`.
 - If Owner approves publication, attach all artifacts and checksums to GitHub
