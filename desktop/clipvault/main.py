@@ -31,6 +31,19 @@ from clipvault.watcher.win_clipboard import (
 _SWEEP_INTERVAL_S = 60
 
 
+def _handle_clipboard_text_with_fresh_connection(
+    cfg: config_mod.Config,
+    text: str,
+    source_app: str | None,
+):
+    """Handle a watcher event using a connection owned by the watcher thread."""
+    conn = db.connect(cfg.db_path)
+    try:
+        return ClipVaultService(conn, cfg).handle_clipboard_text(text, source_app)
+    finally:
+        conn.close()
+
+
 def setup_logging(cfg: config_mod.Config) -> None:
     log_dir = Path(cfg.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -85,8 +98,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with InstanceLock():
             conn = db.connect(cfg.db_path)
-            db.migrate(conn)
-            service = ClipVaultService(conn, cfg)
+            try:
+                db.migrate(conn)
+            finally:
+                conn.close()
 
             stop = threading.Event()
             signal.signal(signal.SIGINT, lambda *_: stop.set())
@@ -136,7 +151,10 @@ def main(argv: list[str] | None = None) -> int:
                 daemon=True, name="api",
             ).start()
 
-            watcher = PollingWatcher(service.handle_clipboard_text, interval_ms=cfg.poll_ms)
+            watcher = PollingWatcher(
+                lambda text, app: _handle_clipboard_text_with_fresh_connection(cfg, text, app),
+                interval_ms=cfg.poll_ms,
+            )
             threading.Thread(target=watcher.run, args=(stop,), daemon=True, name="watcher").start()
             log.info("clipvault started device=%s poll=%dms panel=http://127.0.0.1:%d/",
                      cfg.device_name, cfg.poll_ms, cfg.port)

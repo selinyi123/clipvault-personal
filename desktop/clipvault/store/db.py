@@ -32,9 +32,17 @@ def migrate(conn: sqlite3.Connection, migrations_dir: Path = MIGRATIONS_DIR) -> 
         number = int(script.name.split("_", 1)[0])
         if number <= current:
             continue
-        conn.executescript(script.read_text(encoding="utf-8"))
-        conn.execute("DELETE FROM schema_meta")
-        conn.execute("INSERT INTO schema_meta(version) VALUES (?)", (number,))
-        conn.commit()
+        sql = script.read_text(encoding="utf-8")
+        try:
+            conn.executescript(
+                "BEGIN;\n"
+                f"{sql}\n"
+                "DELETE FROM schema_meta;\n"
+                f"INSERT INTO schema_meta(version) VALUES ({number});\n"
+                "COMMIT;"
+            )
+        except Exception:
+            conn.rollback()
+            raise
         current = number
     return current
