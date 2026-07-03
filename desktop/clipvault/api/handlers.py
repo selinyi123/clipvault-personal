@@ -11,7 +11,11 @@ from clipvault.core import suggest as suggest_core
 from clipvault.service import ClipVaultService
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
-from clipvault.store.memory_repo import KINDS as MEMORY_KINDS, MemoryRepo
+from clipvault.store.memory_repo import (
+    KINDS as MEMORY_KINDS,
+    MemoryRepo,
+    SecretMemoryError,
+)
 from clipvault.store.peers_repo import PeersRepo
 from clipvault.sync import engine as sync_engine
 from clipvault.sync.pairing import Pairing, hash_token
@@ -173,8 +177,14 @@ class Api:
             return 400, {"error": {"code": "bad_kind", "message": f"kind in {MEMORY_KINDS}"}}
         if not isinstance(text, str) or not text.strip():
             return 400, {"error": {"code": "bad_request", "message": "text required"}}
-        item = self.memory.upsert(kind, text, label=body.get("label"),
-                                  pinned=bool(body.get("pinned", False)))
+        try:
+            item = self.memory.upsert(kind, text, label=body.get("label"),
+                                      pinned=bool(body.get("pinned", False)))
+        except SecretMemoryError:
+            return 422, {"error": {
+                "code": "secret_rejected",
+                "message": "Personal Memory rejected by Secret Guard",
+            }}
         sync_engine.emit_memory_upsert(self.conn, item, _now_iso())
         return 201, {"memory": _memory_dict(item)}
 

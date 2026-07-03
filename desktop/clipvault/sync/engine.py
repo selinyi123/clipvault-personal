@@ -46,18 +46,36 @@ def emit_clip_meta(conn, content_hash: str, patch: dict, ts: str, when: str) -> 
     )
 
 
-def emit_memory_upsert(conn, item, when: str) -> int:
-    """Publish a Personal Memory item to peers (S008). A local upsert bumps the
-    item's meta-ts so a later-arriving stale delete loses the LWW race."""
-    _set_mem_ts(conn, item.kind, item.text, when)
+def _memory_data_is_secret(data: dict) -> bool:
+    from clipvault.store.memory_repo import memory_contains_secret
+
+    text = data.get("text")
+    if not isinstance(text, str):
+        return False
+    return memory_contains_secret(text, data.get("label"))
+
+
+def emit_memory_upsert(conn, item, when: str) -> int | None:
+    """Publish public Personal Memory to peers.
+
+    This is an independent SG-1 exit gate: callers cannot bypass it by handing
+    us a legacy or otherwise unvalidated MemoryItem.
+    """
     data = {
         "kind": item.kind, "text": item.text, "label": item.label,
         "pinned": item.pinned, "use_count": item.use_count, "source": item.source,
     }
+    if _memory_data_is_secret(data):
+        log.error("secret memory blocked at sync outbox boundary")
+        return None
+    _set_mem_ts(conn, item.kind, item.text, when)
     return OutboxRepo(conn).append("memory_upsert", data, when)
 
 
-def emit_memory_delete(conn, kind: str, text: str, ts: str, when: str) -> int:
+def emit_memory_delete(conn, kind: str, text: str, ts: str, when: str) -> int | None:
+    if _memory_data_is_secret({"text": text}):
+        log.error("secret memory delete blocked at sync outbox boundary")
+        return None
     _set_mem_ts(conn, kind, text, ts)
     return OutboxRepo(conn).append(
         "memory_delete", {"kind": kind, "text": text, "ts": ts}, when
@@ -196,12 +214,18 @@ def _apply_clip_new(conn, data: dict, service) -> None:
 
 
 def _apply_memory_upsert(conn, data: dict) -> None:
-    from clipvault.store.memory_repo import MemoryRepo
-    MemoryRepo(conn).upsert(
-        data["kind"], data["text"], label=data.get("label"),
-        source=data.get("source", "manual"), pinned=data.get("pinned", False),
-        use_count=data.get("use_count", 0),
-    )
+    from clipvault.store.memory_repo import MemoryRepo, SecretMemoryError
+
+    try:
+        MemoryRepo(conn).upsert(
+            data["kind"], data["text"], label=data.get("label"),
+            source=data.get("source", "manual"), pinned=data.get("pinned", False),
+            use_count=data.get("use_count", 0),
+        )
+    except SecretMemoryError:
+        # Treat a secret-shaped remote event as an acknowledged quarantine
+        # no-op. Retrying it forever cannot make it safe and would wedge sync.
+        log.error("remote secret memory rejected")
 
 
 def _apply_memory_delete(conn, data: dict) -> None:
@@ -250,6 +274,15 @@ def _apply_clip_meta(conn, data: dict) -> None:
 # --- pull side ---
 
 def build_pull(conn, since_seq: int, limit: int = 100) -> dict:
-    events = OutboxRepo(conn).list_since(since_seq, limit)
-    next_seq = events[-1]["seq"] if events else since_seq
-    return {"events": events, "next_seq": next_seq, "has_more": len(events) == limit}
+    raw_events = OutboxRepo(conn).list_since(since_seq, limit)
+    events = []
+    for event in raw_events:
+        if event["kind"] in ("memory_upsert", "memory_delete") and _memory_data_is_secret(event["payload"]):
+            # Legacy rows may predate the Memory SG-1 gate. Do not send them,
+            # but advance next_seq over the quarantined event so peers do not
+            # request it forever.
+            log.error("legacy secret memory blocked at sync pull seq=%s", event["seq"])
+            continue
+        events.append(event)
+    next_seq = raw_events[-1]["seq"] if raw_events else since_seq
+    return {"events": events, "next_seq": next_seq, "has_more": len(raw_events) == limit}

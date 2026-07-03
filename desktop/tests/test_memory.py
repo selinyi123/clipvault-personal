@@ -8,7 +8,8 @@ from clipvault.api.handlers import Api
 from clipvault.config import Config
 from clipvault.memory import importers
 from clipvault.service import ClipVaultService
-from clipvault.store.memory_repo import MemoryRepo
+from clipvault.store.memory_repo import MemoryRepo, SecretMemoryError
+from clipvault.store.outbox_repo import OutboxRepo
 
 FAKE_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
 
@@ -43,6 +44,19 @@ def test_e1_upsert_idempotent_no_usecount_regression(repo):
 def test_e2_invalid_kind_rejected(repo):
     with pytest.raises(ValueError):
         repo.upsert("bogus", "x")
+
+
+@pytest.mark.parametrize(
+    ("text", "label"),
+    [
+        (FAKE_AWS_KEY, None),
+        ("production credential", FAKE_AWS_KEY),
+    ],
+)
+def test_e2_secret_memory_rejected_at_repo_boundary(repo, text, label):
+    with pytest.raises(SecretMemoryError):
+        repo.upsert("term", text, label=label)
+    assert repo.list() == []
 
 
 def test_e3_list_ordering_and_filter(repo):
@@ -102,6 +116,19 @@ def test_e6_from_names_dedup(repo):
     assert sorted(t for _, t in items) == ["repo-a", "repo-b"]
 
 
+def test_e6_import_skips_secret_memory_and_does_not_emit(repo):
+    created = importers.apply(
+        repo,
+        [("term", "safe project name"), ("term", FAKE_AWS_KEY)],
+        "github_import",
+    )
+
+    assert created == 1
+    assert [item.text for item in repo.list()] == ["safe project name"]
+    events = OutboxRepo(repo.conn).list_since(0)
+    assert [event["payload"]["text"] for event in events] == ["safe project name"]
+
+
 def test_e7_promote_command_clip(api, conn):
     _, obj = api.create_clip({"content": "docker compose up -d"})
     code, body = api.promote_clip(obj["clip"]["id"])
@@ -114,6 +141,19 @@ def test_e7_promote_secret_refused(api):
     _, obj = api.create_clip({"content": FAKE_AWS_KEY})
     code, _ = api.promote_clip(obj["clip"]["id"])
     assert code == 404
+
+
+def test_e7_promote_legacy_public_clip_rejected_by_current_secret_guard(api, conn):
+    _, obj = api.create_clip({"content": "legacy public value"})
+    clip_id = obj["clip"]["id"]
+    conn.execute("UPDATE clips SET content=? WHERE id=?", (FAKE_AWS_KEY, clip_id))
+    conn.commit()
+
+    code, _ = api.promote_clip(clip_id)
+
+    assert code == 404
+    assert MemoryRepo(conn).list() == []
+    assert all(event["kind"] != "memory_upsert" for event in OutboxRepo(conn).list_since(0))
 
 
 def test_e8_memory_api_crud(api):
@@ -131,6 +171,55 @@ def test_e8_memory_api_crud(api):
 def test_e8_memory_api_bad_kind(api):
     code, _ = api.create_memory({"kind": "nope", "text": "x"})
     assert code == 400
+
+
+@pytest.mark.parametrize(
+    ("text", "label"),
+    [(FAKE_AWS_KEY, None), ("production credential", FAKE_AWS_KEY)],
+)
+def test_e8_memory_api_rejects_secret_without_persisting_or_syncing(
+    api, conn, text, label
+):
+    code, body = api.create_memory({"kind": "term", "text": text, "label": label})
+
+    assert code == 422
+    assert body["error"]["code"] == "secret_rejected"
+    assert MemoryRepo(conn).list() == []
+    assert OutboxRepo(conn).list_since(0) == []
+
+
+def test_e8_memory_list_hides_legacy_secret_rows(repo):
+    item = repo.upsert("term", "temporary safe value")
+    repo.conn.execute(
+        "UPDATE memory_items SET text=? WHERE id=?", (FAKE_AWS_KEY, item.id)
+    )
+    repo.conn.commit()
+
+    assert repo.list() == []
+
+
+def test_e8_legacy_secret_does_not_starve_later_safe_memory(repo):
+    secret = repo.upsert("term", "temporary pinned value", pinned=True)
+    repo.upsert("term", "safe fallback")
+    repo.conn.execute(
+        "UPDATE memory_items SET text=? WHERE id=?", (FAKE_AWS_KEY, secret.id)
+    )
+    repo.conn.commit()
+
+    assert [item.text for item in repo.list(limit=1)] == ["safe fallback"]
+
+
+def test_e8_upsert_cannot_revive_legacy_secret_label(repo):
+    item = repo.upsert("term", "safe text", label="temporary label")
+    repo.conn.execute(
+        "UPDATE memory_items SET label=?, deleted=1 WHERE id=?",
+        (FAKE_AWS_KEY, item.id),
+    )
+    repo.conn.commit()
+
+    with pytest.raises(SecretMemoryError):
+        repo.upsert("term", "safe text")
+    assert repo.by_kind_text("term", "safe text").deleted is True
 
 
 def test_e9_no_content_in_logs(api, caplog):

@@ -4,6 +4,7 @@ suggestion engine (S010).
 
 import sqlite3
 
+from clipvault.core import secret_guard
 from clipvault.core import ulid
 from clipvault.core.models import MemoryItem
 
@@ -13,6 +14,21 @@ _COLUMNS = (
     "id, kind, text, label, pinned, use_count, last_used_at, source, "
     "created_at, deleted"
 )
+
+
+class SecretMemoryError(ValueError):
+    """Raised when Personal Memory content hits SG-1.
+
+    The message deliberately contains no user content so callers may log or
+    return it without turning an error path into another disclosure channel.
+    """
+
+
+def memory_contains_secret(text: str, label: str | None = None) -> bool:
+    """Apply SG-1 to every user-visible Memory field."""
+    if secret_guard.scan(text).is_secret:
+        return True
+    return isinstance(label, str) and secret_guard.scan(label).is_secret
 
 
 def _row(r: sqlite3.Row) -> MemoryItem:
@@ -36,9 +52,16 @@ class MemoryRepo:
         text = text.strip()
         if not text:
             raise ValueError("memory text empty")
+        if memory_contains_secret(text, label):
+            raise SecretMemoryError("Personal Memory rejected by Secret Guard")
         now = now or ulid_now()
         existing = self.by_kind_text(kind, text)
         if existing is not None:
+            # COALESCE below preserves an existing label when label=None. Guard
+            # that effective value too so a legacy secret label cannot be
+            # returned or un-deleted by an otherwise-safe upsert.
+            if label is None and memory_contains_secret(text, existing.label):
+                raise SecretMemoryError("Personal Memory rejected by Secret Guard")
             # update label/pinned; use_count never goes backwards
             self.conn.execute(
                 "UPDATE memory_items SET label=COALESCE(?, label), pinned=?, "
@@ -79,11 +102,31 @@ class MemoryRepo:
         if query:
             where.append("(text LIKE ? OR label LIKE ?)")
             params += [f"%{query}%", f"%{query}%"]
-        sql = (f"SELECT {_COLUMNS} FROM memory_items WHERE " + " AND ".join(where)
-               + " ORDER BY pinned DESC, use_count DESC, "
-               "COALESCE(last_used_at,'') DESC LIMIT ?")
-        params.append(limit)
-        return [_row(r) for r in self.conn.execute(sql, params).fetchall()]
+        if limit <= 0:
+            return []
+        base_sql = (f"SELECT {_COLUMNS} FROM memory_items WHERE " + " AND ".join(where)
+                    + " ORDER BY pinned DESC, use_count DESC, "
+                    "COALESCE(last_used_at,'') DESC")
+        # Defence in depth for databases created before the Memory SG-1 gate.
+        # Page until `limit` safe rows are found; filtering only after a SQL
+        # LIMIT would let high-ranked legacy secrets starve later safe rows.
+        safe: list[MemoryItem] = []
+        offset = 0
+        batch_size = max(limit, 100)
+        while len(safe) < limit:
+            rows = self.conn.execute(
+                base_sql + " LIMIT ? OFFSET ?", [*params, batch_size, offset]
+            ).fetchall()
+            if not rows:
+                break
+            offset += len(rows)
+            safe.extend(
+                item for item in map(_row, rows)
+                if not memory_contains_secret(item.text, item.label)
+            )
+            if len(rows) < batch_size:
+                break
+        return safe[:limit]
 
     def bump_use(self, item_id: str, when: str) -> None:
         self.conn.execute(

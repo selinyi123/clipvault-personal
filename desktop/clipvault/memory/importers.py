@@ -5,7 +5,7 @@ a thin apply() that upserts via MemoryRepo. Re-running is idempotent.
 import re
 from pathlib import Path
 
-from clipvault.store.memory_repo import MemoryRepo
+from clipvault.store.memory_repo import MemoryRepo, SecretMemoryError
 
 # OBS-1 filenames look like 20260613-095022_slug_ABC123.md
 _OBS_PREFIX = re.compile(r"^\d{8}-\d{6}_")
@@ -64,7 +64,12 @@ def apply(repo: MemoryRepo, items: list[tuple[str, str]], source: str) -> int:
         # the importer respects the deletion.
         if before is not None and before.deleted:
             continue
-        item = repo.upsert(kind, text, source=source)
+        try:
+            item = repo.upsert(kind, text, source=source)
+        except SecretMemoryError:
+            # Imported names/titles are untrusted content too. Skip without
+            # logging the value; a log message would become a disclosure path.
+            continue
         if before is None:
             created += 1
             engine.emit_memory_upsert(repo.conn, item, now)
