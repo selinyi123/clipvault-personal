@@ -33,6 +33,8 @@ evidence for the target commit:
 These are required for a real `v1.6.0` release but are not satisfied by a debug
 build alone:
 
+- Follow [RELEASE_RUNBOOK_V1_6_0.md](RELEASE_RUNBOOK_V1_6_0.md) for the
+  owner-controlled signed artifact workflow.
 - Run the "Release candidate dry run" GitHub Actions workflow to verify that
   packaging still produces downloadable candidate artifacts, SHA256SUMS, and
   `RELEASE_MANIFEST.json` without using signing secrets or publishing a GitHub
