@@ -164,6 +164,8 @@ jobs:
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          keystore=""
+          trap 'rm -f "${keystore:-}"' EXIT
           version="${RELEASE_VERSION}"
           source_version="$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)"
           if [[ "${version}" != "${source_version}" ]]; then
