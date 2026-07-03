@@ -69,6 +69,9 @@
 - The Android pairing fix is sync credential hardening only; it does not change
   token format, sync payload semantics, IME behavior, explicit-save behavior, or
   release state.
+- The Web UI search debounce timer now uses module-local state instead of
+  `window._t`, guarded by `test_webui_security.py`, so the local UI does not
+  rely on clobberable global `window` properties.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 

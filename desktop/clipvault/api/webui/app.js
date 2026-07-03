@@ -1,6 +1,7 @@
 "use strict";
 const $ = (s) => document.querySelector(s);
 let tab = "history";
+let searchRefreshTimer = null;
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -215,7 +216,10 @@ $("#pair-btn").addEventListener("click", async () => {
   renderDevices();
 });
 
-$("#q").addEventListener("input", () => { clearTimeout(window._t); window._t = setTimeout(refresh, 200); });
+$("#q").addEventListener("input", () => {
+  clearTimeout(searchRefreshTimer);
+  searchRefreshTimer = setTimeout(refresh, 200);
+});
 $("#type").addEventListener("change", refresh);
 refresh();
 setInterval(() => { if (tab !== "memory") refresh(); }, 5000);
