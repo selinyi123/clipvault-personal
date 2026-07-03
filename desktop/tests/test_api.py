@@ -5,6 +5,7 @@ import http.client
 import json
 import logging
 import os
+import socket
 import tempfile
 import threading
 import time
@@ -19,6 +20,12 @@ from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.outbox_repo import OutboxRepo
 
 FAKE_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+
+
+def _free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
 @pytest.fixture
@@ -295,12 +302,12 @@ def test_d8_release_endpoint_remains_bodyless(cfg):
     # not parsed, so the call still returns 200 instead of 400. Uses a file DB so
     # the clip created over the socket is visible to the same serving thread.
     cfg.db_path = os.path.join(tempfile.mkdtemp(), "cv.db")
-    cfg.port = 8796
+    cfg.port = _free_port()
     stop = threading.Event()
     threading.Thread(target=api_server.serve, args=(cfg, stop), daemon=True).start()
     time.sleep(0.5)
     try:
-        c = http.client.HTTPConnection("127.0.0.1", 8796, timeout=5)
+        c = http.client.HTTPConnection("127.0.0.1", cfg.port, timeout=5)
         c.request("POST", "/api/clips", body=json.dumps({"content": FAKE_AWS_KEY}),
                   headers={"Content-Type": "application/json"})
         resp = c.getresponse()
@@ -310,7 +317,7 @@ def test_d8_release_endpoint_remains_bodyless(cfg):
 
         # FAKE_AWS_KEY is quarantined as a secret, so releasing it yields 200; the
         # invalid body proves the route never tries to JSON-parse the request.
-        c = http.client.HTTPConnection("127.0.0.1", 8796, timeout=5)
+        c = http.client.HTTPConnection("127.0.0.1", cfg.port, timeout=5)
         c.request("POST", f"/api/clips/{cid}/release", body="not-json",
                   headers={"Content-Type": "application/json"})
         assert c.getresponse().status == 200
@@ -323,12 +330,12 @@ def test_d8_release_endpoint_remains_bodyless(cfg):
 def test_d8_peers_route_is_loopback_reachable(cfg):
     # The device-management route dispatches over a real socket (loopback-only).
     cfg.db_path = os.path.join(tempfile.mkdtemp(), "cv.db")
-    cfg.port = 8798
+    cfg.port = _free_port()
     stop = threading.Event()
     threading.Thread(target=api_server.serve, args=(cfg, stop), daemon=True).start()
     time.sleep(0.5)
     try:
-        c = http.client.HTTPConnection("127.0.0.1", 8798, timeout=5)
+        c = http.client.HTTPConnection("127.0.0.1", cfg.port, timeout=5)
         c.request("GET", "/api/peers")
         resp = c.getresponse()
         assert resp.status == 200
@@ -343,18 +350,18 @@ def test_d8_rejects_forged_host_header(cfg):
     # DNS-rebinding guard: a loopback request with a foreign Host header (what a
     # rebinding site sends) is refused on the management API.
     cfg.db_path = os.path.join(tempfile.mkdtemp(), "cv.db")
-    cfg.port = 8799
+    cfg.port = _free_port()
     stop = threading.Event()
     threading.Thread(target=api_server.serve, args=(cfg, stop), daemon=True).start()
     time.sleep(0.5)
     try:
-        c = http.client.HTTPConnection("127.0.0.1", 8799, timeout=5)
+        c = http.client.HTTPConnection("127.0.0.1", cfg.port, timeout=5)
         c.request("GET", "/api/status", headers={"Host": "attacker.example"})
         assert c.getresponse().status == 403
         c.close()
         # a normal loopback Host is still served
-        c = http.client.HTTPConnection("127.0.0.1", 8799, timeout=5)
-        c.request("GET", "/api/status")  # http.client sets Host: 127.0.0.1:8799
+        c = http.client.HTTPConnection("127.0.0.1", cfg.port, timeout=5)
+        c.request("GET", "/api/status")  # http.client sets Host: 127.0.0.1:<port>
         assert c.getresponse().status == 200
         c.close()
     finally:
@@ -366,20 +373,20 @@ def test_d8_rejects_foreign_referer(cfg):
     # Second DNS-rebinding layer: a loopback request whose Referer is a foreign
     # origin (what a rebinding page sends) is refused; loopback or absent is fine.
     cfg.db_path = os.path.join(tempfile.mkdtemp(), "cv.db")
-    cfg.port = 8800
+    cfg.port = _free_port()
     stop = threading.Event()
     threading.Thread(target=api_server.serve, args=(cfg, stop), daemon=True).start()
     time.sleep(0.5)
     try:
-        c = http.client.HTTPConnection("127.0.0.1", 8800, timeout=5)
+        c = http.client.HTTPConnection("127.0.0.1", cfg.port, timeout=5)
         c.request("GET", "/api/status", headers={"Referer": "http://attacker.example/x"})
         assert c.getresponse().status == 403
         c.close()
-        c = http.client.HTTPConnection("127.0.0.1", 8800, timeout=5)
-        c.request("GET", "/api/status", headers={"Referer": "http://127.0.0.1:8800/"})
+        c = http.client.HTTPConnection("127.0.0.1", cfg.port, timeout=5)
+        c.request("GET", "/api/status", headers={"Referer": f"http://127.0.0.1:{cfg.port}/"})
         assert c.getresponse().status == 200
         c.close()
-        c = http.client.HTTPConnection("127.0.0.1", 8800, timeout=5)
+        c = http.client.HTTPConnection("127.0.0.1", cfg.port, timeout=5)
         c.request("GET", "/api/status")  # no Referer -> allowed (Host is primary)
         assert c.getresponse().status == 200
         c.close()
