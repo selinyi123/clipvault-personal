@@ -102,6 +102,26 @@ Verification so far on this branch:
 Not claimed yet:
 - Device/manual pairing QA.
 
+## Current release gate note - 2026-07-03 / v1.6.0 metadata evidence
+
+Issue #36 is the current `v1.6.0` release gate. The source tree version metadata
+is aligned at desktop runtime/package `1.6.0`, Android `versionName=1.6.0`,
+Android `versionCode=13`, and Windows installer `AppVersion=1.6.0`.
+
+Guardrail updates:
+- `desktop/tests/test_release_alignment.py` treats Android `versionCode >= 13`
+  as the v1.6.0 floor.
+- `docs/VERSION_SYNC.md` records the current 1.6.0 truth instead of stale
+  v1.5.16 metadata.
+- `docs/MANUAL_QA_V1_6_0.md` is the current manual/artifact checklist for
+  Issue #36.
+
+Still not claimed:
+- Signed release artifacts.
+- GitHub Release publication.
+- Manual Android device QA.
+- Manual Windows clipboard privacy QA.
+
 ## Product Constraints（全部 Active）
 
 | Constraint | Status |
