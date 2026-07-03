@@ -65,10 +65,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path release-candidate | Out-Null
           Copy-Item desktop/dist/clipvault.exe "release-candidate/ClipVault-Desktop-v$version-portable.exe"
           Copy-Item "installer/dist/ClipVault-Setup-v$version.exe" "release-candidate/ClipVault-Setup-v$version.exe"
-          Get-FileHash -Algorithm SHA256 release-candidate/* |
-            Sort-Object Path |
-            ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } |
-            Set-Content -Encoding ascii release-candidate/SHA256SUMS.txt
+          python scripts/release_candidate_manifest.py --artifact-dir release-candidate --platform windows --version $version --commit "${{ github.sha }}"
 
       - name: Upload Windows release candidate artifacts
         uses: actions/upload-artifact@v4
@@ -117,7 +114,8 @@ jobs:
             exit 1
           fi
           cp "${release_apk}" "../release-candidate/ClipVault-Android-v${version}-release-unsigned.apk"
-          (cd ../release-candidate && sha256sum * > SHA256SUMS.txt)
+          cd ..
+          python scripts/release_candidate_manifest.py --artifact-dir release-candidate --platform android --version "${version}" --commit "${GITHUB_SHA}"
 
       - name: Upload Android release candidate artifacts
         uses: actions/upload-artifact@v4
