@@ -36,6 +36,18 @@ _LOOPBACK = ("127.0.0.1", "::1")
 _MAX_JSON_BODY = 2 * 1_048_576
 _MAX_PAIR_BODY = 4_096
 _MAX_SYNC_PUSH_BODY = 4 * 1_048_576
+_MAX_REJECT_DRAIN = 64 * 1024
+_CSP = (
+    "default-src 'none'; "
+    "script-src 'self'; "
+    "style-src 'self'; "
+    "connect-src 'self'; "
+    "img-src 'self'; "
+    "base-uri 'none'; "
+    "form-action 'none'; "
+    "frame-ancestors 'none'; "
+    "object-src 'none'"
+)
 
 
 def _remote_allowed(route: str) -> bool:
@@ -80,6 +92,7 @@ def make_handler(api: Api):
         def _send_json(self, code: int, obj) -> None:
             payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
             self.send_response(code)
+            self._send_security_headers()
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
             if self.close_connection:
@@ -93,10 +106,19 @@ def make_handler(api: Api):
                 return
             data = path.read_bytes()
             self.send_response(200)
+            self._send_security_headers()
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+
+        def _send_security_headers(self) -> None:
+            # The Web UI renders personal clipboard/memory data. Keep the browser
+            # locked to first-party static assets/API and prevent embedding.
+            self.send_header("Content-Security-Policy", _CSP)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
 
         def _body(self, max_bytes: int = _MAX_JSON_BODY) -> dict | None:
             try:
@@ -108,16 +130,27 @@ def make_handler(api: Api):
                 self._send_json(400, {"error": {"code": "bad_request", "message": "invalid Content-Length"}})
                 return None
             if length > max_bytes:
+                # Drain small over-limit bodies so Windows clients can receive
+                # the 413 response cleanly; never drain unbounded junk.
+                if length <= _MAX_REJECT_DRAIN:
+                    try:
+                        self.rfile.read(length)
+                    except Exception:
+                        self.close_connection = True
                 self.close_connection = True
                 self._send_json(413, {"error": {"code": "payload_too_large", "message": "request body too large"}})
                 return None
             if not length:
                 return {}
             try:
-                return json.loads(self.rfile.read(length).decode("utf-8"))
+                obj = json.loads(self.rfile.read(length).decode("utf-8"))
             except (ValueError, UnicodeDecodeError):
                 self._send_json(400, {"error": {"code": "bad_request", "message": "invalid json"}})
                 return None
+            if not isinstance(obj, dict):
+                self._send_json(400, {"error": {"code": "bad_request", "message": "json object required"}})
+                return None
+            return obj
 
         def _drain(self, max_bytes: int = _MAX_JSON_BODY) -> None:
             """Discard an unread request body so leftover bytes do not corrupt the

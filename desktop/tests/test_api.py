@@ -184,6 +184,35 @@ def test_d8_loopback_guard_and_routing(api):
         stop.set()
 
 
+def test_d8_security_headers_on_json_and_webui(api):
+    stop = threading.Event()
+    httpd = api_server.build_server(api, "127.0.0.1", 0)
+    port = httpd.server_address[1]
+    t = threading.Thread(target=_serve_until, args=(httpd, stop), daemon=True)
+    t.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/api/health")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert "default-src 'none'" in resp.getheader("Content-Security-Policy")
+        assert resp.getheader("X-Content-Type-Options") == "nosniff"
+        assert resp.getheader("X-Frame-Options") == "DENY"
+        assert resp.getheader("Referrer-Policy") == "no-referrer"
+        resp.read()
+        conn.close()
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert "frame-ancestors 'none'" in resp.getheader("Content-Security-Policy")
+        resp.read()
+        conn.close()
+    finally:
+        stop.set()
+
+
 def _serve_until(httpd, stop):
     httpd.timeout = 0.2
     while not stop.is_set():
@@ -211,6 +240,23 @@ def test_d8_pair_rejects_large_body(api):
         resp = conn.getresponse()
         assert resp.status == 413
         resp.read()
+        conn.close()
+    finally:
+        stop.set()
+
+
+def test_d8_pair_rejects_non_object_json(api):
+    stop = threading.Event()
+    httpd = api_server.build_server(api, "127.0.0.1", 0)
+    port = httpd.server_address[1]
+    t = threading.Thread(target=_serve_until, args=(httpd, stop), daemon=True)
+    t.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("POST", "/api/pair", body="[]", headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        assert resp.status == 400
+        assert json.loads(resp.read())["error"]["message"] == "json object required"
         conn.close()
     finally:
         stop.set()

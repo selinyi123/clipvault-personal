@@ -4,6 +4,7 @@ directly unit-testable.
 """
 
 from datetime import datetime, timedelta, timezone
+import re
 
 from clipvault import __version__
 from clipvault.core import secret_guard
@@ -21,6 +22,8 @@ from clipvault.sync import engine as sync_engine
 from clipvault.sync.pairing import Pairing, hash_token
 
 _SUGGEST_WINDOW_DAYS = 30
+_DEVICE_ID_RE = re.compile(r"^[0-9A-Za-z_-]{1,80}$")
+_SYNC_PUSH_EVENT_LIMIT = 100
 
 
 def _now_iso() -> str:
@@ -286,8 +289,10 @@ class Api:
         code = str(body.get("code", ""))
         device_id = body.get("device_id")
         device_name = body.get("device_name", "device")
-        if not device_id:
+        if not isinstance(device_id, str) or not device_id:
             return 400, {"error": {"code": "bad_request", "message": "device_id required"}}
+        if not _DEVICE_ID_RE.fullmatch(device_id):
+            return 400, {"error": {"code": "bad_request", "message": "device_id must use 1-80 URL-safe characters"}}
         if self.pairing.is_rate_limited():
             return 429, {"error": {"code": "rate_limited", "message": "too many attempts, try again shortly"}}
         token = self.pairing.redeem(code)
@@ -310,6 +315,13 @@ class Api:
             return 401, {"error": {"code": "unauthorized", "message": "bad token"}}
         device_id = peer["device_id"]
         events = body.get("events", [])
+        if not isinstance(events, list):
+            return 400, {"error": {"code": "bad_request", "message": "events must be an array"}}
+        if len(events) > _SYNC_PUSH_EVENT_LIMIT:
+            return 400, {"error": {
+                "code": "bad_request",
+                "message": f"events must contain at most {_SYNC_PUSH_EVENT_LIMIT} items",
+            }}
         acked = sync_engine.apply_push(self.conn, device_id, events, self.service)
         self.peers.touch_last_seen(device_id, _now_iso())
         return 200, {"acked_upto": acked}
