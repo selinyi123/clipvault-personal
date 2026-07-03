@@ -13,15 +13,41 @@ It does not replace the manual Android/IME/sync/Windows clipboard QA evidence.
 ## 1. Confirm current main evidence
 
 ```powershell
-gh run view 28647570303 --repo selinyi123/clipvault-personal
-gh run view 28647589233 --repo selinyi123/clipvault-personal
+$mainSha = gh api repos/selinyi123/clipvault-personal/branches/main --jq ".commit.sha"
+
+gh run list `
+  --repo selinyi123/clipvault-personal `
+  --workflow "CI" `
+  --branch main `
+  --limit 10 `
+  --json databaseId,status,conclusion,headSha,url,event
+
+gh run list `
+  --repo selinyi123/clipvault-personal `
+  --workflow "Release candidate dry run" `
+  --branch main `
+  --limit 10 `
+  --json databaseId,status,conclusion,headSha,url,event
 ```
 
-Both runs must target the same main commit:
+Pick the latest completed successful run for each workflow whose `headSha`
+equals `$mainSha`. If no release-candidate dry-run exists for the current main
+commit, run it before continuing:
 
-```text
-9f0b466f4f38e526be0087869ba969638b64d5b3
+```powershell
+gh workflow run "Release candidate dry run" `
+  --repo selinyi123/clipvault-personal `
+  --ref main
 ```
+
+Inspect the selected runs and record their URLs on Issue #36:
+
+```powershell
+gh run view CI_RUN_ID --repo selinyi123/clipvault-personal
+gh run view RELEASE_CANDIDATE_DRY_RUN_ID --repo selinyi123/clipvault-personal
+```
+
+Both runs must target the same current main commit.
 
 ## 2. Configure the protected release environment
 

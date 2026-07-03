@@ -90,3 +90,14 @@ def test_manual_qa_links_v1_6_release_runbook():
     assert runbook.exists()
     assert "RELEASE_RUNBOOK_V1_6_0.md" in manual_qa
     assert "Release artifact build" in runbook.read_text(encoding="utf-8")
+
+
+def test_release_runbook_uses_live_main_evidence_commands():
+    runbook = _read("docs/RELEASE_RUNBOOK_V1_6_0.md")
+
+    assert "gh run list" in runbook
+    assert "gh workflow run \"Release candidate dry run\"" in runbook
+    assert "CI_RUN_ID" in runbook
+    assert "RELEASE_CANDIDATE_DRY_RUN_ID" in runbook
+    assert not re.search(r"https://github\.com/[^)\s]+/actions/runs/\d+", runbook)
+    assert not re.search(r"\b[0-9a-f]{40}\b", runbook)
