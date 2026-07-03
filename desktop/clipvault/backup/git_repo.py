@@ -20,10 +20,18 @@ class GitPushError(GitError):
 
 
 def _run(repo, args: list[str], timeout: int = _TIMEOUT) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True, text=True, timeout=timeout,
-    )
+    cmd = ["git", "-C", str(repo), *args]
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # A hung git op (most likely a network push) must surface as a normal
+        # non-zero result so callers handle it through their existing returncode
+        # paths — push() -> GitPushError (backoff), add_commit() -> GitError
+        # (queue stays pending, retried) — instead of an uncaught TimeoutExpired
+        # crashing the backup worker thread.
+        return subprocess.CompletedProcess(
+            cmd, returncode=124, stdout="", stderr=f"git timed out after {timeout}s",
+        )
 
 
 def init(repo) -> None:
@@ -53,7 +61,10 @@ def current_branch(repo) -> str:
 
 def add_commit(repo, message: str) -> str | None:
     """Stage everything and commit. Returns new HEAD, or None if nothing to commit."""
-    _run(repo, ["add", "-A"])
+    result = _run(repo, ["add", "-A"])
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "git add failed"
+        raise GitError(f"add failed: {detail}")
     result = _run(repo, ["commit", "-m", message])
     if result.returncode != 0:
         if "nothing to commit" in (result.stdout + result.stderr):
