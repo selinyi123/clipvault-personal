@@ -1,0 +1,126 @@
+name: Release candidate dry run
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/release-candidate.yml"
+      - "android/**"
+      - "desktop/**"
+      - "installer/**"
+      - "docs/MANUAL_QA_V1_6_0.md"
+      - "docs/VERSION_SYNC.md"
+
+permissions:
+  contents: read
+
+jobs:
+  windows-artifacts:
+    name: Windows portable and installer candidate
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: desktop/pyproject.toml
+
+      - name: Install packaging dependencies
+        working-directory: desktop
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Build portable executable
+        working-directory: desktop
+        run: >
+          python -m PyInstaller --onefile --name clipvault
+          --workpath build_pyi
+          --specpath packaging
+          --add-data "../clipvault/store/migrations;clipvault/store/migrations"
+          --add-data "../clipvault/api/webui;clipvault/api/webui"
+          packaging/run_clipvault.py
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        working-directory: installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $iscc = "iscc"
+          }
+          & $iscc clipvault.iss
+
+      - name: Stage Windows artifacts and checksums
+        shell: pwsh
+        run: |
+          $version = python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("desktop/pyproject.toml").read_text())["project"]["version"])'
+          Remove-Item release-candidate -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path release-candidate | Out-Null
+          Copy-Item desktop/dist/clipvault.exe "release-candidate/ClipVault-Desktop-v$version-portable.exe"
+          Copy-Item "installer/dist/ClipVault-Setup-v$version.exe" "release-candidate/ClipVault-Setup-v$version.exe"
+          Get-FileHash -Algorithm SHA256 release-candidate/* |
+            Sort-Object Path |
+            ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } |
+            Set-Content -Encoding ascii release-candidate/SHA256SUMS.txt
+
+      - name: Upload Windows release candidate artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipvault-windows-release-candidate
+          path: release-candidate/*
+
+  android-artifacts:
+    name: Android debug and unsigned release candidate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            android/*.gradle*
+            android/**/*.gradle*
+            android/**/gradle-wrapper.properties
+
+      - name: Ensure Gradle wrapper is executable
+        run: chmod +x ./gradlew
+
+      - name: Build Android candidates without release signing secrets
+        run: ./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease --no-daemon
+
+      - name: Stage Android artifacts and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)"
+          rm -rf ../release-candidate
+          mkdir -p ../release-candidate
+          cp app/build/outputs/apk/debug/app-debug.apk "../release-candidate/ClipVault-Android-v${version}-debug.apk"
+          release_apk="$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' | sort | head -n 1)"
+          if [[ -z "${release_apk}" ]]; then
+            echo "No release APK produced under app/build/outputs/apk/release" >&2
+            exit 1
+          fi
+          cp "${release_apk}" "../release-candidate/ClipVault-Android-v${version}-release-unsigned.apk"
+          (cd ../release-candidate && sha256sum * > SHA256SUMS.txt)
+
+      - name: Upload Android release candidate artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipvault-android-release-candidate
+          path: release-candidate/*
