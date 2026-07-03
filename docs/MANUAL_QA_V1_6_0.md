@@ -33,6 +33,9 @@ evidence for the target commit:
 These are required for a real `v1.6.0` release but are not satisfied by a debug
 build alone:
 
+- Run the "Release candidate dry run" GitHub Actions workflow to verify that
+  packaging still produces downloadable candidate artifacts and SHA256SUMS
+  without using signing secrets or publishing a GitHub Release.
 - Build desktop portable exe for 1.6.0.
 - Build desktop installer for 1.6.0.
 - Build signed Android APK for `versionName=1.6.0`.
@@ -80,3 +83,7 @@ privacy formats:
 Do not close Issue #36 unless all automated, artifact, and manual checks above
 have recorded evidence. If a device, signing key, or owner approval is missing,
 record that as blocked instead of marking the gate complete.
+
+The release-candidate dry run is a packaging preflight only. Its unsigned
+Android release APK and uploaded workflow artifacts do not satisfy the signed
+release requirement.

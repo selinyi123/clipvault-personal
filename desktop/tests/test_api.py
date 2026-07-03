@@ -262,6 +262,33 @@ def test_d8_pair_rejects_non_object_json(api):
         stop.set()
 
 
+def test_d8_json_routes_require_json_content_type(api):
+    # Browser CSRF primitives can send simple text/plain form bodies to localhost.
+    # Routes that parse JSON must reject those bodies before parsing; legitimate
+    # Web UI and Android clients already send application/json.
+    stop = threading.Event()
+    httpd = api_server.build_server(api, "127.0.0.1", 0)
+    port = httpd.server_address[1]
+    t = threading.Thread(target=_serve_until, args=(httpd, stop), daemon=True)
+    t.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("POST", "/api/pair", body=json.dumps({"code": "00000000", "device_id": "android"}),
+                     headers={"Content-Type": "text/plain"})
+        resp = conn.getresponse()
+        assert resp.status == 415
+        assert json.loads(resp.read())["error"]["code"] == "unsupported_media_type"
+        conn.close()
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("POST", "/api/pair", body=json.dumps({"code": "00000000", "device_id": "android"}),
+                     headers={"Content-Type": "application/json; charset=utf-8"})
+        assert conn.getresponse().status == 403  # accepted as JSON, then rejected as a bad pairing code
+        conn.close()
+    finally:
+        stop.set()
+
+
 def test_d8_release_endpoint_remains_bodyless(cfg):
     # Drive the real server (serve() owns its connection on the serving thread,
     # S004) so /release is exercised end-to-end: a non-JSON body must be ignored,

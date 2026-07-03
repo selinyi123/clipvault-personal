@@ -37,6 +37,7 @@ _MAX_JSON_BODY = 2 * 1_048_576
 _MAX_PAIR_BODY = 4_096
 _MAX_SYNC_PUSH_BODY = 4 * 1_048_576
 _MAX_REJECT_DRAIN = 64 * 1024
+_JSON_CONTENT_TYPES = ("application/json", "application/problem+json")
 _CSP = (
     "default-src 'none'; "
     "script-src 'self'; "
@@ -142,6 +143,11 @@ def make_handler(api: Api):
                 return None
             if not length:
                 return {}
+            content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if content_type not in _JSON_CONTENT_TYPES:
+                self._drain(max_bytes)
+                self._send_json(415, {"error": {"code": "unsupported_media_type", "message": "application/json required"}})
+                return None
             try:
                 obj = json.loads(self.rfile.read(length).decode("utf-8"))
             except (ValueError, UnicodeDecodeError):
