@@ -76,6 +76,7 @@ def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
     assert "apksigner" in workflow
     assert "verify --print-certs" in workflow
     assert "trap 'rm -f \"${keystore:-}\"' EXIT" in workflow
+    assert "umask 077" in workflow
     assert "actions/attest-build-provenance@v2" in workflow
     assert "create_draft_release" in workflow
     assert "upload-assets" in workflow
@@ -107,3 +108,28 @@ def test_release_runbook_uses_live_main_evidence_commands():
     assert "RELEASE_CANDIDATE_DRY_RUN_ID" in runbook
     assert not re.search(r"https://github\.com/[^)\s]+/actions/runs/\d+", runbook)
     assert not re.search(r"\b[0-9a-f]{40}\b", runbook)
+
+
+def test_release_runbook_uses_release_environment_secrets():
+    runbook = _read("docs/RELEASE_RUNBOOK_V1_6_0.md")
+    manual_qa = _read("docs/MANUAL_QA_V1_6_0.md")
+
+    assert "Required `release` environment secrets" in runbook
+    assert "--env release" in runbook
+    assert "repository-level secrets" in runbook
+    assert "Required repository secrets" not in runbook
+    assert "`release`" in manual_qa
+    assert "environment secrets" in manual_qa
+
+
+def test_windows_pyinstaller_workflows_bundle_desktop_resources():
+    expected = [
+        '--add-data "$PWD/clipvault/store/migrations;clipvault/store/migrations"',
+        '--add-data "$PWD/clipvault/api/webui;clipvault/api/webui"',
+    ]
+
+    for rel in (".github/workflows/release.yml", ".github/workflows/release-candidate.yml"):
+        workflow = _read(rel)
+        assert "../clipvault/" not in workflow
+        for line in expected:
+            assert line in workflow

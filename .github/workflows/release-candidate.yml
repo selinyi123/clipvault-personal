@@ -41,8 +41,8 @@ jobs:
           python -m PyInstaller --onefile --name clipvault
           --workpath build_pyi
           --specpath packaging
-          --add-data "../clipvault/store/migrations;clipvault/store/migrations"
-          --add-data "../clipvault/api/webui;clipvault/api/webui"
+          --add-data "$PWD/clipvault/store/migrations;clipvault/store/migrations"
+          --add-data "$PWD/clipvault/api/webui;clipvault/api/webui"
           packaging/run_clipvault.py
 
       - name: Install Inno Setup

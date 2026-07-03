@@ -53,13 +53,14 @@ Both runs must target the same current main commit.
 
 Create a GitHub environment named `release` and add the desired approval policy.
 The workflow uses this environment for Android signing and optional draft release
-creation.
+creation. Store the Android signing values as `release` environment secrets, not
+repository-level secrets, so protected-environment approval gates secret access.
 
 Do not weaken the workflow by adding push or pull-request triggers.
 
-## 3. Configure Android signing secrets
+## 3. Configure Android signing environment secrets
 
-Required repository secrets:
+Required `release` environment secrets:
 
 ```text
 ANDROID_RELEASE_KEYSTORE_B64
@@ -71,18 +72,29 @@ ANDROID_RELEASE_KEY_PASSWORD
 Example CLI setup for the keystore value:
 
 ```powershell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("clipvault-release.jks")) |
-  Set-Content -Encoding ascii keystore.b64
-gh secret set ANDROID_RELEASE_KEYSTORE_B64 --repo selinyi123/clipvault-personal < keystore.b64
-Remove-Item keystore.b64
+try {
+  [Convert]::ToBase64String([IO.File]::ReadAllBytes("clipvault-release.jks")) |
+    Set-Content -Encoding ascii keystore.b64
+  gh secret set ANDROID_RELEASE_KEYSTORE_B64 `
+    --repo selinyi123/clipvault-personal `
+    --env release < keystore.b64
+} finally {
+  Remove-Item keystore.b64 -ErrorAction SilentlyContinue
+}
 ```
 
 Set the password/alias secrets without echoing them into logs:
 
 ```powershell
-gh secret set ANDROID_RELEASE_KEYSTORE_PASSWORD --repo selinyi123/clipvault-personal
-gh secret set ANDROID_RELEASE_KEY_ALIAS --repo selinyi123/clipvault-personal
-gh secret set ANDROID_RELEASE_KEY_PASSWORD --repo selinyi123/clipvault-personal
+gh secret set ANDROID_RELEASE_KEYSTORE_PASSWORD `
+  --repo selinyi123/clipvault-personal `
+  --env release
+gh secret set ANDROID_RELEASE_KEY_ALIAS `
+  --repo selinyi123/clipvault-personal `
+  --env release
+gh secret set ANDROID_RELEASE_KEY_PASSWORD `
+  --repo selinyi123/clipvault-personal `
+  --env release
 ```
 
 ## 4. Run the signed artifact workflow without creating a release
