@@ -6,14 +6,37 @@ async function api(path, opts) {
   const r = await fetch(path, opts);
   return r.json();
 }
-const jpatch = (id, body) => api(`/api/clips/${id}`, {
+const clipPath = (id) => `/api/clips/${encodeURIComponent(id)}`;
+const memoryPath = (id) => `/api/memory/${encodeURIComponent(id)}`;
+const jpatch = (id, body) => api(clipPath(id), {
   method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
 });
 
-function esc(s) {
-  return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-}
 function fmtTime(iso) { return iso ? iso.replace("T", " ").replace("Z", "") : ""; }
+
+function node(tag, className, text) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text !== undefined && text !== null) el.textContent = String(text);
+  return el;
+}
+
+function setChildren(parent, children) {
+  parent.textContent = "";
+  parent.append(...children);
+}
+
+function pill(text, extraClass) {
+  return node("span", extraClass ? `pill ${extraClass}` : "pill", text);
+}
+
+function button(label, dataset, className) {
+  const b = node("button", className, label);
+  Object.entries(dataset || {}).forEach(([key, value]) => {
+    b.dataset[key] = String(value);
+  });
+  return b;
+}
 
 // Mirror of core/actions.recommend() for the primary promote chip (S011).
 const PROMOTE = {
@@ -24,44 +47,59 @@ const PROMOTE = {
 
 function clipCard(c) {
   const secret = c.is_secret;
-  const actions = secret
-    ? `<button class="release" data-release="${c.id}">释放为非密钥</button>
-       <button data-del="${c.id}">删除</button>`
-    : `<button class="${c.pinned ? "on" : ""}" data-pin="${c.id}" data-v="${!c.pinned}">📌 固定</button>
-       <button class="${c.favorite ? "on" : ""}" data-fav="${c.id}" data-v="${!c.favorite}">★ 收藏</button>
-       <button data-promote="${c.id}" data-kind="${(PROMOTE[c.content_type]||PROMOTE.text)[1]}">${(PROMOTE[c.content_type]||PROMOTE.text)[0]}</button>
-       <button data-copy="${c.id}">复制</button>
-       <button data-del="${c.id}">删除</button>`;
-  const reasons = secret && c.secret_reasons.length
-    ? `<span class="pill secret">${esc(c.secret_reasons.join(","))}</span>` : "";
-  return `<article class="card ${secret ? "secret" : ""}" data-id="${c.id}">
-    <div class="meta">
-      <span class="pill type">${c.content_type}</span>
-      ${secret ? `<span class="pill secret">${c.secret_level}</span>` : ""}
-      ${reasons}
-      ${c.times_seen > 1 ? `<span class="pill">×${c.times_seen}</span>` : ""}
-      <span class="time">${fmtTime(c.last_seen_at)}</span>
-    </div>
-    <pre class="content" data-content>${esc(c.content)}</pre>
-    <div class="actions">${actions}</div>
-  </article>`;
+  const article = node("article", `card${secret ? " secret" : ""}`);
+  article.dataset.id = String(c.id ?? "");
+
+  const meta = node("div", "meta");
+  meta.append(pill(c.content_type, "type"));
+  if (secret && c.secret_level) meta.append(pill(c.secret_level, "secret"));
+  if (secret && Array.isArray(c.secret_reasons) && c.secret_reasons.length) {
+    meta.append(pill(c.secret_reasons.join(","), "secret"));
+  }
+  if (c.times_seen > 1) meta.append(pill(`×${c.times_seen}`));
+  meta.append(node("span", "time", fmtTime(c.last_seen_at)));
+
+  const content = node("pre", "content", c.content);
+  content.dataset.content = "";
+
+  const actions = node("div", "actions");
+  if (secret) {
+    actions.append(
+      button("释放为非密钥", { release: c.id }, "release"),
+      button("删除", { del: c.id }),
+    );
+  } else {
+    const promote = PROMOTE[c.content_type] || PROMOTE.text;
+    actions.append(
+      button("📌 固定", { pin: c.id, v: !c.pinned }, c.pinned ? "on" : ""),
+      button("★ 收藏", { fav: c.id, v: !c.favorite }, c.favorite ? "on" : ""),
+      button(promote[0], { promote: c.id, kind: promote[1] }),
+      button("复制", { copy: c.id }),
+      button("删除", { del: c.id }),
+    );
+  }
+
+  article.append(meta, content, actions);
+  return article;
 }
 
 function memCard(m) {
-  return `<article class="card" data-id="${m.id}">
-    <div class="meta">
-      <span class="pill type">${m.kind}</span>
-      ${m.pinned ? `<span class="pill">📌</span>` : ""}
-      <span class="pill">用 ${m.use_count}</span>
-      <span class="pill">${m.source}</span>
-      <span class="time">${fmtTime(m.last_used_at)}</span>
-    </div>
-    <pre class="content" data-content>${esc(m.text)}</pre>
-    <div class="actions">
-      <button data-memcopy="${m.id}">复制</button>
-      <button data-memdel="${m.id}">删除</button>
-    </div>
-  </article>`;
+  const article = node("article", "card");
+  article.dataset.id = String(m.id ?? "");
+
+  const meta = node("div", "meta");
+  meta.append(pill(m.kind, "type"));
+  if (m.pinned) meta.append(pill("📌"));
+  meta.append(pill(`用 ${m.use_count}`), pill(m.source), node("span", "time", fmtTime(m.last_used_at)));
+
+  const content = node("pre", "content", m.text);
+  content.dataset.content = "";
+
+  const actions = node("div", "actions");
+  actions.append(button("复制", { memcopy: m.id }), button("删除", { memdel: m.id }));
+
+  article.append(meta, content, actions);
+  return article;
 }
 
 async function refresh() {
@@ -79,7 +117,7 @@ async function refresh() {
   if (tab === "memory") {
     const data = await api("/api/memory");
     const items = data.memory || [];
-    $("#list").innerHTML = items.map(memCard).join("");
+    setChildren($("#list"), items.map(memCard));
     $("#empty").hidden = items.length > 0;
     return;
   }
@@ -91,7 +129,7 @@ async function refresh() {
   if (t) params.set("type", t);
   const data = await api("/api/clips?" + params.toString());
   const clips = data.clips || [];
-  $("#list").innerHTML = clips.map(clipCard).join("");
+  setChildren($("#list"), clips.map(clipCard));
   $("#empty").hidden = clips.length > 0;
 }
 
@@ -102,13 +140,21 @@ async function renderDevices() {
   const peers = d.peers || [];
   const el = $("#devices");
   el.hidden = false;
-  el.innerHTML = peers.length
-    ? `<div class="devices-title">已配对设备</div>`
-      + peers.map((p) =>
-          `<div class="device"><span>${esc(p.device_name || p.device_id)}</span>`
-          + `<span class="time">${p.last_seen_at ? "最近同步 " + fmtTime(p.last_seen_at) : "未同步"}</span>`
-          + `<button data-unpair="${esc(p.device_id)}">解绑</button></div>`).join("")
-    : `<div class="devices-title">暂无已配对设备</div>`;
+  if (!peers.length) {
+    setChildren(el, [node("div", "devices-title", "暂无已配对设备")]);
+    return;
+  }
+  const rows = [node("div", "devices-title", "已配对设备")];
+  peers.forEach((p) => {
+    const row = node("div", "device");
+    row.append(
+      node("span", "", p.device_name || p.device_id),
+      node("span", "time", p.last_seen_at ? `最近同步 ${fmtTime(p.last_seen_at)}` : "未同步"),
+      button("解绑", { unpair: p.device_id }),
+    );
+    rows.push(row);
+  });
+  setChildren(el, rows);
 }
 
 document.addEventListener("click", async (e) => {
@@ -124,15 +170,15 @@ document.addEventListener("click", async (e) => {
   if (b.dataset.pin) { await jpatch(b.dataset.pin, { pinned: b.dataset.v === "true" }); refresh(); }
   else if (b.dataset.fav) { await jpatch(b.dataset.fav, { favorite: b.dataset.v === "true" }); refresh(); }
   else if (b.dataset.del) { await jpatch(b.dataset.del, { deleted: true }); refresh(); }
-  else if (b.dataset.release) { await api(`/api/clips/${b.dataset.release}/release`, { method: "POST" }); refresh(); }
+  else if (b.dataset.release) { await api(`${clipPath(b.dataset.release)}/release`, { method: "POST" }); refresh(); }
   else if (b.dataset.promote) {
-    await api(`/api/clips/${b.dataset.promote}/promote`, {
+    await api(`${clipPath(b.dataset.promote)}/promote`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ kind: b.dataset.kind }),
     });
     b.textContent = "已加入"; b.classList.add("on");
   }
-  else if (b.dataset.memdel) { await api(`/api/memory/${b.dataset.memdel}`, { method: "DELETE" }); refresh(); }
+  else if (b.dataset.memdel) { await api(memoryPath(b.dataset.memdel), { method: "DELETE" }); refresh(); }
   else if (b.dataset.copy || b.dataset.memcopy) {
     const pre = b.closest(".card").querySelector("[data-content]");
     navigator.clipboard.writeText(pre.textContent).then(() => { b.textContent = "已复制"; });

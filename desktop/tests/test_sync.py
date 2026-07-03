@@ -65,6 +65,27 @@ def test_h1_pairing(api):
     assert api.pair({"code": code, "device_id": PEER})[0] == 403  # single use
 
 
+def test_h1_pair_rejects_unsafe_device_id(api):
+    code = api.pairing.mint_code()
+    for device_id in (
+        "",
+        "../phone",
+        "x" * 81,
+        'android-1" autofocus onfocus=alert(1)',
+        ["android-phone"],
+    ):
+        status, body = api.pair({
+            "code": code,
+            "device_id": device_id,
+            "device_name": "Pixel",
+        })
+        assert status == 400
+        assert body["error"]["code"] == "bad_request"
+    # Validation happens before code redemption, so a corrected URL-safe id can
+    # still use the same one-time code.
+    assert api.pair({"code": code, "device_id": "android_phone-01"})[0] == 200
+
+
 def test_h1_pair_rate_limited_after_repeated_bad_codes(api):
     # /api/pair is LAN-reachable; repeated bad codes must lock out (429), not just
     # 403 forever, to bound brute-force and flood of the single-threaded server.
@@ -98,6 +119,23 @@ def test_h2_auth_required(api):
     assert api.sync_push("wrong-token", {"events": []})[0] == 401
     token = _pair(api)
     assert api.sync_pull(token, {"since_seq": "0"})[0] == 200
+
+
+def test_h2_sync_push_rejects_non_array_events(api, caplog):
+    token = _pair(api)
+    with caplog.at_level("ERROR", logger="clipvault.sync"):
+        status, body = api.sync_push(token, {"events": "x" * 1000})
+    assert status == 400
+    assert body["error"]["message"] == "events must be an array"
+    assert "sync event without integer seq" not in caplog.text
+
+
+def test_h2_sync_push_rejects_batches_above_android_limit(api):
+    token = _pair(api)
+    events = [_clip_new_event(i + 1, f"clip {i}", hash=f"bulk{i}") for i in range(101)]
+    status, body = api.sync_push(token, {"events": events})
+    assert status == 400
+    assert "at most 100" in body["error"]["message"]
 
 
 def test_h2_bad_since_seq_returns_400(api):

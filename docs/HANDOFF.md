@@ -18,6 +18,27 @@
 | Current slice | v2.1 V2-S004 双 build PoC 规划收口（堆叠在 SG-1.3 + IME privacy 分支上）：NDK r28/16KB、全依赖许可、干净黄金向量、可复现规则、工程预算与 A/B 阻塞态已冻结；尚未接 production 引擎，不改版本号。 |
 | Last updated | 2026-07-02 |
 
+## Current development note - 2026-07-03
+
+Branch `codex/webui-sync-hardening` is a small v1.x hardening patch. It does not change product scope, version metadata, release state, or Android IME behavior.
+
+Planned/implemented scope:
+- Desktop `/api/pair` validates URL-safe bounded `device_id` before redeeming a one-time pairing code.
+- Desktop sync push rejects non-array `events` and batches above the Android client batch size (100) before entering the sync engine.
+- Desktop HTTP server sends first-party CSP, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`.
+- Web UI uses separate attribute escaping for generated `data-*` attributes.
+
+Verification so far on this branch:
+- `node --check desktop/clipvault/api/webui/app.js` passed.
+- `cd desktop; .\.venv\Scripts\python.exe -m pytest -q tests\test_api.py tests\test_sync.py tests\test_webui_security.py` -> 53 passed.
+- `cd desktop; .\.venv\Scripts\python.exe -m pytest -q` -> 214 passed.
+- `cd android; .\gradlew :core:test :app:testDebugUnitTest --no-daemon` -> BUILD SUCCESSFUL.
+- `cd android; .\gradlew :app:assembleDebug --no-daemon` -> BUILD SUCCESSFUL.
+
+Not claimed yet:
+- GitHub Actions CI.
+- Device/manual IME QA.
+
 ## Product Constraints（全部 Active）
 
 | Constraint | Status |
