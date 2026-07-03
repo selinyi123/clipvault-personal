@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    v1.7 privacy hardening for Android 12+ backup and device-transfer syntax.
+
+    android:allowBackup="false" still disables cloud backup, but Android 12+
+    device-to-device transfer behavior can vary by manufacturer. Explicitly
+    exclude the app root for both modes so Room caches, outbox rows, sync prefs,
+    and token ciphertext remain device-local.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="." />
+    </device-transfer>
+</data-extraction-rules>

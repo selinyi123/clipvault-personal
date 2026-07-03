@@ -133,3 +133,41 @@ def test_windows_pyinstaller_workflows_bundle_desktop_resources():
         assert "../clipvault/" not in workflow
         for line in expected:
             assert line in workflow
+
+
+def test_workflow_checkouts_do_not_persist_github_token_credentials():
+    workflows = sorted((_ROOT / ".github/workflows").glob("*.yml"))
+    assert workflows, "no GitHub Actions workflows found"
+
+    for path in workflows:
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        checkout_line_indexes = [
+            index
+            for index, line in enumerate(lines)
+            if re.search(r"uses:\s*actions/checkout@", line)
+        ]
+
+        for index in checkout_line_indexes:
+            checkout_block = "\n".join(lines[index : index + 8])
+            assert re.search(
+                r"(?m)^\s*persist-credentials:\s*false\s*$",
+                checkout_block,
+            ), f"{path.relative_to(_ROOT)} checkout step must set persist-credentials: false"
+
+
+def test_android_workflows_validate_gradle_wrapper_before_gradle_runs():
+    workflow_expectations = {
+        ".github/workflows/ci.yml": "Run Android unit tests",
+        ".github/workflows/release-candidate.yml": "Build Android candidates without release signing secrets",
+        ".github/workflows/release.yml": "Build signed Android release APK",
+    }
+
+    for rel, first_gradle_step_name in workflow_expectations.items():
+        text = _read(rel)
+        validation = text.find("uses: gradle/actions/wrapper-validation@v6")
+        first_gradle_step = text.find(first_gradle_step_name)
+
+        assert validation != -1, f"{rel} must validate the Gradle wrapper"
+        assert first_gradle_step != -1, f"{rel} missing expected Gradle step"
+        assert validation < first_gradle_step, f"{rel} must validate the wrapper before running Gradle"
