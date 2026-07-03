@@ -6,7 +6,8 @@ desktop stores only sha256(token).
 `max_failures` bad attempts within `lockout_seconds`, further attempts are
 refused for the rest of that window. This bounds brute-force of the 8-digit code
 and stops a flood from monopolising the single-threaded HTTP server. The lockout
-is global and short by design — a genuine pairing retries after the cooldown.
+is global and short by design. Failures are treated as consecutive attempts:
+a successful code redemption resets the short failure window.
 """
 
 import hashlib
@@ -58,4 +59,5 @@ class Pairing:
             self._failures.append(self._clock())
             return None
         del self._codes[code]  # single use
+        self._failures.clear()
         return secrets.token_urlsafe(32)

@@ -40,13 +40,13 @@ Verification recorded for that branch:
 Still not claimed:
 - Device/manual IME QA.
 
-## Current development note - 2026-07-03 / Windows clipboard exclusion
+## Recent completed note - 2026-07-03 / Windows clipboard exclusion
 
-Branch `codex/v17-clipboard-exclusion` is a v1.7 capture-layer privacy patch.
+Branch `codex/v17-clipboard-exclusion` was a v1.7 capture-layer privacy patch.
 It keeps Android IME behavior, version metadata, release state, sync protocol,
 and runtime dependencies unchanged.
 
-Planned/implemented scope:
+Implemented scope:
 - Desktop watcher checks producer-set Windows clipboard privacy formats before
   reading `CF_UNICODETEXT`.
 - `ExcludeClipboardContentFromMonitorProcessing` skips capture.
@@ -67,11 +67,39 @@ Verification so far on this branch:
   -> BUILD SUCCESSFUL.
 - `cd android; .\gradlew :app:assembleDebug --no-daemon`
   -> BUILD SUCCESSFUL.
+- GitHub Actions for PR #34 run 28634878221 passed desktop tests and Android
+  unit/debug build.
 
 Not claimed yet:
 - Real Windows clipboard manual QA with a source app that sets the registered
   exclusion formats.
+
+## Current development note - 2026-07-03 / Pairing failure-window recovery
+
+Branch `codex/pairing-success-reset` is a small desktop pairing/auth patch.
+It keeps the pair-code format, token storage, sync protocol, Android IME behavior,
+version metadata, release state, and runtime dependencies unchanged.
+
+Planned/implemented scope:
+- Keep `/api/pair` rate limiting for repeated bad one-time codes.
+- Do not clear failures when minting a new one-time code.
+- Clear the short failure window only after a valid one-time code is redeemed
+  successfully, matching "consecutive failed attempts" semantics and reducing
+  legitimate-user lockout after earlier typos.
+
+Verification so far on this branch:
+- `cd desktop; .\.venv\Scripts\python.exe -m pytest tests/test_sync.py -q`
+  -> 28 passed.
+- `cd desktop; .\.venv\Scripts\python.exe -m pytest -q`
+  -> 220 passed.
+- `cd android; .\gradlew :core:test :app:testDebugUnitTest --no-daemon`
+  -> BUILD SUCCESSFUL.
+- `cd android; .\gradlew :app:assembleDebug --no-daemon`
+  -> BUILD SUCCESSFUL.
+
+Not claimed yet:
 - GitHub Actions CI.
+- Device/manual pairing QA.
 
 ## Product Constraints（全部 Active）
 

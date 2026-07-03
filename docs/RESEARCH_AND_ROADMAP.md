@@ -141,3 +141,13 @@ changing Android IME behavior, sync protocol, release metadata, or dependencies.
 1. **PR #11:** leave unmerged; it is conflict/dirty and mostly superseded by main. If needed, close as superseded after owner approval.
 2. **Issues #1/#2:** create a current 1.6.0 release-gate issue and migrate only remaining signed release/manual QA items; old version gates are stale.
 3. **Residual optional small PR:** decide whether successful pairing should reset recent failed pairing attempts. Treat as UX/security policy, not an automatic bug fix.
+
+## Research log - round 5 (2026-07-03)
+
+Scope filter: keep pairing/auth hardening local to the desktop sync API. Do not
+change the pairing protocol, token storage, Android IME behavior, release
+metadata, or LAN/Tailscale transport assumptions.
+
+| # | Direction | Sources | Key finding | Decision |
+|---|---|---|---|---|
+| R17 | Pair-code rate-limit recovery semantics | NIST SP 800-63B Rev.4 (`https://pages.nist.gov/800-63-4/sp800-63b.html`), OWASP Authentication Cheat Sheet (`https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html`), OWASP WSTG weak lockout testing (`https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/04-Authentication_Testing/03-Testing_for_Weak_Lock_Out_Mechanism`), OWASP Top 10 A07 (`https://owasp.org/Top10/2021/A07_2021-Identification_and_Authentication_Failures/`) | Short one-time pairing codes need rate limiting to resist guessing, but lockout also creates DoS/usability risk. NIST distinguishes generating a new authentication secret from successful authentication: generating a new secret must not reset failures, while successful authentication should disregard/reset previous failures for the authenticator used. OWASP WSTG's lockout test pattern likewise verifies that prior incorrect attempts do not trigger early lockout after a successful login. | **Adopt now:** keep `mint_code()` from clearing failures, but treat a valid one-time code redemption as successful authentication and clear the short consecutive-failure window. Do not add per-IP/per-device buckets in this small patch; that requires API plumbing and separate threat-model review. |
