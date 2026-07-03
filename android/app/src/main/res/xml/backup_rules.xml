@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    v1.7 privacy hardening for Android 11 and lower backup syntax.
+
+    ClipVault stores local clipboard/history/memory cache, outbox rows, pairing
+    host/cursor settings, and AndroidKeyStore-encrypted bearer-token ciphertext
+    in app-private storage. Those values are device-local assets and must not be
+    copied into Android cloud backup or adb/full-system backup archives.
+-->
+<full-backup-content>
+    <exclude domain="root" path="." />
+</full-backup-content>

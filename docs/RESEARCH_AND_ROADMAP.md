@@ -70,7 +70,11 @@ Platforms/sources consulted: GitHub（wangfenjin/simple、streetwriters/sqlite-b
   so cloud-upload opt-out is treated as a capture opt-out. Unit-tested with
   injected watcher/format probes; real clipboard manual QA still needs a Windows
   source app that sets these formats.
-- ⏳ **未做**：Extend IME incognito to the **save** path (no save-clipboard in incognito fields).
+- ✅ **已实现，待 Manual QA**：Extend IME incognito to the **save** path.
+  `ClipVaultPanelImeService.saveClipboard()` checks the current
+  `ImePrivacySession` token before reading the clipboard and again before
+  calling `runtime.saveExplicit(...)`. Real-device QA still needs to confirm no
+  save action survives password/incognito/no-suggestions editor transitions.
 
 ### v1.8 — sync correctness — ✅ 已并入 main
 - ✅ **#14**：Per-field LWW for `clip_meta`: track the meta timestamp per field
@@ -175,3 +179,15 @@ publication semantics.
 | # | Direction | Sources | Key finding | Decision |
 |---|---|---|---|---|
 | R24 | Owner-controlled release signing secrets | GitHub environments docs (`https://docs.github.com/actions/deployment/targeting-different-environments/using-environments-for-deployment`), GitHub deployments/environments reference (`https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments`), GitHub CLI `gh secret set` manual (`https://cli.github.com/manual/gh_secret_set`) | GitHub environment secrets are only available to jobs that reference that environment; if the environment requires approval, jobs cannot access those secrets until a required reviewer approves. The GitHub CLI supports setting an environment secret with `gh secret set --env <environment>`. | **Adopt now:** keep Android signing in the `release` environment and configure signing values as `release` environment secrets instead of repository-level secrets. This keeps the owner approval gate attached to the most sensitive release credentials. |
+
+## Research log - round 8 (2026-07-03)
+
+Scope filter: serve v1.6/v1.7 stability, release-chain hardening, and
+local-first privacy only. Do not change Android IME behavior, sync semantics,
+artifact publication semantics, runtime dependencies, typed-text policy, or
+analytics policy.
+
+| # | Direction | Sources | Key finding | Decision |
+|---|---|---|---|---|
+| R25 | GitHub Actions checkout credential persistence | actions/checkout README (`https://github.com/actions/checkout`), GitHub Docs on `GITHUB_TOKEN` authentication (`https://docs.github.com/actions/reference/authentication-in-a-workflow`), GitHub Actions secure-use reference (`https://docs.github.com/en/actions/reference/security/secure-use`) | `actions/checkout` persists the auth token for later authenticated git commands by default, while GitHub's security guidance recommends granting `GITHUB_TOKEN` only minimum required permissions. ClipVault's CI, dry-run, and release artifact build jobs need repository reads and API-based release creation, not authenticated `git push` after checkout. | **Adopt now:** set `persist-credentials: false` on checkout steps and guard it with a workflow static test. If a future job truly needs authenticated git writes, require a narrow documented exception rather than making persistence the default. |
+| R26 | Android app-data backup and device-transfer privacy | Android Auto Backup docs (`https://developer.android.com/identity/data/autobackup`), Android `<application>` docs (`https://developer.android.com/guide/topics/manifest/application-element`), Android Studio `DataExtractionRules` lint docs (`https://googlesamples.github.io/android-custom-lint-rules/checks/DataExtractionRules.md.html`) | Auto Backup includes SharedPreferences and SQLite databases by default. `allowBackup=false` disables cloud backup, but Android 12+ device-to-device transfer behavior can vary by manufacturer; if a `<device-transfer>` section is missing from `data-extraction-rules`, that mode is enabled for app content except no-backup/cache directories. | **Adopt now:** keep `allowBackup=false`, add Android 11-and-lower `fullBackupContent` rules, and add Android 12+ `dataExtractionRules` that exclude the app root for both cloud backup and device transfer. ClipVault's local Room cache, outbox, sync settings, and token ciphertext remain device-local; re-pairing is preferred to migrating authorization material. |

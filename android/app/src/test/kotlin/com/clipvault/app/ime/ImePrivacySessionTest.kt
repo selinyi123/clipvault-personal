@@ -44,6 +44,17 @@ class ImePrivacySessionTest {
     }
 
     @Test
+    fun sensitiveTransitionInvalidatesInFlightExplicitSaveAction() {
+        val session = ImePrivacySession()
+        val saveActionToken = session.begin(suppressPersonalData = false)
+
+        session.begin(suppressPersonalData = true)
+
+        assertFalse(session.isCurrent(saveActionToken))
+        assertFalse(session.allowsPersonalData(saveActionToken))
+    }
+
+    @Test
     fun returningToOrdinaryEditorUsesOnlyNewGeneration() {
         val session = ImePrivacySession()
         val first = session.begin(suppressPersonalData = false)

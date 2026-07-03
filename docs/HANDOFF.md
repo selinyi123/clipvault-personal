@@ -122,6 +122,11 @@ Still not claimed:
 - Manual Android device QA.
 - Manual Windows clipboard privacy QA.
 
+Follow-on planning:
+- `docs/STABILITY_PLAN_V1_6_V1_7.md` is the current stability execution plan for
+  closing the v1.6 release gate and sequencing v1.7 without crossing the IME
+  privacy/local-first boundaries.
+
 ## Product Constraints（全部 Active）
 
 | Constraint | Status |
