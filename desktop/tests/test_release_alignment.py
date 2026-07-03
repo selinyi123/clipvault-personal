@@ -81,6 +81,11 @@ def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
     assert "windows-${base}" in workflow
     assert "android-${base}" in workflow
     assert "--draft" in workflow
+    assert "validate-release-input:" in workflow
+    assert "version must be a release tag like v1.6.0" in workflow
+    assert r"^v[0-9]+\.[0-9]+\.[0-9]+$" in workflow
+    assert "needs: validate-release-input" in workflow
+    assert "needs.validate-release-input.outputs.version" in workflow
 
 
 def test_manual_qa_links_v1_6_release_runbook():

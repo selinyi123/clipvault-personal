@@ -17,9 +17,29 @@ permissions:
   contents: read
 
 jobs:
+  validate-release-input:
+    name: Validate release input
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Validate release tag
+        id: release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be a release tag like v1.6.0"
+            exit 1
+          fi
+          echo "version=${RELEASE_TAG#v}" >> "${GITHUB_OUTPUT}"
+
   windows-release-artifacts:
     name: Windows release artifacts
     runs-on: windows-latest
+    needs: validate-release-input
     permissions:
       contents: read
       attestations: write
@@ -65,8 +85,7 @@ jobs:
       - name: Stage Windows release artifacts
         shell: pwsh
         run: |
-          $tag = "${{ inputs.version }}"
-          $version = $tag -replace '^v',''
+          $version = "${{ needs.validate-release-input.outputs.version }}"
           $sourceVersion = python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("desktop/pyproject.toml").read_text())["project"]["version"])'
           if ($version -ne $sourceVersion) {
             throw "workflow input $version does not match desktop package version $sourceVersion"
@@ -92,6 +111,7 @@ jobs:
   android-signed-release:
     name: Android signed release APK
     runs-on: ubuntu-latest
+    needs: validate-release-input
     environment: release
     permissions:
       contents: read
@@ -137,14 +157,14 @@ jobs:
       - name: Build signed Android release APK
         shell: bash
         env:
-          RELEASE_TAG: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ needs.validate-release-input.outputs.version }}
           ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
           ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
           ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          version="${RELEASE_TAG#v}"
+          version="${RELEASE_VERSION}"
           source_version="$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)"
           if [[ "${version}" != "${source_version}" ]]; then
             echo "::error::workflow input ${version} does not match Android versionName ${source_version}"
@@ -189,6 +209,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     needs:
+      - validate-release-input
       - windows-release-artifacts
       - android-signed-release
     if: ${{ inputs.create_draft_release }}
