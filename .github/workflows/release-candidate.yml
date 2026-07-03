@@ -10,6 +10,7 @@ on:
       - "desktop/**"
       - "installer/**"
       - "scripts/release_candidate_manifest.py"
+      - "scripts/verify_release_manifest.py"
       - "docs/MANUAL_QA_V1_6_0.md"
       - "docs/VERSION_SYNC.md"
 
@@ -76,6 +77,7 @@ jobs:
         with:
           name: clipvault-windows-release-candidate
           path: release-candidate/*
+          if-no-files-found: error
 
   android-artifacts:
     name: Android debug and unsigned release candidate
@@ -132,3 +134,4 @@ jobs:
         with:
           name: clipvault-android-release-candidate
           path: release-candidate/*
+          if-no-files-found: error

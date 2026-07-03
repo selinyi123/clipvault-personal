@@ -1,5 +1,6 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
+import re
 
 _ROOT = Path(__file__).resolve().parents[2]
 _ANDROID_NS = "http://schemas.android.com/apk/res/android"
@@ -43,3 +44,30 @@ def test_android_data_extraction_rules_exclude_cloud_and_device_transfer():
             for node in section.findall("exclude")
         }
         assert ("root", ".") in excludes
+
+
+def _read_text(rel: str) -> str:
+    return (_ROOT / rel).read_text(encoding="utf-8")
+
+
+def test_android_pairing_does_not_commit_host_before_token_redeem():
+    main = _read_text("android/app/src/main/kotlin/com/clipvault/app/ui/MainActivity.kt")
+    sync = _read_text("android/app/src/main/kotlin/com/clipvault/app/sync/Sync.kt")
+
+    assert "apply { this.host = h }" not in main
+    assert "SyncClient(s).pairWithHost(h, c)" in main
+
+    assert "fun pairWithHost(host: String, code: String): Boolean" in sync
+    assert "val token = SyncClient(s, h).requestPairToken(code) ?: return false" in sync
+    assert "s.replacePairing(h, token)" in sync
+
+    commit = re.search(
+        r"(?s)fun replacePairing\(host: String, token: String\) \{(?P<body>.*?)\n    \}",
+        sync,
+    )
+    assert commit, "Settings.replacePairing must commit pairing state fail-closed"
+    body = commit.group("body")
+    clear = body.index("tokenStore.set(null)")
+    host = body.index('putString("host", host)')
+    token = body.index("tokenStore.set(token)")
+    assert clear < host < token

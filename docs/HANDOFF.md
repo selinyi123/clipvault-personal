@@ -33,6 +33,11 @@
   packages, socket/HTTP APIs, or Android logging.
 - GitHub Actions workflow references are being moved to Node 24-compatible
   official action majors, with a desktop static test guarding the floor.
+- `test_release_alignment.py` now also guards GitHub Actions `GITHUB_TOKEN`
+  least-privilege boundaries: all workflows default to `contents: read`, CI and
+  release-candidate dry runs cannot request write scopes, and the release
+  workflow can only escalate for provenance attestation and draft release
+  creation.
 - `test_webui_security.py` now runs `node --check` when Node is available so the
   packaged Web UI cannot regress to syntactically invalid JavaScript unnoticed.
 - This does not change IME runtime semantics: candidate loading and explicit
@@ -42,6 +47,28 @@
   and paired-device responses are not intentionally stored in browser caches.
 - This is a local privacy hardening only; it does not change API semantics,
   sync behavior, Android IME behavior, release metadata, or publication state.
+- Release-candidate and release artifact upload steps now set
+  `if-no-files-found: error`, with a desktop static test guarding the workflow
+  contract so missing release evidence fails the job instead of becoming a
+  warning-only upload step.
+- The release-candidate dry-run `pull_request.paths` filter now includes every
+  repository release script invoked by that workflow, including
+  `scripts/verify_release_manifest.py`, so verifier changes cannot skip the
+  packaging dry run by path-filter accident.
+- Android pairing no longer writes a newly typed desktop host before `/api/pair`
+  succeeds. `SyncClient.pairWithHost()` redeems the one-time code against a
+  temporary host and then commits pairing state fail-closed (clear token, write
+  host, write fresh token), so a failed re-pair attempt cannot make background
+  sync send the old bearer token to the new host.
+- The release artifact upload/path-filter changes are release evidence
+  hardening only; they do not sign artifacts, publish a GitHub Release, close
+  Issue #36, or change runtime product behavior.
+- The workflow-permission gate is release-chain hardening only; it does not
+  change workflow event types, signing behavior, artifact publication, version
+  metadata, or app/runtime behavior.
+- The Android pairing fix is sync credential hardening only; it does not change
+  token format, sync payload semantics, IME behavior, explicit-save behavior, or
+  release state.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 

@@ -124,6 +124,17 @@ class Settings(context: Context) {
             sp.edit().putString("device_id", id).apply(); id
         }
 
+    /** Commit a new host/token pairing without ever exposing the old token to
+     * the new host. Preferences and AndroidKeyStore are separate stores, so the
+     * safest order is fail-closed: clear token -> write host -> write new token.
+     * A concurrent worker can then see old host+old token, new host+no token, or
+     * new host+new token, but never new host+old token. */
+    fun replacePairing(host: String, token: String) {
+        tokenStore.set(null)
+        sp.edit().putString("host", host).remove(LEGACY_TOKEN).apply()
+        tokenStore.set(token)
+    }
+
     /** One-time v1.2.x -> v1.3 migration. Preserve pairing while deleting the
      * old plaintext token from the legacy sync preference file. */
     private fun migrateLegacyToken() {
@@ -136,8 +147,8 @@ class Settings(context: Context) {
 }
 
 /** Minimal HTTP sync client (SYNC-2). Uses HttpURLConnection — no extra deps. */
-class SyncClient(private val s: Settings) {
-    private fun base() = "http://${s.host}:${s.port}/api"
+class SyncClient(private val s: Settings, private val hostOverride: String? = null) {
+    private fun base() = "http://${hostOverride ?: s.host}:${s.port}/api"
 
     private fun req(method: String, path: String, body: String?, auth: Boolean): Pair<Int, String> {
         val bodyBytes = body?.toByteArray(Charsets.UTF_8)
@@ -167,18 +178,39 @@ class SyncClient(private val s: Settings) {
      * "配对失败" message instead of crashing the app. */
     fun pair(code: String): Boolean {
         return try {
-            val body = JSONObject().put("code", code).put("device_id", s.deviceId)
-                .put("device_name", android.os.Build.MODEL ?: "Android").toString()
-            val (code2, text) = req("POST", "/pair", body, auth = false)
-            if (code2 != 200) return false
-            val token = JSONObject(text).optString("token", "")
-            if (token.isEmpty()) return false
+            val token = requestPairToken(code) ?: return false
             s.token = token
             true
         } catch (e: Exception) {
             android.util.Log.w("clipvault.sync", "pair failed: ${e.javaClass.simpleName}")
             false
         }
+    }
+
+    /** Pair against a user-entered host without committing that host until the
+     * desktop returns a fresh token. This prevents an existing old token from
+     * being sent to a mistyped or malicious replacement host by a background
+     * sync worker after a failed pairing attempt. */
+    fun pairWithHost(host: String, code: String): Boolean {
+        return try {
+            val h = host.trim()
+            if (h.isEmpty()) return false
+            val token = SyncClient(s, h).requestPairToken(code) ?: return false
+            s.replacePairing(h, token)
+            true
+        } catch (e: Exception) {
+            android.util.Log.w("clipvault.sync", "pair failed: ${e.javaClass.simpleName}")
+            false
+        }
+    }
+
+    private fun requestPairToken(code: String): String? {
+        val body = JSONObject().put("code", code).put("device_id", s.deviceId)
+            .put("device_name", android.os.Build.MODEL ?: "Android").toString()
+        val (code2, text) = req("POST", "/pair", body, auth = false)
+        if (code2 != 200) return null
+        val token = JSONObject(text).optString("token", "")
+        return token.ifEmpty { null }
     }
 
     fun push(events: JSONArray): Long {

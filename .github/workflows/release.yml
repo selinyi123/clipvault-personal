@@ -109,6 +109,7 @@ jobs:
         with:
           name: clipvault-windows-release-artifacts
           path: release-artifacts/*
+          if-no-files-found: error
 
   android-signed-release:
     name: Android signed release APK
@@ -213,6 +214,7 @@ jobs:
         with:
           name: clipvault-android-signed-release-artifacts
           path: release-artifacts/*
+          if-no-files-found: error
 
   draft-github-release:
     name: Draft GitHub Release
