@@ -1,7 +1,7 @@
 # Instrumented QA backlog (residual device-only checks)
 
 The v1.5.16 manual QA gate (`docs/MANUAL_QA_V1_5_16.md`) was automated as far as
-the host JVM allows. Three checks remain that exercise live IME behaviour and
+the host JVM allows. Five checks remain that exercise live IME behaviour and
 on-screen rendering — they cannot run on the host JVM and need an instrumented
 (`androidTest`) run on a device or emulator.
 
@@ -19,6 +19,8 @@ planned — this file is that plan; wiring it into CI is a separate decision.
 | `fullKeyboard_stripVisible_and_tapCommitsText` | Full Keyboard #1–2 | strip renders; tapping a candidate commits text |
 | `panelIme_switch_and_tapCommitsText` | Panel IME #1–2, #5 | IME switch works; tapping a candidate commits text |
 | `panelIme_explicitSave_requiresUserTap` | Panel IME #8 | no implicit capture; save needs an explicit tap |
+| `sensitiveEditor_clearsRenderedAndInFlightCandidates` | FK #3–6, Panel #6–7 | normal→sensitive transition clears old/stale candidates |
+| `sensitiveEditor_blocksExplicitClipboardSave` | Panel sensitive-save gate | save disabled; Room/outbox unchanged |
 
 ## Wiring needed to implement
 
@@ -39,6 +41,11 @@ planned — this file is that plan; wiring it into CI is a separate decision.
    and assert committed text by reading the focused field's contents.
 4. Seed fixtures: ensure ≥1 recent clip and ≥1 memory item of each kind exist
    (insert via the Room DB or the capture path) so candidate tabs are populated.
+5. Add a test Activity with ordinary and password/incognito editors. Keep the
+   same IME View alive while switching focus; delay the facade response in the
+   stale-result case so the transition occurs before its main-thread callback.
+6. Snapshot Room/outbox counts before the sensitive-save check and assert they
+   remain unchanged after attempting the disabled action.
 
 ## Running locally (once wired)
 
@@ -49,7 +56,7 @@ cd android
 
 ## Definition of done
 
-- The three `@Ignore` annotations are removed and the assertions are real.
+- The five `@Ignore` annotations are removed and the assertions are real.
 - `connectedDebugAndroidTest` passes on a device/emulator.
 - `docs/MANUAL_QA_V1_5_16.md` residual section is updated to point at the now-live
   instrumented tests instead of this backlog.

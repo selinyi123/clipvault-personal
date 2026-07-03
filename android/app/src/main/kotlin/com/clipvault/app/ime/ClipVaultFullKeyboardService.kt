@@ -27,7 +27,7 @@ class ClipVaultFullKeyboardService : InputMethodService() {
     private val runtime: ClipVaultFacade by lazy { ClipVaultRuntime.facade(this) }
     private var shifted = false
     private var symbols = false
-    private var suppressCandidates = false
+    private val privacySession = ImePrivacySession()
     private lateinit var keys: LinearLayout
     private lateinit var candidates: LinearLayout
 
@@ -36,11 +36,27 @@ class ClipVaultFullKeyboardService : InputMethodService() {
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
-        suppressCandidates = PrivacyAwareFilter.shouldSuppressCandidates(attribute)
-        if (::candidates.isInitialized && suppressCandidates) {
+        val wasAllowed = privacySession.allowsPersonalData()
+        privacySession.begin(PrivacyAwareFilter.shouldSuppressCandidates(attribute))
+        if (::candidates.isInitialized) {
+            if (!privacySession.allowsPersonalData()) {
+                candidates.removeAllViews()
+                candidates.addView(hint(PrivacyAwareFilter.suppressionMessage()))
+            } else if (!wasAllowed) {
+                candidates.removeAllViews()
+                candidates.addView(hint("点 ClipVault 调取候选 →"))
+            }
+            // Same ordinary editor generation keeps already-rendered candidates.
+        }
+    }
+
+    override fun onFinishInput() {
+        privacySession.end()
+        if (::candidates.isInitialized) {
             candidates.removeAllViews()
             candidates.addView(hint(PrivacyAwareFilter.suppressionMessage()))
         }
+        super.onFinishInput()
     }
 
     override fun onCreateInputView(): View {
@@ -56,7 +72,7 @@ class ClipVaultFullKeyboardService : InputMethodService() {
 
         val strip = HorizontalScrollView(this)
         candidates = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        candidates.addView(hint(if (suppressCandidates) PrivacyAwareFilter.suppressionMessage() else "点 ClipVault 调取候选 →"))
+        candidates.addView(hint(if (privacySession.allowsPersonalData()) "点 ClipVault 调取候选 →" else PrivacyAwareFilter.suppressionMessage()))
         strip.addView(candidates)
         root.addView(strip)
 
@@ -94,7 +110,8 @@ class ClipVaultFullKeyboardService : InputMethodService() {
     }
 
     private fun showCandidates() {
-        if (suppressCandidates) {
+        val token = privacySession.token()
+        if (!privacySession.allowsPersonalData(token)) {
             candidates.removeAllViews()
             candidates.addView(hint(PrivacyAwareFilter.suppressionMessage()))
             return
@@ -102,13 +119,19 @@ class ClipVaultFullKeyboardService : InputMethodService() {
         thread {
             val items = runtime.listCandidates(limit = 20)
             runOnMain {
+                if (!privacySession.isCurrent(token)) return@runOnMain
+                if (!privacySession.allowsPersonalData(token)) {
+                    candidates.removeAllViews()
+                    candidates.addView(hint(PrivacyAwareFilter.suppressionMessage()))
+                    return@runOnMain
+                }
                 candidates.removeAllViews()
                 if (items.isEmpty()) {
                     candidates.addView(hint("（暂无候选，先在桌面添加记忆或复制内容并同步）"))
                 } else {
                     items.forEach { c ->
                         candidates.addView(key("${c.label} " + c.text.replace("\n", " ").take(24), weight = 0f) {
-                            commit(c.text)
+                            if (privacySession.allowsPersonalData()) commit(c.text)
                         })
                     }
                 }

@@ -31,11 +31,30 @@ class ClipVaultPanelImeService : InputMethodService() {
 
     // All data access goes through the Runtime facade (ADR-0008), never the DAO.
     private val runtime: ClipVaultFacade by lazy { ClipVaultRuntime.facade(this) }
-    private var suppressCandidates = false
+    private val privacySession = ImePrivacySession()
+    private var candidateList: LinearLayout? = null
+    private var saveButton: Button? = null
+    private var activePanelLoader: (() -> Unit)? = null
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
-        suppressCandidates = PrivacyAwareFilter.shouldSuppressCandidates(attribute)
+        val wasAllowed = privacySession.allowsPersonalData()
+        privacySession.begin(PrivacyAwareFilter.shouldSuppressCandidates(attribute))
+        saveButton?.isEnabled = privacySession.allowsPersonalData()
+        candidateList?.let { list ->
+            if (privacySession.allowsPersonalData()) {
+                if (!wasAllowed) activePanelLoader?.invoke()
+            } else {
+                showSuppressed(list)
+            }
+        }
+    }
+
+    override fun onFinishInput() {
+        privacySession.end()
+        saveButton?.isEnabled = false
+        candidateList?.let(::showSuppressed)
+        super.onFinishInput()
     }
 
     override fun onCreateInputView(): View {
@@ -46,7 +65,11 @@ class ClipVaultPanelImeService : InputMethodService() {
 
         // Action row: save current clipboard / switch back
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        actions.addView(button("保存剪贴板") { saveClipboard() })
+        val save = button("保存剪贴板") { saveClipboard() }.apply {
+            isEnabled = privacySession.allowsPersonalData()
+        }
+        saveButton = save
+        actions.addView(save)
         actions.addView(button("切回键盘") { switchToPreviousInputMethod() })
         root.addView(actions)
 
@@ -58,6 +81,7 @@ class ClipVaultPanelImeService : InputMethodService() {
 
         val scroll = ScrollView(this)
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        candidateList = list
         scroll.addView(list)
         root.addView(scroll, ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(220)))
@@ -80,9 +104,13 @@ class ClipVaultPanelImeService : InputMethodService() {
             "命令" to { showMemoryCandidates(list, "command") },
         )
         panels.forEach { (label, loader) ->
-            tabRow.addView(button(label) { loader() })
+            tabRow.addView(button(label) {
+                activePanelLoader = loader
+                loader()
+            })
         }
-        panels.getValue("最近").invoke()   // default panel
+        activePanelLoader = panels.getValue("最近")
+        activePanelLoader?.invoke()   // default panel
         return root
     }
 
@@ -105,7 +133,8 @@ class ClipVaultPanelImeService : InputMethodService() {
         emptyMessage: String,
         limit: Int,
     ) {
-        if (suppressCandidates) {
+        val token = privacySession.token()
+        if (!privacySession.allowsPersonalData(token)) {
             showSuppressed(list)
             return
         }
@@ -121,6 +150,11 @@ class ClipVaultPanelImeService : InputMethodService() {
                 source, kind, limit,
             )
             runOnMain {
+                if (!privacySession.isCurrent(token)) return@runOnMain
+                if (!privacySession.allowsPersonalData(token)) {
+                    showSuppressed(list)
+                    return@runOnMain
+                }
                 list.removeAllViews()
                 list.addView(TextView(this).apply { text = title; textSize = 12f })
                 items.forEach { c -> list.addView(candidateButton(c)) }
@@ -131,7 +165,9 @@ class ClipVaultPanelImeService : InputMethodService() {
 
     private fun candidateButton(c: Candidate): Button =
         button("${c.label} " + c.text.replace("\n", " ").take(48)) {
-            currentInputConnection?.commitText(c.text, 1)   // one-tap paste
+            if (privacySession.allowsPersonalData()) {
+                currentInputConnection?.commitText(c.text, 1)   // one-tap paste
+            }
         }
 
     private fun showSuppressed(list: LinearLayout) {
@@ -143,12 +179,15 @@ class ClipVaultPanelImeService : InputMethodService() {
     }
 
     private fun saveClipboard() {
+        val token = privacySession.token()
+        if (!privacySession.allowsPersonalData(token)) return
         // The IME is the current input method, so reading the clipboard is allowed.
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val text = cm.primaryClip?.takeIf { it.itemCount > 0 }
             ?.getItemAt(0)?.coerceToText(this)?.toString()
         if (text.isNullOrBlank()) return
         thread {
+            if (!privacySession.allowsPersonalData(token)) return@thread
             runtime.saveExplicit(text, sourceDevice = android.os.Build.MODEL ?: "android")
         }
     }

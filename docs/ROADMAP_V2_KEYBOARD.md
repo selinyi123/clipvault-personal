@@ -51,7 +51,7 @@
 [done] docs/KEYBOARD_PRIVACY.md                       (v2.0，L0–L4 操作化 + 可验断言)
 [done] docs/GATES.md「Keyboard 主线门禁」            (v1.1→v3.0 验收门冻结)
 [todo] docs/ADR/0009-sync-transport-abstraction.md   (v1.2)
-[todo] docs/ADR/0011-input-context-privacy.md        (v2.0，把 KEYBOARD_PRIVACY 决策升格为 ADR)
+[done] docs/ADR/0011-input-context-privacy.md        (v2.0，敏感上下文 session token + 候选/保存闸门)
 [todo] docs/ADR/0012-cloud-relay-threat-model.md     (v2.4)
 [todo] docs/CONTRACTS_SYNC_TRANSPORT.md               (v1.2)
 [todo] docs/SLICES/V2-S00N-*.md                       (各阶段开工时)

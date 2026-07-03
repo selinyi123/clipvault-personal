@@ -49,4 +49,21 @@ class ResidualImeChecksTest {
         // Then nothing is saved; saving happens only after an explicit save tap.
         // Covers MANUAL_QA Panel IME #8 (no implicit capture of user content).
     }
+
+    @Test
+    @Ignore("residual: needs a device/emulator — see docs/INSTRUMENTED_QA_BACKLOG.md")
+    fun sensitiveEditor_clearsRenderedAndInFlightCandidates() {
+        // Given candidates are rendered (and another load may still be in flight)
+        // in a normal editor,
+        // When focus moves to a password/incognito editor without recreating the IME,
+        // Then old candidates disappear, stale results never refill the strip/list,
+        // and no old candidate can be committed.
+    }
+
+    @Test
+    @Ignore("residual: needs a device/emulator — see docs/INSTRUMENTED_QA_BACKLOG.md")
+    fun sensitiveEditor_blocksExplicitClipboardSave() {
+        // Given the Panel IME is focused on a password/incognito editor,
+        // Then the save button is disabled and neither Room nor outbox changes.
+    }
 }
