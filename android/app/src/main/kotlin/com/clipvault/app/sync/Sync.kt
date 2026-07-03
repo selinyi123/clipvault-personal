@@ -153,6 +153,9 @@ class SyncClient(private val s: Settings, private val hostOverride: String? = nu
     private fun req(method: String, path: String, body: String?, auth: Boolean): Pair<Int, String> {
         val bodyBytes = body?.toByteArray(Charsets.UTF_8)
         val c = (URL(base() + path).openConnection() as HttpURLConnection).apply {
+            // ClipVault sync endpoints never redirect. Keep bearer tokens scoped
+            // to the paired host instead of following a 3xx to another URL.
+            instanceFollowRedirects = false
             requestMethod = method
             connectTimeout = 8000; readTimeout = 12000
             if (auth) s.token?.let { setRequestProperty("Authorization", "Bearer $it") }

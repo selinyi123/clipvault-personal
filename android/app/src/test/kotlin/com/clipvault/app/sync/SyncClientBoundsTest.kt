@@ -27,4 +27,48 @@ class SyncClientBoundsTest {
             assertEquals("response body too large", e.message)
         }
     }
+
+    @Test
+    fun pullCursorAllowsEmptyTerminalPageWithoutProgress() {
+        val next = nextPullCursorOrThrow(5, eventCount = 0, nextSeq = 5, hasMore = false)
+
+        assertEquals(5, next)
+    }
+
+    @Test
+    fun pullCursorAllowsForwardProgress() {
+        val next = nextPullCursorOrThrow(5, eventCount = 1, nextSeq = 6, hasMore = true)
+
+        assertEquals(6, next)
+    }
+
+    @Test
+    fun pullCursorRejectsHasMoreWithoutProgress() {
+        try {
+            nextPullCursorOrThrow(5, eventCount = 0, nextSeq = 5, hasMore = true)
+            fail("expected IOException")
+        } catch (e: IOException) {
+            assertEquals("sync pull cursor did not advance", e.message)
+        }
+    }
+
+    @Test
+    fun pullCursorRejectsEventsWithoutProgress() {
+        try {
+            nextPullCursorOrThrow(5, eventCount = 1, nextSeq = 5, hasMore = false)
+            fail("expected IOException")
+        } catch (e: IOException) {
+            assertEquals("sync pull cursor did not advance", e.message)
+        }
+    }
+
+    @Test
+    fun pullCursorRejectsRegression() {
+        try {
+            nextPullCursorOrThrow(5, eventCount = 0, nextSeq = 4, hasMore = false)
+            fail("expected IOException")
+        } catch (e: IOException) {
+            assertEquals("sync pull cursor did not advance", e.message)
+        }
+    }
 }

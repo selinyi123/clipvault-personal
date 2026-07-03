@@ -14,7 +14,33 @@ import androidx.work.WorkerParameters
 import com.clipvault.app.ClipVaultApp
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.util.concurrent.TimeUnit
+
+internal fun nextPullCursorOrThrow(currentSince: Long, events: JSONArray, response: JSONObject): Long {
+    return nextPullCursorOrThrow(
+        currentSince = currentSince,
+        eventCount = events.length(),
+        nextSeq = response.optLong("next_seq", currentSince),
+        hasMore = response.optBoolean("has_more", false),
+    )
+}
+
+internal fun nextPullCursorOrThrow(
+    currentSince: Long,
+    eventCount: Int,
+    nextSeq: Long,
+    hasMore: Boolean,
+): Long {
+    if (
+        nextSeq < currentSince ||
+        (eventCount > 0 && nextSeq <= currentSince) ||
+        (hasMore && nextSeq <= currentSince)
+    ) {
+        throw IOException("sync pull cursor did not advance")
+    }
+    return nextSeq
+}
 
 /** Drains the outbox (push) then pulls desktop events (pull). Runs on demand
  * after a capture and periodically as a fallback. No foreground service —
@@ -53,8 +79,9 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
             while (true) {
                 val resp = client.pull(since) ?: return Result.retry()
                 val events = resp.getJSONArray("events")
+                val nextSince = nextPullCursorOrThrow(since, events, resp)
                 SyncApply.applyEvents(db, events)
-                since = resp.optLong("next_seq", since)
+                since = nextSince
                 s.sinceSeq = since
                 if (!resp.optBoolean("has_more", false)) break
             }

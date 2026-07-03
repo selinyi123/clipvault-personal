@@ -71,3 +71,15 @@ def test_android_pairing_does_not_commit_host_before_token_redeem():
     host = body.index('putString("host", host)')
     token = body.index("tokenStore.set(token)")
     assert clear < host < token
+
+
+def test_android_sync_client_does_not_follow_redirects_with_bearer_tokens():
+    sync = _read_text("android/app/src/main/kotlin/com/clipvault/app/sync/Sync.kt")
+
+    assert "HttpURLConnection" in sync
+    assert "instanceFollowRedirects = false" in sync
+    assert "instanceFollowRedirects = true" not in sync
+
+    redirect_guard = sync.index("instanceFollowRedirects = false")
+    auth_header = sync.index('setRequestProperty("Authorization", "Bearer $it")')
+    assert redirect_guard < auth_header

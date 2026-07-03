@@ -72,6 +72,23 @@
 - The Web UI search debounce timer now uses module-local state instead of
   `window._t`, guarded by `test_webui_security.py`, so the local UI does not
   rely on clobberable global `window` properties.
+- Artifact upload/download workflow steps are now guarded at the current
+  Node 24-compatible official action majors (`upload-artifact@v7`,
+  `download-artifact@v8`) so release-candidate and release jobs do not keep a
+  stale artifact action runtime in the release chain.
+- The PR template now includes release-gate issue hygiene: avoid GitHub
+  auto-close keywords directly before release-gate issue references, and prefer
+  wording such as `Issue #36 remains open` while signed artifacts/manual QA are
+  still missing.
+- Android sync requests now disable `HttpURLConnection` automatic redirects
+  before adding `Authorization: Bearer ...`. ClipVault sync endpoints never
+  redirect, so a 3xx response fails/retries instead of silently changing the
+  authenticated request target.
+- Android sync pull now validates `next_seq` before applying a returned page:
+  a response with events or `has_more=true` must advance the cursor, while an
+  empty terminal page may keep it unchanged. This prevents repeated-page loops
+  without changing desktop outbox pruning semantics, which still need explicit
+  durable peer acknowledgement before delivered cursors can be used for pruning.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 
