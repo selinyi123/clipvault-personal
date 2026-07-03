@@ -9,6 +9,7 @@ desktop/logs/
 *.db-shm
 .toolchain/
 android/.gradle/
+android/.kotlin/
 android/build/
 android/*/build/
 android/local.properties

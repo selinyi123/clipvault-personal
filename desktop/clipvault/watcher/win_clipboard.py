@@ -13,18 +13,28 @@ from typing import Callable
 
 _CF_UNICODETEXT = 13
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_EXCLUDE_MONITOR_FORMAT = "ExcludeClipboardContentFromMonitorProcessing"
+_CAN_INCLUDE_HISTORY_FORMAT = "CanIncludeInClipboardHistory"
+_CAN_UPLOAD_CLOUD_FORMAT = "CanUploadToCloudClipboard"
+_CLIPBOARD_VIEWER_IGNORE_FORMAT = "Clipboard Viewer Ignore"
 
 _user32 = ctypes.WinDLL("user32", use_last_error=True)
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 _user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
 _user32.OpenClipboard.argtypes = [wintypes.HWND]
+_user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+_user32.RegisterClipboardFormatW.restype = wintypes.UINT
+_user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
+_user32.IsClipboardFormatAvailable.restype = wintypes.BOOL
 _user32.GetClipboardData.argtypes = [wintypes.UINT]
 _user32.GetClipboardData.restype = wintypes.HANDLE
 _user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
 _kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
 _kernel32.GlobalLock.restype = wintypes.LPVOID
 _kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+_kernel32.GlobalSize.argtypes = [wintypes.HGLOBAL]
+_kernel32.GlobalSize.restype = ctypes.c_size_t
 _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 _kernel32.OpenProcess.restype = wintypes.HANDLE
 _kernel32.QueryFullProcessImageNameW.argtypes = [
@@ -32,18 +42,86 @@ _kernel32.QueryFullProcessImageNameW.argtypes = [
 ]
 _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
+_registered_formats: dict[str, int] = {}
+
 
 def get_clipboard_seq() -> int:
     return _user32.GetClipboardSequenceNumber()
 
 
+def _registered_clipboard_format(name: str) -> int:
+    fmt = _registered_formats.get(name)
+    if fmt is None:
+        fmt = int(_user32.RegisterClipboardFormatW(name) or 0)
+        _registered_formats[name] = fmt
+    return fmt
+
+
+def _format_available(name: str) -> bool:
+    fmt = _registered_clipboard_format(name)
+    return bool(fmt and _user32.IsClipboardFormatAvailable(fmt))
+
+
+def _read_clipboard_dword(name: str) -> int | None:
+    fmt = _registered_clipboard_format(name)
+    if not fmt:
+        return None
+    handle = _user32.GetClipboardData(fmt)
+    if not handle or _kernel32.GlobalSize(handle) < ctypes.sizeof(wintypes.DWORD):
+        return None
+    ptr = _kernel32.GlobalLock(handle)
+    if not ptr:
+        return None
+    try:
+        return ctypes.cast(ptr, ctypes.POINTER(wintypes.DWORD)).contents.value
+    finally:
+        _kernel32.GlobalUnlock(handle)
+
+
+def clipboard_exclusion_reason_from_formats(
+    has_format: Callable[[str], bool],
+    read_dword: Callable[[str], int | None],
+) -> str | None:
+    """Return why a producer-marked clipboard item should not be captured.
+
+    Windows clipboard producers can opt out of history/monitoring with
+    registered formats. ClipVault has no per-clip "local only, never sync"
+    metadata, so cloud-sync opt-out is treated as a capture opt-out too.
+    """
+    for presence_format in (_EXCLUDE_MONITOR_FORMAT, _CLIPBOARD_VIEWER_IGNORE_FORMAT):
+        if has_format(presence_format):
+            return presence_format
+
+    if has_format(_CAN_INCLUDE_HISTORY_FORMAT):
+        value = read_dword(_CAN_INCLUDE_HISTORY_FORMAT)
+        if value is None:
+            return f"{_CAN_INCLUDE_HISTORY_FORMAT}=unreadable"
+        if value == 0:
+            return f"{_CAN_INCLUDE_HISTORY_FORMAT}=0"
+
+    if has_format(_CAN_UPLOAD_CLOUD_FORMAT):
+        value = read_dword(_CAN_UPLOAD_CLOUD_FORMAT)
+        if value is None:
+            return f"{_CAN_UPLOAD_CLOUD_FORMAT}=unreadable"
+        if value == 0:
+            return f"{_CAN_UPLOAD_CLOUD_FORMAT}=0"
+
+    return None
+
+
+def _clipboard_exclusion_reason_open() -> str | None:
+    return clipboard_exclusion_reason_from_formats(_format_available, _read_clipboard_dword)
+
+
 def get_clipboard_text(retries: int = 3, retry_delay: float = 0.05) -> str | None:
-    """Read CF_UNICODETEXT; None if unavailable or clipboard is busy."""
+    """Read CF_UNICODETEXT; None if unavailable, excluded, or busy."""
     for _ in range(retries):
         if not _user32.OpenClipboard(None):
             time.sleep(retry_delay)
             continue
         try:
+            if _clipboard_exclusion_reason_open() is not None:
+                return None
             handle = _user32.GetClipboardData(_CF_UNICODETEXT)
             if not handle:
                 return None

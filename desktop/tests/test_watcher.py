@@ -1,6 +1,9 @@
 """B5: polling watcher logic with injected win32 functions."""
 
-from clipvault.watcher.win_clipboard import PollingWatcher
+from clipvault.watcher.win_clipboard import (
+    PollingWatcher,
+    clipboard_exclusion_reason_from_formats,
+)
 
 
 class Script:
@@ -53,3 +56,36 @@ def test_b5_seq_advances_even_when_text_unreadable():
     w.tick()
     assert w.tick() is False  # unreadable, but seq recorded
     assert w.tick() is False  # no re-read for the same seq
+
+
+def test_b5_windows_exclusion_formats_block_capture():
+    assert clipboard_exclusion_reason_from_formats(
+        lambda name: name == "ExcludeClipboardContentFromMonitorProcessing",
+        lambda name: 1,
+    ) == "ExcludeClipboardContentFromMonitorProcessing"
+    assert clipboard_exclusion_reason_from_formats(
+        lambda name: name == "Clipboard Viewer Ignore",
+        lambda name: 1,
+    ) == "Clipboard Viewer Ignore"
+    assert clipboard_exclusion_reason_from_formats(
+        lambda name: name == "CanIncludeInClipboardHistory",
+        lambda name: 0,
+    ) == "CanIncludeInClipboardHistory=0"
+    assert clipboard_exclusion_reason_from_formats(
+        lambda name: name == "CanUploadToCloudClipboard",
+        lambda name: 0,
+    ) == "CanUploadToCloudClipboard=0"
+
+
+def test_b5_windows_exclusion_formats_allow_explicit_opt_in():
+    assert clipboard_exclusion_reason_from_formats(
+        lambda name: name in {"CanIncludeInClipboardHistory", "CanUploadToCloudClipboard"},
+        lambda name: 1,
+    ) is None
+
+
+def test_b5_windows_exclusion_formats_fail_closed_when_flag_unreadable():
+    assert clipboard_exclusion_reason_from_formats(
+        lambda name: name == "CanIncludeInClipboardHistory",
+        lambda name: None,
+    ) == "CanIncludeInClipboardHistory=unreadable"
