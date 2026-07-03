@@ -1,0 +1,82 @@
+# ClipVault Personal v1.6.0 Manual QA Checklist
+
+Date: 2026-07-03
+
+Scope: current manual validation gate for Issue #36 before publishing the
+`v1.6.0` release artifacts.
+
+## Automated coverage
+
+These checks are automated and must be backed by local output or GitHub Actions
+evidence for the target commit:
+
+| Gate | Covered by | Expected result |
+|---|---|---|
+| Desktop tests | `cd desktop; python -m pytest -q` | all desktop tests pass |
+| Android unit tests | `cd android; ./gradlew :core:test :app:testDebugUnitTest --no-daemon` | build succeeds |
+| Android debug build | `cd android; ./gradlew :app:assembleDebug --no-daemon` | build succeeds |
+| Release metadata alignment | `desktop/tests/test_release_alignment.py` | desktop, Android, and installer versions align at 1.6.0 |
+| Android version floor | `desktop/tests/test_release_alignment.py` | `versionCode >= 13` |
+| Panel IME helper presence | `desktop/tests/test_release_alignment.py` | `PanelCandidateTabs.kt` and its test exist |
+
+## Release-state checks
+
+- Desktop runtime version is 1.6.0.
+- Desktop package metadata is 1.6.0.
+- Android `versionName` is 1.6.0.
+- Android `versionCode` is 13 or higher.
+- Windows installer `AppVersion` is 1.6.0.
+- GitHub Actions status is recorded before closing Issue #36.
+
+## Artifact checks
+
+These are required for a real `v1.6.0` release but are not satisfied by a debug
+build alone:
+
+- Build desktop portable exe for 1.6.0.
+- Build desktop installer for 1.6.0.
+- Build signed Android APK for `versionName=1.6.0`.
+- Generate checksums for every release artifact.
+- Verify the signed APK with `apksigner verify --print-certs`.
+- If Owner approves publication, attach all artifacts and checksums to GitHub
+  Release `v1.6.0`.
+
+## Manual Android device QA
+
+Run on a real Android device with the `v1.6.0` APK installed:
+
+1. Pair Android with the desktop node using a one-time desktop pairing code.
+2. Share text from another app into ClipVault and confirm it appears locally.
+3. Use the Quick Settings tile to explicitly save current clipboard content.
+4. Enable ClipVault Panel IME and confirm a candidate tap commits text.
+5. Confirm Panel IME explicit save requires a user tap.
+6. Confirm public clips and memory sync desktop <-> Android.
+7. Confirm secret/private content remains isolated according to the current
+   contracts.
+
+## Manual IME privacy QA
+
+1. Open a normal text field and confirm candidates can appear.
+2. Move to password/incognito/no-suggestions fields.
+3. Confirm candidates are hidden or replaced with the suppression message.
+4. Confirm in-flight candidates are cleared on the transition into a sensitive
+   field.
+5. Confirm typed text is not written to Room, outbox, logs, sync payloads, or
+   desktop storage.
+
+## Manual Windows clipboard privacy QA
+
+Run with a Windows source app or test harness that sets registered clipboard
+privacy formats:
+
+1. `ExcludeClipboardContentFromMonitorProcessing` prevents capture.
+2. `Clipboard Viewer Ignore` prevents capture.
+3. `CanIncludeInClipboardHistory=0` prevents capture.
+4. `CanUploadToCloudClipboard=0` prevents capture.
+5. A normal text clipboard item without those formats is still captured.
+
+## Close criteria
+
+Do not close Issue #36 unless all automated, artifact, and manual checks above
+have recorded evidence. If a device, signing key, or owner approval is missing,
+record that as blocked instead of marking the gate complete.

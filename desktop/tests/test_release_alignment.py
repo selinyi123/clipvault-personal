@@ -1,6 +1,6 @@
 """Automated release-state gate.
 
-Replaces the manual "Release-state checks" section of docs/MANUAL_QA_V1_5_16.md:
+Replaces the version-metadata checks in the Issue #36 release gate:
 instead of a human eyeballing each version string, this fails CI whenever the
 visible version metadata drifts from the desktop runtime version, and confirms
 the Panel IME helper and its test are present. Version-agnostic on purpose — it
@@ -33,13 +33,27 @@ def test_android_version_name_aligned_and_code_advanced():
     assert name, "versionName not found in build.gradle.kts"
     assert code, "versionCode not found in build.gradle.kts"
     assert name.group(1) == __version__
-    assert int(code.group(1)) >= 12  # never regress below the v1.5.16 floor
+    assert int(code.group(1)) >= 13  # never regress below the v1.6.0 floor
 
 
 def test_installer_app_version_aligned():
     m = re.search(r'#define\s+AppVersion\s+"([^"]+)"', _read("installer/clipvault.iss"))
     assert m, "AppVersion not found in clipvault.iss"
     assert m.group(1) == __version__
+
+
+def test_version_sync_doc_matches_source_tree():
+    doc = _read("docs/VERSION_SYNC.md")
+    gradle = _read("android/app/build.gradle.kts")
+    code = re.search(r'versionCode\s*=\s*(\d+)', gradle)
+    assert code, "versionCode not found in build.gradle.kts"
+
+    assert f"runtime version: {__version__}" in doc
+    assert f"pyproject.toml: {__version__}" in doc
+    assert f"versionName: {__version__}" in doc
+    assert f"versionCode: {code.group(1)}" in doc
+    assert f"AppVersion: {__version__}" in doc
+    assert "Issue #36" in doc
 
 
 def test_panel_candidate_tabs_helper_and_test_exist():
