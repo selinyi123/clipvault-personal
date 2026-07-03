@@ -93,3 +93,9 @@ Platforms/sources consulted: GitHub（wangfenjin/simple、streetwriters/sqlite-b
 - Verification-first secret scanning that calls provider APIs — would exfiltrate
   the secret, violating "secrets never leave".
 - Typed-text learning, behavioural profiling, or analytics SDKs in the IME.
+
+## Research supersession (2026-07-02)
+
+- R8's NDK 25 / CMake 3.22 / SDK 35 combination was a historical upstream snapshot, not a current hard requirement.
+- R9 in `RESEARCH_V2_1_BUILD_POC_2026_07_02.md` supersedes that toolchain portion. Execute v2.1 with the exact
+  versions and 16KB checks frozen in `SLICES/V2-S004-librime-build-poc.md`.
