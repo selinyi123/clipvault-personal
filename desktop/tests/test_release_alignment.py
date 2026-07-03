@@ -156,6 +156,129 @@ def test_workflow_checkouts_do_not_persist_github_token_credentials():
             ), f"{path.relative_to(_ROOT)} checkout step must set persist-credentials: false"
 
 
+def test_release_artifact_uploads_fail_if_no_files_are_found():
+    for rel in (".github/workflows/release-candidate.yml", ".github/workflows/release.yml"):
+        text = _read(rel)
+        lines = text.splitlines()
+        upload_line_indexes = [
+            index
+            for index, line in enumerate(lines)
+            if re.search(r"uses:\s*actions/upload-artifact@", line)
+        ]
+        assert upload_line_indexes, f"{rel} must upload release artifacts"
+
+        for index in upload_line_indexes:
+            upload_block = "\n".join(lines[index : index + 8])
+            assert re.search(
+                r"(?m)^\s*if-no-files-found:\s*error\s*$",
+                upload_block,
+            ), f"{rel} artifact upload must fail when the configured path matches no files"
+
+
+def _pull_request_paths(workflow_text: str) -> set[str]:
+    paths: set[str] = set()
+    in_pull_request = False
+    in_paths = False
+    for line in workflow_text.splitlines():
+        if line == "  pull_request:":
+            in_pull_request = True
+            in_paths = False
+            continue
+        if in_pull_request and line and not line.startswith(" "):
+            break
+        if in_pull_request and re.match(r"^    paths:\s*$", line):
+            in_paths = True
+            continue
+        if not in_paths:
+            continue
+        match = re.match(r"^      -\s+(.+?)\s*$", line)
+        if match:
+            paths.add(match.group(1).strip("\"'"))
+        elif line.strip() and not line.startswith("      "):
+            break
+    return paths
+
+
+def test_release_candidate_pr_paths_cover_invoked_release_scripts():
+    workflow = _read(".github/workflows/release-candidate.yml")
+    invoked_scripts = set(
+        re.findall(r"\bpython\s+(scripts/[A-Za-z0-9_./-]+\.py)\b", workflow)
+    )
+    assert invoked_scripts, "release-candidate workflow must invoke release scripts"
+
+    paths = _pull_request_paths(workflow)
+    missing = sorted(invoked_scripts - paths)
+    assert not missing, (
+        "release-candidate pull_request.paths must include every invoked release "
+        f"script; missing: {missing}"
+    )
+
+
+def _top_level_permissions(workflow_text: str) -> dict[str, str]:
+    lines = workflow_text.splitlines()
+    try:
+        start = lines.index("permissions:")
+    except ValueError:
+        return {}
+
+    permissions: dict[str, str] = {}
+    for line in lines[start + 1 :]:
+        if line and not line.startswith(" "):
+            break
+        match = re.match(r"^  ([a-z-]+):\s*([a-z-]+)\s*$", line)
+        if match:
+            permissions[match.group(1)] = match.group(2)
+    return permissions
+
+
+def _workflow_job_block(workflow_text: str, job_name: str) -> str:
+    match = re.search(
+        rf"(?ms)^  {re.escape(job_name)}:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+        workflow_text,
+    )
+    assert match, f"job {job_name!r} not found"
+    return match.group(1)
+
+
+def test_workflow_github_token_permissions_are_least_privilege():
+    workflows = sorted((_ROOT / ".github/workflows").glob("*.yml"))
+    assert workflows, "no GitHub Actions workflows found"
+
+    for path in workflows:
+        text = path.read_text(encoding="utf-8")
+        assert _top_level_permissions(text) == {"contents": "read"}, (
+            f"{path.relative_to(_ROOT)} must default GITHUB_TOKEN to contents: read"
+        )
+        assert not re.search(r"(?m)^permissions:\s*(read-all|write-all)\s*$", text), (
+            f"{path.relative_to(_ROOT)} must use explicit narrow permissions"
+        )
+
+    for rel in (".github/workflows/ci.yml", ".github/workflows/release-candidate.yml"):
+        text = _read(rel)
+        assert not re.search(r"(?m)^\s+[a-z-]+:\s*write\s*$", text), (
+            f"{rel} must not request write-scoped GITHUB_TOKEN permissions"
+        )
+
+    release_workflow = _read(".github/workflows/release.yml")
+    assert len(re.findall(r"(?m)^\s+contents:\s*write\s*$", release_workflow)) == 1
+    assert len(re.findall(r"(?m)^\s+attestations:\s*write\s*$", release_workflow)) == 2
+    assert len(re.findall(r"(?m)^\s+id-token:\s*write\s*$", release_workflow)) == 2
+
+    for job in ("windows-release-artifacts", "android-signed-release"):
+        block = _workflow_job_block(release_workflow, job)
+        assert "permissions:" in block
+        assert re.search(r"(?m)^      contents:\s*read\s*$", block)
+        assert re.search(r"(?m)^      attestations:\s*write\s*$", block)
+        assert re.search(r"(?m)^      id-token:\s*write\s*$", block)
+        assert not re.search(r"(?m)^      contents:\s*write\s*$", block)
+
+    draft_block = _workflow_job_block(release_workflow, "draft-github-release")
+    assert "permissions:" in draft_block
+    assert re.search(r"(?m)^      contents:\s*write\s*$", draft_block)
+    assert "attestations: write" not in draft_block
+    assert "id-token: write" not in draft_block
+
+
 def test_android_workflows_validate_gradle_wrapper_before_gradle_runs():
     workflow_expectations = {
         ".github/workflows/ci.yml": "Run Android unit tests",
