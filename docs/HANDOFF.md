@@ -35,8 +35,16 @@
   official action majors, with a desktop static test guarding the floor.
 - `test_webui_security.py` now runs `node --check` when Node is available so the
   packaged Web UI cannot regress to syntactically invalid JavaScript unnoticed.
+- Desktop sync pull now records each peer's outbox ack cursor from the delivered
+  `next_seq` rather than the previous `since_seq`, so pruning/status can reflect
+  the page actually handed to the Android client.
 - This does not change IME runtime semantics: candidate loading and explicit
   save still go through the Runtime facade; sync work remains outside the IME.
+- The desktop API/Web UI now sends `Cache-Control: no-store`, `Pragma: no-cache`,
+  and `Expires: 0` from the shared security-header path so clipboard, memory,
+  and paired-device responses are not intentionally stored in browser caches.
+- This is a local privacy hardening only; it does not change API semantics,
+  sync behavior, Android IME behavior, release metadata, or publication state.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 

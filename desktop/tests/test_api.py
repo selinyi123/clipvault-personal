@@ -206,6 +206,9 @@ def test_d8_security_headers_on_json_and_webui(api):
         assert resp.getheader("X-Content-Type-Options") == "nosniff"
         assert resp.getheader("X-Frame-Options") == "DENY"
         assert resp.getheader("Referrer-Policy") == "no-referrer"
+        assert resp.getheader("Cache-Control") == "no-store"
+        assert resp.getheader("Pragma") == "no-cache"
+        assert resp.getheader("Expires") == "0"
         resp.read()
         conn.close()
 
@@ -214,6 +217,9 @@ def test_d8_security_headers_on_json_and_webui(api):
         resp = conn.getresponse()
         assert resp.status == 200
         assert "frame-ancestors 'none'" in resp.getheader("Content-Security-Policy")
+        assert resp.getheader("Cache-Control") == "no-store"
+        assert resp.getheader("Pragma") == "no-cache"
+        assert resp.getheader("Expires") == "0"
         resp.read()
         conn.close()
     finally:

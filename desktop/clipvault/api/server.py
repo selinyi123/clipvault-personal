@@ -120,6 +120,12 @@ def make_handler(api: Api):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "no-referrer")
+            # Clipboard and memory responses are personal data. Do not leave
+            # them in browser or intermediary caches; the local UI is small
+            # enough that disabling cache globally is the safer default.
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
 
         def _body(self, max_bytes: int = _MAX_JSON_BODY) -> dict | None:
             try:

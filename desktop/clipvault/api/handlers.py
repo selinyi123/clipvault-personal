@@ -336,7 +336,7 @@ class Api:
         except ValueError as exc:
             return _bad_param("since_seq", str(exc))
         result = sync_engine.build_pull(self.conn, since)
-        self.peers.set_my_acked(device_id, since)
+        self.peers.set_my_acked(device_id, result["next_seq"])
         self.peers.touch_last_seen(device_id, _now_iso())
         return 200, result
 

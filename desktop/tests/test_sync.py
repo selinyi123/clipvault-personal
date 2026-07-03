@@ -315,6 +315,19 @@ def test_h8_cursor_resume(api, conn):
     assert len(first["events"]) == 5
 
 
+def test_h8_pull_records_peer_ack_to_delivered_next_seq(api, conn):
+    token = _pair(api)
+    api.create_clip({"content": "desktop ack one"})
+    api.create_clip({"content": "desktop ack two"})
+
+    status, body = api.sync_pull(token, {"since_seq": "0"})
+
+    assert status == 200
+    assert len(body["events"]) == 2
+    assert body["next_seq"] == 2
+    assert api.peers.get(PEER)["my_acked_seq"] == body["next_seq"]
+
+
 def test_h8_pull_response_byte_budget_pages_without_skipping(conn):
     outbox = OutboxRepo(conn)
     when = "2026-06-13T10:00:00Z"
