@@ -44,6 +44,15 @@ def test_webui_avoids_dynamic_code_execution():
         assert sink not in src
 
 
+def test_webui_keeps_search_debounce_state_module_local():
+    src = WEBUI_JS.read_text(encoding="utf-8")
+
+    assert "window._t" not in src
+    assert "globalThis._t" not in src
+    assert "let searchRefreshTimer = null;" in src
+    assert "searchRefreshTimer = setTimeout(refresh, 200);" in src
+
+
 def test_webui_javascript_is_parseable_when_node_is_available():
     node = shutil.which("node")
     if node is None:
