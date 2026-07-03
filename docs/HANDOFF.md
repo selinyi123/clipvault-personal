@@ -96,9 +96,10 @@ Verification so far on this branch:
   -> BUILD SUCCESSFUL.
 - `cd android; .\gradlew :app:assembleDebug --no-daemon`
   -> BUILD SUCCESSFUL.
+- GitHub Actions for PR #35 run 28640831174 passed desktop tests and Android
+  unit/debug build.
 
 Not claimed yet:
-- GitHub Actions CI.
 - Device/manual pairing QA.
 
 ## Product Constraints（全部 Active）
