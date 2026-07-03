@@ -62,10 +62,14 @@ Platforms/sources consulted: GitHub（wangfenjin/simple、streetwriters/sqlite-b
   backed by golden test vectors (R3). *Desktop-testable.*
 - ✅ **本分支（SG-1.3）**：Personal Memory 的 `text`/`label` 在 repo 写入、导入、同步出口与两端接收处
   统一过 Secret Guard；历史 secret-shaped 行不进候选，历史 outbox 事件不下发但游标继续推进。
-- ⏳ **未做**：Honour Windows clipboard-exclusion formats
-  (`ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory=0`)
-  in the watcher → never capture what a password manager marked sensitive (R1).
-  *Windows-only; needs Windows-CI / manual verification.*
+- ✅ **本分支（Windows clipboard exclusion）**：Honour producer-set Windows
+  clipboard exclusion formats in the watcher:
+  `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory=0`,
+  `CanUploadToCloudClipboard=0`, and the de facto `Clipboard Viewer Ignore`
+  marker. ClipVault currently has no per-clip "local only, never sync" metadata,
+  so cloud-upload opt-out is treated as a capture opt-out. Unit-tested with
+  injected watcher/format probes; real clipboard manual QA still needs a Windows
+  source app that sets these formats.
 - ⏳ **未做**：Extend IME incognito to the **save** path (no save-clipboard in incognito fields).
 
 ### v1.8 — sync correctness — ✅ 已并入 main
@@ -118,7 +122,22 @@ ClipVault's explicit-save and desktop-primary architecture.
 
 ### Next-node plan after this round
 
-1. **v1.6.x hardening patch (this PR):** bound JSON API bodies to objects, constrain pair `device_id`, add CSP/security headers, render Web UI API data through safe DOM APIs, and reject malformed/oversized sync push batches before they can amplify logs/CPU.
-2. **v1.7 remaining privacy item:** Windows clipboard-exclusion formats in the watcher (`ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory=0`). This remains Windows-only and needs Windows CI/manual evidence.
+1. **v1.6.x hardening patch (#32, completed):** bound JSON API bodies to objects, constrain pair `device_id`, add CSP/security headers, render Web UI API data through safe DOM APIs, and reject malformed/oversized sync push batches before they can amplify logs/CPU.
+2. **v1.7 capture privacy:** Windows clipboard-exclusion formats are implemented in the current branch; this remains Windows-only and still needs GitHub Actions plus real-source manual evidence.
 3. **v2.0 candidate:** optional LAN TLS with pair-time fingerprint or QR verification. Do not start until certificate generation/pinning is designed under the stdlib-only constraint or an ADR approves a dependency/tooling exception.
 4. **v2.1 mainline:** execute V2-S004 librime build PoC exactly as frozen in `docs/SLICES/V2-S004-librime-build-poc.md`; no production engine integration until both build/license/native alignment gates pass.
+
+## Research log - round 4 (2026-07-03)
+
+Scope filter: close the remaining v1.7 capture-layer privacy item without
+changing Android IME behavior, sync protocol, release metadata, or dependencies.
+
+| # | Direction | Sources | Key finding | Decision |
+|---|---|---|---|---|
+| R16 | Windows clipboard producer privacy formats | Microsoft Clipboard Formats docs (`https://learn.microsoft.com/en-us/windows/win32/dataxchg/clipboard-formats`), `RegisterClipboardFormatW` docs (`https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerclipboardformatw`), CopyQ security docs (`https://copyq.readthedocs.io/en/latest/security.html`) | Windows producers can set registered formats to opt out of clipboard history/monitoring or cross-device clipboard sync. `ExcludeClipboardContentFromMonitorProcessing` blocks history and sync with any data; `CanIncludeInClipboardHistory` uses serialized DWORD 0/1 for history; `CanUploadToCloudClipboard` uses serialized DWORD 0/1 for device sync. CopyQ also documents `Clipboard Viewer Ignore` as a Windows secret marker used by password-manager workflows. | **Adopt now:** the watcher checks these formats before reading text, advances the sequence, and skips capture. This avoids persisting or syncing content that the source app marked as non-history/non-sync. |
+
+### Next-node plan after round 4
+
+1. **PR #11:** leave unmerged; it is conflict/dirty and mostly superseded by main. If needed, close as superseded after owner approval.
+2. **Issues #1/#2:** create a current 1.6.0 release-gate issue and migrate only remaining signed release/manual QA items; old version gates are stale.
+3. **Residual optional small PR:** decide whether successful pairing should reset recent failed pairing attempts. Treat as UX/security policy, not an automatic bug fix.
