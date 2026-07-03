@@ -106,6 +106,22 @@ def test_h1_rate_limit_clears_after_window(conn, cfg):
     assert api.pair({"code": code, "device_id": PEER})[0] == 200  # pairing works again
 
 
+def test_h1_successful_pairing_resets_consecutive_failures(conn, cfg):
+    clk = {"t": 0.0}
+    api = Api(ClipVaultService(conn, cfg),
+              pairing=Pairing(clock=lambda: clk["t"], max_failures=3, lockout_seconds=60))
+    for _ in range(2):
+        assert api.pair({"code": "not-a-code", "device_id": PEER})[0] == 403
+    code = api.pairing.mint_code()
+    assert api.pair({"code": code, "device_id": PEER})[0] == 200
+
+    # The next failures start a new consecutive window; old failures before the
+    # successful pairing must not make a legitimate device hit 429 early.
+    for _ in range(3):
+        assert api.pair({"code": "not-a-code", "device_id": PEER})[0] == 403
+    assert api.pair({"code": "not-a-code", "device_id": PEER})[0] == 429
+
+
 def test_h1_expired_code(conn, cfg):
     clk = {"t": 0.0}
     api = Api(ClipVaultService(conn, cfg), pairing=Pairing(ttl_seconds=300, clock=lambda: clk["t"]))
