@@ -18,6 +18,26 @@
 | Current slice | v2.1 V2-S004 双 build PoC 规划收口（堆叠在 SG-1.3 + IME privacy 分支上）：NDK r28/16KB、全依赖许可、干净黄金向量、可复现规则、工程预算与 A/B 阻塞态已冻结；尚未接 production 引擎，不改版本号。 |
 | Last updated | 2026-07-03 |
 
+## Current development note - 2026-07-03 / v1.7 stability gates in progress
+
+- Desktop sync pull now pages by both event count and response byte budget so a
+  large history cannot force one oversized mobile response; the Android sync
+  client also rejects oversized response bodies.
+- The Android app still needs app-level `android.permission.INTERNET` for
+  explicit LAN/Tailscale sync outside the IME.
+- Because Android permissions are app-scoped, v1.7 now guards the IME boundary
+  with an Android host-JVM test instead of pretending the manifest can deny
+  Internet to only `InputMethodService`.
+- `ImeSourceBoundaryTest` scans `android/app/src/main/kotlin/com/clipvault/app/ime`
+  and fails if an IME source file imports project sync, WorkManager, network
+  packages, socket/HTTP APIs, or Android logging.
+- GitHub Actions workflow references are being moved to Node 24-compatible
+  official action majors, with a desktop static test guarding the floor.
+- `test_webui_security.py` now runs `node --check` when Node is available so the
+  packaged Web UI cannot regress to syntactically invalid JavaScript unnoticed.
+- This does not change IME runtime semantics: candidate loading and explicit
+  save still go through the Runtime facade; sync work remains outside the IME.
+
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 
 Branch `codex/webui-sync-hardening` was a small v1.x hardening patch. It did not change product scope, version metadata, release state, or Android IME behavior.

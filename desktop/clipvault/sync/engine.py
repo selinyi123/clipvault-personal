@@ -4,6 +4,7 @@ pipeline.ingest, so applying a peer's clip never echoes back into our outbox.
 Gate B (secrets never leave) and gate A (re-scan on arrival) both enforced here.
 """
 
+import json
 import logging
 
 from clipvault.core import secret_guard
@@ -14,6 +15,12 @@ from clipvault.store.outbox_repo import OutboxRepo
 from clipvault.store.peers_repo import PeersRepo
 
 log = logging.getLogger("clipvault.sync")
+
+SYNC_PULL_EVENT_LIMIT = 100
+# Keep one pull page comfortably below mobile heap-risk territory while still
+# allowing at least one default max-size clip (config.max_clip_bytes = 1 MiB)
+# plus JSON envelope overhead. Large histories continue via has_more/next_seq.
+SYNC_PULL_RESPONSE_BYTES = 4 * 1024 * 1024
 
 
 def clip_to_data(clip: Clip) -> dict:
@@ -273,16 +280,34 @@ def _apply_clip_meta(conn, data: dict) -> None:
 
 # --- pull side ---
 
-def build_pull(conn, since_seq: int, limit: int = 100) -> dict:
+def _event_wire_size(event: dict) -> int:
+    return len(json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def build_pull(conn, since_seq: int, limit: int = SYNC_PULL_EVENT_LIMIT,
+               max_bytes: int = SYNC_PULL_RESPONSE_BYTES) -> dict:
     raw_events = OutboxRepo(conn).list_since(since_seq, limit)
     events = []
+    next_seq = since_seq
+    used_bytes = 0
+    stopped_by_budget = False
     for event in raw_events:
         if event["kind"] in ("memory_upsert", "memory_delete") and _memory_data_is_secret(event["payload"]):
             # Legacy rows may predate the Memory SG-1 gate. Do not send them,
             # but advance next_seq over the quarantined event so peers do not
             # request it forever.
             log.error("legacy secret memory blocked at sync pull seq=%s", event["seq"])
+            next_seq = event["seq"]
             continue
+        event_bytes = _event_wire_size(event)
+        if events and used_bytes + event_bytes > max_bytes:
+            stopped_by_budget = True
+            break
         events.append(event)
-    next_seq = raw_events[-1]["seq"] if raw_events else since_seq
-    return {"events": events, "next_seq": next_seq, "has_more": len(raw_events) == limit}
+        used_bytes += event_bytes
+        next_seq = event["seq"]
+    return {
+        "events": events,
+        "next_seq": next_seq,
+        "has_more": stopped_by_budget or len(raw_events) == limit,
+    }

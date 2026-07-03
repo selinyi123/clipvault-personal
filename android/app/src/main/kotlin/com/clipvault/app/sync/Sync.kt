@@ -10,7 +10,9 @@ import com.clipvault.app.data.MemoryPrivacy
 import com.clipvault.core.SecretGuard
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.KeyStore
@@ -26,6 +28,22 @@ private const val TOKEN_PREFS = "clipvault_sync_token"
 private const val TOKEN_KEY_ALIAS = "clipvault_sync_token_v1"
 private const val TOKEN_IV = "token_iv"
 private const val TOKEN_CT = "token_ct"
+internal const val MAX_SYNC_RESPONSE_BYTES = 4 * 1024 * 1024
+
+internal fun readUtf8BodyBounded(input: InputStream, maxBytes: Int = MAX_SYNC_RESPONSE_BYTES): String {
+    require(maxBytes > 0) { "maxBytes must be positive" }
+    val out = ByteArrayOutputStream()
+    val buffer = ByteArray(8192)
+    var total = 0
+    while (true) {
+        val n = input.read(buffer)
+        if (n == -1) break
+        total += n
+        if (total > maxBytes) throw IOException("response body too large")
+        out.write(buffer, 0, n)
+    }
+    return out.toString(Charsets.UTF_8.name())
+}
 
 /** Keystore-backed bearer-token storage.
  *
@@ -122,21 +140,26 @@ class SyncClient(private val s: Settings) {
     private fun base() = "http://${s.host}:${s.port}/api"
 
     private fun req(method: String, path: String, body: String?, auth: Boolean): Pair<Int, String> {
+        val bodyBytes = body?.toByteArray(Charsets.UTF_8)
         val c = (URL(base() + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 8000; readTimeout = 12000
             if (auth) s.token?.let { setRequestProperty("Authorization", "Bearer $it") }
-            if (body != null) {
+            if (bodyBytes != null) {
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json")
-                outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                setFixedLengthStreamingMode(bodyBytes.size)
             }
         }
-        val code = c.responseCode
-        val stream = if (code in 200..299) c.inputStream else (c.errorStream ?: c.inputStream)
-        val text = stream.bufferedReader().use(BufferedReader::readText)
-        c.disconnect()
-        return code to text
+        try {
+            if (bodyBytes != null) c.outputStream.use { it.write(bodyBytes) }
+            val code = c.responseCode
+            val stream = if (code in 200..299) c.inputStream else (c.errorStream ?: c.inputStream)
+            val text = stream.use { readUtf8BodyBounded(it) }
+            return code to text
+        } finally {
+            c.disconnect()
+        }
     }
 
     /** Redeem a one-time pairing code shown on the desktop Web UI.

@@ -15,6 +15,7 @@ from clipvault.config import Config
 from clipvault.service import ClipVaultService
 from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.outbox_repo import OutboxRepo
+from clipvault.sync import engine as sync_engine
 from clipvault.sync.pairing import Pairing, hash_token
 
 FAKE_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
@@ -312,6 +313,24 @@ def test_h8_cursor_resume(api, conn):
     assert second["events"] == []
     # all 5 were delivered exactly once
     assert len(first["events"]) == 5
+
+
+def test_h8_pull_response_byte_budget_pages_without_skipping(conn):
+    outbox = OutboxRepo(conn)
+    when = "2026-06-13T10:00:00Z"
+    first_seq = outbox.append("clip_new", {"content": "a" * 200, "content_hash": "pull-budget-1"}, when)
+    second_seq = outbox.append("clip_new", {"content": "b" * 200, "content_hash": "pull-budget-2"}, when)
+
+    first = sync_engine.build_pull(conn, since_seq=0, max_bytes=10)
+
+    assert [event["seq"] for event in first["events"]] == [first_seq]
+    assert first["next_seq"] == first_seq
+    assert first["has_more"] is True
+
+    second = sync_engine.build_pull(conn, since_seq=first["next_seq"], max_bytes=10)
+    assert [event["seq"] for event in second["events"]] == [second_seq]
+    assert second["next_seq"] == second_seq
+    assert second["has_more"] is False
 
 
 def test_h8_push_gap_does_not_advance_ack(api, conn):

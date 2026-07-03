@@ -77,7 +77,7 @@ def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
     assert "verify --print-certs" in workflow
     assert "trap 'rm -f \"${keystore:-}\"' EXIT" in workflow
     assert "umask 077" in workflow
-    assert "actions/attest-build-provenance@v2" in workflow
+    assert "actions/attest-build-provenance@v4" in workflow
     assert "create_draft_release" in workflow
     assert "upload-assets" in workflow
     assert "windows-${base}" in workflow
@@ -171,3 +171,25 @@ def test_android_workflows_validate_gradle_wrapper_before_gradle_runs():
         assert validation != -1, f"{rel} must validate the Gradle wrapper"
         assert first_gradle_step != -1, f"{rel} missing expected Gradle step"
         assert validation < first_gradle_step, f"{rel} must validate the wrapper before running Gradle"
+
+
+def test_workflows_use_node24_compatible_github_actions():
+    minimum_major = {
+        "actions/checkout": 5,
+        "actions/setup-python": 6,
+        "actions/setup-java": 5,
+        "actions/upload-artifact": 6,
+        "actions/attest-build-provenance": 4,
+    }
+    workflows = sorted((_ROOT / ".github/workflows").glob("*.yml"))
+    assert workflows, "no GitHub Actions workflows found"
+
+    for path in workflows:
+        text = path.read_text(encoding="utf-8")
+        for action, minimum in minimum_major.items():
+            for match in re.finditer(rf"uses:\s*{re.escape(action)}@v(\d+)", text):
+                major = int(match.group(1))
+                assert major >= minimum, (
+                    f"{path.relative_to(_ROOT)} uses {action}@v{major}; "
+                    f"use v{minimum}+ so workflows run on Node.js 24-compatible action runtimes"
+                )
