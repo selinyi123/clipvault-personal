@@ -6,6 +6,10 @@ HTML.
 """
 
 from pathlib import Path
+import shutil
+import subprocess
+
+import pytest
 
 
 WEBUI_JS = Path(__file__).parents[1] / "clipvault" / "api" / "webui" / "app.js"
@@ -38,3 +42,18 @@ def test_webui_avoids_dynamic_code_execution():
     ]
     for sink in forbidden:
         assert sink not in src
+
+
+def test_webui_javascript_is_parseable_when_node_is_available():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node executable not available for JavaScript syntax check")
+
+    result = subprocess.run(
+        [node, "--check", str(WEBUI_JS)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
