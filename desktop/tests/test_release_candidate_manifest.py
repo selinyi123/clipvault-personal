@@ -13,6 +13,18 @@ _spec.loader.exec_module(release_candidate_manifest)
 def test_build_manifest_writes_checksums_and_unsigned_manifest(tmp_path):
     (tmp_path / "ClipVault-Desktop-v1.6.0-portable.exe").write_bytes(b"portable")
     (tmp_path / "ClipVault-Setup-v1.6.0.exe").write_bytes(b"installer")
+    expected_artifacts = [
+        {
+            "name": "ClipVault-Desktop-v1.6.0-portable.exe",
+            "bytes": 8,
+            "sha256": "01e782826ae5182220bd6158f883d01ceb1bce659dc020e7c511f802a9aa7737",
+        },
+        {
+            "name": "ClipVault-Setup-v1.6.0.exe",
+            "bytes": 9,
+            "sha256": "9c0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c",
+        },
+    ]
 
     release_candidate_manifest.build_manifest(
         tmp_path,
@@ -22,8 +34,10 @@ def test_build_manifest_writes_checksums_and_unsigned_manifest(tmp_path):
     )
 
     checksums = (tmp_path / "SHA256SUMS.txt").read_text(encoding="ascii").splitlines()
-    assert checksums == sorted(checksums)
-    assert all("  ClipVault-" in line for line in checksums)
+    assert checksums == [
+        f"{row['sha256']}  {row['name']}"
+        for row in expected_artifacts
+    ]
 
     manifest = json.loads((tmp_path / "RELEASE_MANIFEST.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == 1
@@ -33,10 +47,7 @@ def test_build_manifest_writes_checksums_and_unsigned_manifest(tmp_path):
     assert manifest["commit"] == "abc123"
     assert manifest["signed"] is False
     assert manifest["published"] is False
-    assert [row["name"] for row in manifest["artifacts"]] == [
-        "ClipVault-Desktop-v1.6.0-portable.exe",
-        "ClipVault-Setup-v1.6.0.exe",
-    ]
+    assert manifest["artifacts"] == expected_artifacts
 
 
 def test_existing_manifest_files_are_not_hashed_again(tmp_path):

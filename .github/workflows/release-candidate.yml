@@ -9,6 +9,7 @@ on:
       - "android/**"
       - "desktop/**"
       - "installer/**"
+      - "scripts/release_candidate_manifest.py"
       - "docs/MANUAL_QA_V1_6_0.md"
       - "docs/VERSION_SYNC.md"
 
