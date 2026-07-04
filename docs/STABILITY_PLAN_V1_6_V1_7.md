@@ -123,6 +123,18 @@ Recommended v1.7 themes:
      without release environment/secrets/write permissions, and static tests
      fail if this dry-run path gains release side effects.
 
+8. **Field-test package upload path**
+   - Use `docs/V1_7_FIELD_TEST_PACKAGES.md` to route real-device field testing
+     through the existing `Release candidate dry run` workflow.
+   - Acceptance: Windows portable/installer candidate artifacts and Android
+     debug/unsigned candidate artifacts are uploaded for the exact target SHA,
+     downloaded into separate platform directories, and verified with
+     `scripts/verify_release_manifest.py --expect-dry-run`.
+   - Boundary: field-test packages are not signed/final release evidence, the
+     Android unsigned release APK is not a signed install package, and a
+     `1.7.0` version bump remains blocked until a dedicated v1.7 release-gate
+     issue plus Owner approval authorize it.
+
 ## v1.7 stable exit criteria
 
 Do not call v1.7 stable until every row below has evidence recorded in
@@ -139,6 +151,7 @@ get mistaken for completed device validation.
 | Local-first sync reliability | Deterministic tests cover auth-failure token clearing, auth-failure response-body skipping, bounded pull responses, outbound push request-body budgeting, oversized-event diagnostics, duplicate event sequence handling, redirect refusal with bearer tokens, host normalization, re-pair host/token write ordering, explicit-capture sync scheduling only after new public outbox events, and non-cancelling immediate sync work policy. | Android sync/capture unit tests and desktop sync tests pass for the target commit. | Owner confirms LAN/Tailscale pair, restart, and bidirectional sync smoke checks without cloud relay or telemetry. | Not stable if sync introduces cloud storage, analytics, IME-network work, wrong-host credential exposure, unconditional local-only capture sync scheduling, cancellation-prone burst sync scheduling, auth-failure bodies can mask token clearing, oversized push bodies can wedge WorkManager retries, or unbounded response/log exposure. |
 | Documentation-as-release-evidence | Static tests guard README release truthfulness, architecture/product-spec runtime topology, threat-model network boundary, top-level agent instructions, live-evidence runbook commands, local Web UI browser-security shape, and avoidance of stale fixed test counts. | CI includes those static tests for every PR/main commit. | Owner confirms public-facing release notes match the actual published assets before publication. | Not stable if docs or agent instructions imply unpublished v1.6/v1.7 signed binaries, stale Issue #3/v1.5 blockers, stale WebSocket/FastAPI sync topology, stale cleartext-LAN risk wording, stale test-count evidence, or local Web UI code reintroduces browser-side storage/messaging/navigation/dynamic-script sinks. |
 | Current-main packaging evidence | Static tests guard the release-candidate main-push path and forbid release secrets/environments/write permissions there. | Current-main dry run uploads unsigned Windows/Android candidate artifacts, `SHA256SUMS.txt`, and `RELEASE_MANIFEST.json` for the exact target SHA. | Owner separately approves any signed release workflow or draft GitHub Release creation. | Not stable if packaging evidence cannot be tied to the target main SHA. |
+| Field-test package evidence | Static tests guard `docs/V1_7_FIELD_TEST_PACKAGES.md`, release-candidate artifact names, dry-run manifest verification, and the warning that candidate artifacts are not stable/signed release evidence. | A `Release candidate dry run` run uploads `clipvault-windows-release-candidate` and `clipvault-android-release-candidate` for the target SHA. | Owner records Windows install/launch/uninstall smoke and Android debug-APK install/IME/privacy smoke on real devices or approved emulators. | Not stable if unsigned candidate artifacts are cited as signed/final release evidence, or if an Android unsigned release APK is cited as the signed install package. |
 
 Stable exit rules:
 

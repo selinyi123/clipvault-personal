@@ -281,6 +281,32 @@ def test_manual_qa_evidence_helper_is_documented_without_release_overclaim():
     assert "does not replace signed-artifact/final-release evidence" in handoff
 
 
+def test_release_artifact_evidence_helper_is_documented_without_release_overclaim():
+    script = _ROOT / "tools/release_artifact_evidence.py"
+    manual_qa = _read("docs/MANUAL_QA_V1_6_0.md")
+    runbook = _read("docs/RELEASE_RUNBOOK_V1_6_0.md")
+    research = _read("docs/RESEARCH_AND_ROADMAP.md")
+    handoff = _read("docs/HANDOFF.md")
+
+    assert script.exists()
+    script_text = script.read_text(encoding="utf-8")
+    assert "does not download GitHub Actions artifacts" in script_text
+    assert "does not replace manual QA evidence" in script_text
+    assert "verify_release_manifest.py" in script_text
+    assert "ANDROID_APKSIGNER_VERIFY.txt" in script_text
+
+    assert "python tools/release_artifact_evidence.py" in manual_qa
+    assert "python tools/release_artifact_evidence.py" in runbook
+    assert "gh run download $runId" in runbook
+    assert "gh attestation verify" in runbook
+    assert "a green workflow run does not by itself prove the artifact contents" in runbook
+    assert "does not download artifacts, call" in runbook
+    assert "does not download artifacts, run or trigger workflows" in research
+    assert "R85 | Downloaded release artifact evidence and provenance" in research
+    assert "tools/release_artifact_evidence.py" in handoff
+    assert "green workflow run still is not artifact-content proof" in handoff
+
+
 def test_release_runbook_uses_release_environment_secrets():
     runbook = _read("docs/RELEASE_RUNBOOK_V1_6_0.md")
     manual_qa = _read("docs/MANUAL_QA_V1_6_0.md")
@@ -683,6 +709,7 @@ def test_stability_plan_defines_v1_7_exit_criteria_without_release_overclaim():
         "Local-first sync reliability",
         "Documentation-as-release-evidence",
         "Current-main packaging evidence",
+        "Field-test package evidence",
     ):
         assert required_area in plan
 
@@ -707,8 +734,99 @@ def test_stability_plan_defines_v1_7_exit_criteria_without_release_overclaim():
         "Treat blocked Owner/manual rows as incomplete",
         "release-artifact main-ref dispatch",
         "signed release artifacts can be built from a non-`main` ref",
+        "field-test packages are not signed/final release evidence",
+        "Android unsigned release APK is not a signed install package",
     ):
         assert blocker_truth in plan
+
+
+def test_v1_7_field_test_packages_use_release_candidates_without_stable_overclaim():
+    plan = _read("docs/STABILITY_PLAN_V1_6_V1_7.md")
+    field_test = _read("docs/V1_7_FIELD_TEST_PACKAGES.md")
+    research = _read("docs/RESEARCH_AND_ROADMAP.md")
+    workflows = _read("docs/AGENT_WORKFLOWS.md")
+    handoff = _read("docs/HANDOFF.md")
+    workflow = _read(".github/workflows/release-candidate.yml")
+
+    assert "docs/V1_7_FIELD_TEST_PACKAGES.md" in plan
+    assert "Release candidate dry run" in field_test
+    assert "clipvault-windows-release-candidate" in field_test
+    assert "clipvault-android-release-candidate" in field_test
+    assert "scripts/verify_release_manifest.py" in field_test
+    assert "--expect-dry-run" in field_test
+    assert "The current source metadata remains `1.6.0`" in field_test
+    assert "No version bump to `1.7.0`" in field_test
+    assert "does not declare v1.7 stable" in field_test
+    assert "does not publish `v1.7.0`" in field_test
+    assert "does not close Issue #36" in field_test
+    assert "not signed/final release evidence" in field_test
+    assert "Android unsigned release APK is not a signed install package" in field_test
+    assert "use `ClipVault-Android-v<version>-debug.apk` for real-device install" in field_test
+
+    assert "name: clipvault-windows-release-candidate" in workflow
+    assert "name: clipvault-android-release-candidate" in workflow
+    assert "Release candidate dry run" in workflow
+    assert "permissions:\n  contents: read" in workflow
+    assert "environment:" not in workflow
+    assert "ANDROID_RELEASE_KEYSTORE" not in workflow
+
+    assert "v1.7 field-test packages" in workflows
+    assert "不得把 unsigned candidate artifacts 冒充为 signed/final release evidence" in workflows
+    assert "docs/V1_7_FIELD_TEST_PACKAGES.md" in handoff
+    assert "does not claim v1.7 stable" in handoff
+    assert "unsigned candidate artifacts as signed/final release evidence" in handoff
+    assert "R86 | v1.7 candidate package upload lane" in research
+    assert "candidate-only upload/download/manifest-verification path" in research
+
+
+def test_stability_plan_defines_v2_0_exit_criteria_without_release_overclaim():
+    plan = _read("docs/STABILITY_PLAN_V2_0.md")
+    roadmap = _read("docs/ROADMAP_V2_KEYBOARD.md")
+    gates = _read("docs/GATES.md")
+    research = _read("docs/RESEARCH_AND_ROADMAP.md")
+
+    assert "## Scope lock" in plan
+    assert "## v2.0 stable exit criteria" in plan
+    assert "v2.0 means the same APK exposes two IME entrypoints" in plan
+    assert "ClipVault Panel IME" in plan
+    assert "ClipVault Keyboard Lab" in plan
+    assert "Issue #36 / v1.6.0 is closed" in plan
+    assert "docs/STABILITY_PLAN_V1_6_V1_7.md" in plan
+    assert "dedicated v2.0 release-gate issue" in plan
+
+    for required_area in (
+        "Dual IME registration",
+        "Keyboard Lab baseline controls",
+        "Panel IME baseline controls",
+        "IME privacy boundary",
+        "Local-first runtime compatibility",
+        "Documentation and release truth",
+    ):
+        assert required_area in plan
+
+    for evidence_tier in (
+        "Required automated evidence",
+        "Required CI evidence",
+        "Required Owner/manual evidence",
+        "Stable exit decision",
+    ):
+        assert evidence_tier in plan
+
+    for blocker_truth in (
+        "v2.0 does not mean the v2.1 librime/fcitx5 production engine.",
+        "v2.0 does not mean the optional LAN TLS transport-hardening branch.",
+        "Not stable if L0/L1 typed text is persisted, learned, logged, synced, or saved without explicit user action.",
+        "Do not wire librime/fcitx5 into the production IME.",
+        "Do not start v2.2 CandidateMixer",
+        "Do not add network work inside any IME service.",
+    ):
+        assert blocker_truth in plan
+    assert re.search(r"A planning label or source-tree version is not\s+release\s+evidence\.", plan)
+
+    assert "STABILITY_PLAN_V2_0.md" in roadmap
+    assert "v2.0 门禁（双 IME 入口）" in gates
+    assert "R84 | v2.0 stability evidence taxonomy" in research
+    assert "do not relabel v2.1 librime/fcitx5 build-PoC work" in research
 
 
 def test_top_level_agents_file_matches_current_release_gate():
@@ -723,6 +841,8 @@ def test_top_level_agents_file_matches_current_release_gate():
     assert "Manual QA checklist passes with evidence." in agents
     assert "Final `v1.6.0` GitHub Release publication is Owner-approved." in agents
     assert "Do not claim v1.7 stable until docs/STABILITY_PLAN_V1_6_V1_7.md" in agents
+    assert "Do not claim v2.0 stable until docs/STABILITY_PLAN_V2_0.md" in agents
+    assert re.search(r"v2\.0 is\s+the dual-IME-entrypoint stability line", agents)
     assert "Do not close Issue #36 without CI, signed artifact, final release, and manual" in agents
 
     for stale_claim in (
@@ -743,6 +863,9 @@ def test_agent_workflows_status_anchor_avoids_stale_test_counts_and_overclaims()
     assert "signed artifacts、Owner/manual QA、最终 GitHub Release 发布前不得关闭" in workflows
     assert "v1.7 stable" in workflows
     assert "不得声称 `v1.7.0` 已发布或稳定完成" in workflows
+    assert "v2.0 stable" in workflows
+    assert "v2.0 是双 IME 入口稳定线" in workflows
+    assert "不得把 v2.1 librime 或 TLS 支线冒充为 v2.0 发布证据" in workflows
 
     assert "桌面测试：**179**" not in workflows
     assert "Linux/CI 跑通 + 4 项 Windows-only" not in workflows
@@ -752,11 +875,14 @@ def test_handoff_current_state_anchors_v1_6_gate_before_v1_7_or_v2_work():
     handoff = _read("docs/HANDOFF.md")
 
     current_state = handoff.split("## Current development note", 1)[0]
-    assert "v1.6.0 release gate and v1.7 stability planning" in current_state
+    assert "v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning" in current_state
     assert "Issue #36 remains open" in current_state
     assert "Owner-controlled final Windows artifacts, signed Android artifacts" in current_state
     assert "Owner-approved GitHub Release publication" in current_state
     assert "v1.7 stays planning/stability-only" in current_state
+    assert "v2.0 stays planning/stability-only" in current_state
+    assert "docs/STABILITY_PLAN_V2_0.md" in current_state
+    assert "dedicated Owner-approved v2.0 release-gate issue" in current_state
     assert "signed Windows/Android artifacts" not in current_state
     assert "v2.1 V2-S004" not in current_state
 
@@ -766,6 +892,10 @@ def test_handoff_current_state_anchors_v1_6_gate_before_v1_7_or_v2_work():
     assert "tools/release_readiness.py" in current_development_note
     assert re.search(r"without\s+triggering\s+workflows,\s+setting\s+secrets,\s+creating\s+releases", current_development_note)
     assert re.search(r"prints\s+the\s+exact\s+unchecked\s+release-gate\s+checklist\s+items", current_development_note)
+    assert "docs/STABILITY_PLAN_V2_0.md" in current_development_note
+    assert "dual-IME entrypoint stability milestone" in current_development_note
+    assert "does not claim" in current_development_note
+    assert "v2.0 stable" in current_development_note
 
     current_version = handoff.split("## Current Version Status", 1)[1].split(
         "## Hardening Support Line Snapshot", 1

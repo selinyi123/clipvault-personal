@@ -10,7 +10,7 @@
 |---|---|---|
 | v1.0/1.1 | Runtime 收口 | 现有 v1 明确为 Runtime；Android 引入 ClipVaultFacade；panel IME 改走 facade |
 | v1.2 | SyncTransport 抽象 | 不做云，但把 HTTP push/pull 抽象为 transport，为云预留接口 |
-| v2.0 | 双 IME 入口 | 同一 APK 内：ClipVault Panel + ClipVault Keyboard Lab（基础英文键盘 + 工具栏） |
+| v2.0 | 双 IME 入口 | 同一 APK 内：ClipVault Panel + ClipVault Keyboard Lab（基础英文键盘 + 工具栏）；稳定判据见 `STABILITY_PLAN_V2_0.md` |
 | v2.1 | 底座 Spike | **paper spike 完成（ADR-0010）**：引擎=librime；待 NDK r28/16KB/许可/确定性与工程预算 **A/B 双 build PoC** 终裁 |
 | v2.2 | CandidateMixer | ClipVault 内容（剪切板/词库/Prompt/命令/路径）进入候选栏 |
 | v2.3 | 本地学习 | 词频/短语/Prompt/命令/场景/最近，仅存可解释统计事件，不存普通键入正文 |
@@ -50,6 +50,7 @@
 [done] docs/CONTRACTS_KEYBOARD.md                     (v2.0，接口与不变式冻结)
 [done] docs/KEYBOARD_PRIVACY.md                       (v2.0，L0–L4 操作化 + 可验断言)
 [done] docs/GATES.md「Keyboard 主线门禁」            (v1.1→v3.0 验收门冻结)
+[done] docs/STABILITY_PLAN_V2_0.md                    (v2.0，稳定定义、证据分层、agent 任务流)
 [todo] docs/ADR/0009-sync-transport-abstraction.md   (v1.2)
 [done] docs/ADR/0011-input-context-privacy.md        (v2.0，敏感上下文 session token + 候选/保存闸门)
 [done] docs/SLICES/V2-S004-librime-build-poc.md      (v2.1，A/B build PoC 执行门与终裁算法)

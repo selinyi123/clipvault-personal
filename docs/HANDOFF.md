@@ -15,11 +15,30 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
-| Current slice | v1.6.0 release gate and v1.7 stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. |
+| Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-04 |
 
 ## Current development note - 2026-07-04 / v1.6 release gate and v1.7 stability gates in progress
 
+- `docs/V1_7_FIELD_TEST_PACKAGES.md` now defines the v1.7 field-test package
+  lane. It routes dual-end real-device smoke testing through the existing
+  `Release candidate dry run` workflow and requires downloaded Windows and
+  Android candidate artifacts to be verified with
+  `scripts/verify_release_manifest.py --expect-dry-run`. It explicitly does not
+  claim v1.7 stable, does not publish `v1.7.0`, does not close Issue #36, and
+  does not treat unsigned candidate artifacts as signed/final release evidence.
+  Scope note: this does not claim v1.7 stable.
+- `docs/STABILITY_PLAN_V2_0.md` now defines v2.0 stable as the keyboard
+  mainline dual-IME entrypoint stability milestone: ClipVault Panel plus
+  ClipVault Keyboard Lab in the same APK with automated, CI, and Owner/manual
+  evidence. It explicitly does not treat v2.1 librime/fcitx5 build-PoC work,
+  v2.2 CandidateMixer, optional LAN TLS, discovery, cloud relay, typed-text
+  learning, analytics, or IME-network work as v2.0 stable evidence.
+- `AGENTS.md`, `docs/AGENT_WORKFLOWS.md`, and `ROADMAP_V2_KEYBOARD.md` now route
+  future agents through that v2.0 stability plan while preserving the Issue #36
+  and v1.7 gates. This is planning/evidence hygiene only; it does not claim
+  v2.0 stable, create a v2.0 release issue, sign artifacts, publish a Release,
+  or change runtime behavior.
 - Desktop sync pull now pages by both event count and response byte budget so a
   large history cannot force one oversized mobile response; the Android sync
   client also rejects oversized response bodies.
@@ -58,6 +77,16 @@
   comment draft. It does not run device QA, post to GitHub, edit checklist
   rows, sign artifacts, publish a Release, or close Issue #36, and the rendered
   report explicitly does not replace signed-artifact/final-release evidence.
+- `tools/release_artifact_evidence.py` is a local Issue #36 release-artifact
+  evidence helper for Owner-downloaded artifacts. It validates the Windows and
+  Android release artifact directories with `RELEASE_MANIFEST.json`,
+  `SHA256SUMS.txt`, required release artifact names, and Android
+  `ANDROID_APKSIGNER_VERIFY.txt` shape, then renders a Markdown issue comment
+  draft. It does not download artifacts, call GitHub, trigger workflows, sign
+  APKs, publish a Release, run manual QA, or close Issue #36; a green workflow
+  run still is not artifact-content proof until downloaded bytes are checked.
+  The green workflow run still is not artifact-content proof for the bytes an
+  Owner will cite or attach.
 - `test_webui_security.py` now runs `node --check` when Node is available so the
   packaged Web UI cannot regress to syntactically invalid JavaScript unnoticed.
 - `test_webui_security.py` now also guards the local Web UI against additional

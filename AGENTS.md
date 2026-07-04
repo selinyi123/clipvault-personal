@@ -29,6 +29,11 @@ until these are recorded:
 Do not claim v1.7 stable until docs/STABILITY_PLAN_V1_6_V1_7.md exit criteria
 are satisfied and a dedicated release issue has Owner approval.
 
+Do not claim v2.0 stable until docs/STABILITY_PLAN_V2_0.md exit criteria are
+satisfied and a dedicated v2.0 release-gate issue has Owner approval. v2.0 is
+the dual-IME-entrypoint stability line; do not relabel v2.1 librime work or the
+optional TLS hardening branch as v2.0 stable evidence.
+
 ## Test commands
 
 Desktop:
