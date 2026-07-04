@@ -15,10 +15,10 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
-| Current slice | v2.1 V2-S004 双 build PoC 规划收口（堆叠在 SG-1.3 + IME privacy 分支上）：NDK r28/16KB、全依赖许可、干净黄金向量、可复现规则、工程预算与 A/B 阻塞态已冻结；尚未接 production 引擎，不改版本号。 |
+| Current slice | v1.6.0 release gate and v1.7 stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled signed Windows/Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. |
 | Last updated | 2026-07-04 |
 
-## Current development note - 2026-07-03 / v1.7 stability gates in progress
+## Current development note - 2026-07-04 / v1.6 release gate and v1.7 stability gates in progress
 
 - Desktop sync pull now pages by both event count and response byte budget so a
   large history cannot force one oversized mobile response; the Android sync
@@ -38,6 +38,10 @@
   release-candidate dry runs cannot request write scopes, and the release
   workflow can only escalate for provenance attestation and draft release
   creation.
+- `test_release_alignment.py` now also forbids privileged untrusted-code
+  workflow triggers (`pull_request_target` and `workflow_run`) unless a future
+  reviewed ADR deliberately changes that release-chain boundary. Current PR
+  code remains on ordinary `pull_request` jobs without release secrets.
 - `test_webui_security.py` now runs `node --check` when Node is available so the
   packaged Web UI cannot regress to syntactically invalid JavaScript unnoticed.
 - This does not change IME runtime semantics: candidate loading and explicit
@@ -435,9 +439,12 @@ Follow-on planning:
 - v1.6–v1.8 加固支线（PRs #4–#15）已并入 main。Owner 裁定（2026-06-28）把 `__version__`
   从 1.5.16 **bump 到 1.6.0**（一次 minor，反映自 1.5.x 以来的累计加固；"v1.6/1.7/1.8" 原是路线图里程碑标签）。
   经 `scripts/bump_version.py 1.6.0` 一处改、四文件对齐（versionCode 12→13），`test_release_alignment.py` 守。
-- **不发版**：本次只在仓内 bump，**未**切 GitHub Release。最新**已发布**二进制仍是 **v1.5.10**
-  （2026-06-23，桌面 134 测试）。即 main HEAD（1.6.0，166 项 Linux 跑通 + 4 项 Windows-only）**领先于**最新发布二进制。
-- 是否切 1.6.0 二进制 Release 仍待 Owner 显式决定（对外动作；签名 exe/APK 仅 CI 产出）。
+- **Release state**：源码树元数据是 `1.6.0`，但 `v1.6.0` GitHub Release is not published.
+  Latest downloadable binaries remain **v1.5.10**; use current command output and
+  GitHub Actions runs as evidence, and do not cite stale fixed test counts as current release evidence.
+- Issue #36 remains the release gate: signed Windows/Android artifacts, manual
+  QA evidence, and Owner-approved final GitHub Release publication are still
+  required before claiming v1.6 stable or published.
 
 ## Hardening Support Line Snapshot（v1.6–v1.8，已并入 main）
 
@@ -540,14 +547,18 @@ Issue #3 closed 2026-06-26（state_reason: completed，closed_by: selinyi123，A
 - visible version metadata aligned — ✅ 全对齐 1.5.16；
 - no v1.5 blocker open — ✅。
 
-## v1.6 Entry Gate — ✅ 已满足
+## v1.6 Release Gate — Issue #36 OPEN
 
-Issue #3 已关闭 → v1.6 may now proceed。门后实际交付的，是上方 **Hardening Support Line Snapshot**
-（PRs #4–#15，安全/同步/隐私加固）。这条支线**从属于** keyboard 主线，主线见
-[ROADMAP_V2_KEYBOARD.md](ROADMAP_V2_KEYBOARD.md)（北极星 = 完整中文输入法），其 v2.1 起接 librime/fcitx5
-底座，需 Android/原生设备或 CI 验证（本地无法编译 Kotlin/native）。
+Issue #3 is closed, so v1.6 source-tree hardening may proceed; however v1.6 stable/release is not complete. Issue #36 remains open until the repository has
+current-main CI and release-candidate dry-run evidence, Owner-controlled signed
+Windows/Android artifacts, recorded manual QA evidence, and Owner-approved final
+GitHub Release publication.
 
-> 注：上述 v1.6 候选轨（source caps/tab weighting、source toggles、query-aware filtering、
-> release-state display、version single-source）多数已在 #7–#9 落地；其余并入 RESEARCH_AND_ROADMAP 支线路线。
+The work above is the historical hardening support line. Future v1.7 work must
+continue through `docs/STABILITY_PLAN_V1_6_V1_7.md` and must not claim
+`v1.7.0` stable or published from this handoff alone. Runtime product expansion
+such as the v2.1 librime/fcitx5 build PoC remains out of the current autonomous
+workstream until the v1.6 release gate is resolved or the Owner explicitly
+re-prioritizes it.
 
 Typed text learning, behavioral profiling, cloud keyboard intelligence, and analytics remain out of scope unless a separate privacy design is approved first.
