@@ -177,6 +177,12 @@
   sync responses, rate limits, and 5xx responses stay on the existing retry path.
   This is v1.7 sync reliability hardening only and does not change sync payloads,
   IME behavior, typed-text policy, or release state.
+- The Android IME source-boundary host-JVM test now also forbids direct
+  persistence/capture/core imports and calls from IME services. IME frontends
+  must stay thin and go through the Runtime facade instead of reaching Room,
+  `ClipVaultApp`, `Capture`, `SecretGuard`, SharedPreferences, file IO, sync,
+  network, or logging paths directly. This is v1.7 IME privacy regression
+  coverage only; runtime behavior and Owner/manual QA requirements are unchanged.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 
