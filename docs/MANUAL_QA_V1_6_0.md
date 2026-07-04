@@ -54,6 +54,38 @@ build alone:
 - If Owner approves publication, attach all artifacts and checksums to GitHub
   Release `v1.6.0`.
 
+## Structured evidence helper
+
+Use the local helper to prepare a complete Issue #36 manual-QA evidence comment:
+
+```powershell
+python tools/manual_qa_evidence.py --write-template manual-qa-v1.6.0.json
+python tools/manual_qa_evidence.py --input manual-qa-v1.6.0.json --no-fail
+python tools/manual_qa_evidence.py --input manual-qa-v1.6.0.json --output manual-qa-issue-comment.md
+```
+
+The helper is a formatter and validator only. It does not run Android device QA,
+inspect Windows clipboard behavior, post to GitHub, edit the Issue #36 checklist,
+or close the release gate. It exits non-zero unless every required manual-QA item
+is marked `pass` with evidence; use `--no-fail` only while drafting or recording
+blocked or failing rows. `--write-template` and `--output` write UTF-8 files
+directly, avoiding Windows PowerShell redirection encoding differences.
+
+The generated report must include:
+
+- `version=v1.6.0` and the full 40-character target commit.
+- tester and timestamp.
+- Android device/app/APK source.
+- Windows desktop environment/build source.
+- Manual Android device QA rows.
+- Manual IME privacy QA rows.
+- Manual sync QA rows.
+- Manual Windows clipboard privacy QA rows.
+
+This manual QA report does not replace signed artifact evidence, final Windows
+artifact evidence, signed Android APK evidence, release environment/secrets
+evidence, or Owner-approved `v1.6.0` GitHub Release publication.
+
 ## Manual Android device QA
 
 Run on a real Android device with the `v1.6.0` APK installed:
