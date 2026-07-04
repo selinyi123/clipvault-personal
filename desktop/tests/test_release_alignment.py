@@ -154,6 +154,25 @@ def test_research_log_rounds_and_ids_are_unique():
     assert "R69 | Android outbound sync push request-body budget" in research
 
 
+def test_android_sync_push_request_budget_stays_below_desktop_cap():
+    worker = _read("android/app/src/main/kotlin/com/clipvault/app/sync/SyncWorker.kt")
+    server = _read("desktop/clipvault/api/server.py")
+
+    android_budget = re.search(
+        r"MAX_SYNC_PUSH_REQUEST_BYTES\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024",
+        worker,
+    )
+    desktop_cap = re.search(
+        r"_MAX_SYNC_PUSH_BODY\s*=\s*(\d+)\s*\*\s*1_048_576",
+        server,
+    )
+
+    assert android_budget, "Android sync push request budget not found"
+    assert desktop_cap, "desktop sync push body cap not found"
+    assert int(android_budget.group(1)) * 1024 * 1024 < int(desktop_cap.group(1)) * 1_048_576
+    assert "buildSyncPushBatch" in worker
+
+
 def test_panel_candidate_tabs_helper_and_test_exist():
     base = _ROOT / "android/app/src"
     assert (base / "main/kotlin/com/clipvault/app/ime/PanelCandidateTabs.kt").exists()

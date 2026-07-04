@@ -222,6 +222,11 @@
   dependency. `SyncPushBatchTest` exercises real `JSONObject`/`JSONArray`
   serialization on the workstation JVM instead of Android's mockable
   `android.jar` stubs; the dependency is not on the production runtime classpath.
+- `android/gradle.properties` now sets `android.overridePathCheck=true` so the
+  documented Gradle verification commands can run from the current Windows
+  workspace path that contains non-ASCII characters. Local runs still need a
+  JDK 17 toolchain (for this workstation, set `JAVA_HOME` to the user-local
+  `.clipvault-toolchain/jdk17`); no machine-specific JDK path is committed.
 - The Android IME source-boundary host-JVM test now also forbids direct
   persistence/capture/core imports and calls from IME services. IME frontends
   must stay thin and go through the Runtime facade instead of reaching Room,
