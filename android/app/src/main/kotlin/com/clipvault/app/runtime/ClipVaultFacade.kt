@@ -130,7 +130,8 @@ interface ClipVaultFacade {
 
     /** Explicitly save text into the Runtime (e.g. the IME "保存剪贴板" action).
      * Goes through the full capture pipeline (normalize/hash/classify/Secret Guard)
-     * and schedules a sync push. Returns true if something was stored. */
+     * and schedules a sync push only when a new public outbox event exists.
+     * Returns true if something was stored or locally updated. */
     fun saveExplicit(text: String, sourceDevice: String): Boolean
 }
 
@@ -165,9 +166,9 @@ class RoomClipVaultFacade(context: Context) : ClipVaultFacade {
 
     override fun saveExplicit(text: String, sourceDevice: String): Boolean = safe(false) {
         if (text.isBlank()) return@safe false
-        Capture.ingest(ClipVaultApp.db(ctx), text, sourceDevice = sourceDevice)
-        SyncScheduler.requestPush(ctx)
-        true
+        val result = Capture.ingest(ClipVaultApp.db(ctx), text, sourceDevice = sourceDevice)
+        if (result.shouldRequestSyncPush) SyncScheduler.requestPushBestEffort(ctx)
+        result.didStoreLocally
     }
 
     private inline fun <T> safe(fallback: T, block: () -> T): T =

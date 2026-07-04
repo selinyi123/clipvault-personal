@@ -24,6 +24,7 @@ class ShareReceiverActivity : Activity() {
             val msg = try {
                 val db = ClipVaultApp.db(this)
                 val r = Capture.ingest(db, text, sourceDevice = android.os.Build.MODEL ?: "android")
+                if (r.shouldRequestSyncPush) SyncScheduler.requestPushBestEffort(this)
                 when (r.status) {
                     Capture.Status.NEW -> if (r.clip?.isSecret == true) "已隔离（疑似密钥）" else "已保存到 ClipVault"
                     Capture.Status.DUPLICATE -> "已存在"
@@ -34,7 +35,6 @@ class ShareReceiverActivity : Activity() {
             }
             runOnUiThread {
                 Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-                SyncScheduler.requestPush(this)
                 finish()
             }
         }

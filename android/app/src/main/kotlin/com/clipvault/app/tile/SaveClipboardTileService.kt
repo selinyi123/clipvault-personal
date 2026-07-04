@@ -29,7 +29,7 @@ class SaveClipboardTileService : TileService() {
             val msg = try {
                 val db = ClipVaultApp.db(this)
                 val r = Capture.ingest(db, text, sourceDevice = android.os.Build.MODEL ?: "android")
-                SyncScheduler.requestPush(this)
+                if (r.shouldRequestSyncPush) SyncScheduler.requestPushBestEffort(this)
                 when (r.status) {
                     Capture.Status.NEW -> if (r.clip?.isSecret == true) "已隔离" else "已保存"
                     Capture.Status.DUPLICATE -> "已存在"

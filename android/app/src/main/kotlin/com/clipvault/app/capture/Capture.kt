@@ -22,7 +22,15 @@ import java.util.TimeZone
  */
 object Capture {
     enum class Status { NEW, DUPLICATE, REJECTED }
-    data class Result(val status: Status, val clip: ClipEntity?)
+    data class Result(val status: Status, val clip: ClipEntity?) {
+        /** True when the capture changed or found local state. */
+        val didStoreLocally: Boolean
+            get() = status != Status.REJECTED
+
+        /** True only when ingest produced a public outbox event worth pushing. */
+        val shouldRequestSyncPush: Boolean
+            get() = status == Status.NEW && clip?.isSecret == false
+    }
 
     private const val ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
     private val rng = SecureRandom()
