@@ -809,6 +809,7 @@ def test_v1_7_field_test_packages_use_release_candidates_without_stable_overclai
     assert "unsigned candidate artifacts as signed/final release evidence" in handoff
     assert "tools/field_test_evidence.py" in handoff
     assert "tools/field_test_readiness.py" in handoff
+    assert "tools/v2_keyboard_readiness.py" in handoff
     assert "stale issue-body baselines" in handoff
     assert "does not trigger workflows" in handoff
     assert "can use `--verify-artifacts`" in handoff
@@ -816,6 +817,7 @@ def test_v1_7_field_test_packages_use_release_candidates_without_stable_overclai
     assert "R86 | v1.7 candidate package upload lane" in research
     assert "R87 | Structured v1.7 field-test evidence" in research
     assert "R88 | Read-only v1.7 field-test readiness" in research
+    assert "R89 | v2.0 dual-IME local readiness aggregator" in research
     assert "workflow-run artifacts REST API" in research
     assert "does not replace `tools/field_test_evidence.py`" in research
     assert "can use `--verify-artifacts`" in research
@@ -832,6 +834,7 @@ def test_stability_plan_defines_v2_0_exit_criteria_without_release_overclaim():
 
     assert "## Scope lock" in plan
     assert "## v2.0 stable exit criteria" in plan
+    assert "tools/v2_keyboard_readiness.py --no-fail" in plan
     assert "v2.0 means the same APK exposes two IME entrypoints" in plan
     assert "ClipVault Panel IME" in plan
     assert "ClipVault Keyboard Lab" in plan
@@ -941,6 +944,8 @@ def test_handoff_current_state_anchors_v1_6_gate_before_v1_7_or_v2_work():
     assert "dual-IME entrypoint stability milestone" in current_development_note
     assert "does not claim" in current_development_note
     assert "v2.0 stable" in current_development_note
+    assert "tools/v2_keyboard_readiness.py" in current_development_note
+    assert "does not call GitHub, trigger workflows" in current_development_note
 
     current_version = handoff.split("## Current Version Status", 1)[1].split(
         "## Hardening Support Line Snapshot", 1
