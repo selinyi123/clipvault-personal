@@ -1,12 +1,41 @@
 package com.clipvault.app.sync
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.fail
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.IOException
 
 class SyncClientBoundsTest {
+    @Test
+    fun syncHostNormalizerAllowsPlainLanAndDnsHosts() {
+        assertEquals("192.168.1.5", normalizeSyncHostOrNull(" 192.168.1.5 "))
+        assertEquals("desktop.local", normalizeSyncHostOrNull("Desktop.Local"))
+        assertEquals("clipvault-pc.tailnet.local", normalizeSyncHostOrNull("clipvault-pc.tailnet.local"))
+        assertEquals("[fd7a:115c:a1e0::1]", normalizeSyncHostOrNull("[fd7a:115c:a1e0::1]"))
+    }
+
+    @Test
+    fun syncHostNormalizerRejectsUrlLikeOrAmbiguousHosts() {
+        val rejected = listOf(
+            "",
+            "http://192.168.1.5",
+            "192.168.1.5:8787",
+            "desktop.local/api",
+            "desktop.local?x=1",
+            "user@desktop.local",
+            "desktop local",
+            "../desktop",
+            "[not-ipv6]",
+            "desktop.local#fragment",
+        )
+
+        rejected.forEach { host ->
+            assertNull(host, normalizeSyncHostOrNull(host))
+        }
+    }
+
     @Test
     fun boundedReaderAcceptsBodyAtLimit() {
         val body = "ok".toByteArray(Charsets.UTF_8)

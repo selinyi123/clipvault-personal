@@ -203,6 +203,18 @@ def test_draft_release_reverifies_downloaded_artifacts_before_release_creation()
     assert "--require-signed" in draft
 
 
+def test_draft_release_staging_fails_on_duplicate_asset_names():
+    workflow = _read(".github/workflows/release.yml")
+    draft = _workflow_job_block(workflow, "draft-github-release")
+
+    duplicate_check = draft.index("Duplicate release asset name after staging")
+    copy = draft.index('cp "${file}" "upload-assets/${asset}"')
+
+    assert duplicate_check < copy
+    assert '[[ -e "upload-assets/${asset}" ]]' in draft
+    assert "exit 1" in draft[duplicate_check:copy]
+
+
 def _pull_request_paths(workflow_text: str) -> set[str]:
     paths: set[str] = set()
     in_pull_request = False

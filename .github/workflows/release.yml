@@ -279,6 +279,10 @@ jobs:
                 *) asset="${parent}-${base}" ;;
               esac
             fi
+            if [[ -e "upload-assets/${asset}" ]]; then
+              echo "::error::Duplicate release asset name after staging: ${asset}"
+              exit 1
+            fi
             cp "${file}" "upload-assets/${asset}"
           done < <(find release-artifacts -type f -print0)
           cat > release-notes.md <<'EOF'

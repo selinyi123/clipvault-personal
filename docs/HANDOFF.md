@@ -95,6 +95,17 @@
   artifact directories before `gh release create`. This keeps downloaded
   artifact handoff verification hard-failing immediately before draft release
   asset upload.
+- Draft release asset staging now fails if two downloaded artifact files would
+  map to the same final GitHub Release asset name, preventing a local overwrite
+  before `gh release create`.
+- `scripts/verify_release_manifest.py --platform android --require-signed` now
+  requires a non-empty `ANDROID_APKSIGNER_VERIFY.txt` alongside the APK, so the
+  Android signed release evidence file is machine-checked rather than only a
+  workflow convention.
+- Android sync pairing now normalizes the user-entered desktop host before
+  building `http://host:port/api` URLs. It allows plain LAN/DNS hostnames and
+  bracketed IPv6, while rejecting scheme/path/query/fragment/userinfo/port-like
+  strings so pairing and later sync stay scoped to an unambiguous host.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 

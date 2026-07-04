@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 EXCLUDED_NAMES = {"SHA256SUMS.txt", "RELEASE_MANIFEST.json"}
+ANDROID_APKSIGNER_EVIDENCE = "ANDROID_APKSIGNER_VERIFY.txt"
 
 
 def _validate_artifact_name(name: str) -> None:
@@ -111,6 +112,20 @@ def _verify_checksums(artifact_dir: Path, rows: list[dict[str, str | int]]) -> N
         raise ValueError("SHA256SUMS.txt does not match manifest artifacts")
 
 
+def _verify_android_signed_evidence(
+    actual: dict[str, dict[str, str | int]],
+) -> None:
+    if not any(name.endswith(".apk") for name in actual):
+        raise ValueError("signed Android manifest must include an APK artifact")
+    evidence = actual.get(ANDROID_APKSIGNER_EVIDENCE)
+    if evidence is None:
+        raise ValueError(
+            f"signed Android manifest must include {ANDROID_APKSIGNER_EVIDENCE}"
+        )
+    if int(evidence["bytes"]) <= 0:
+        raise ValueError(f"{ANDROID_APKSIGNER_EVIDENCE} must not be empty")
+
+
 def verify_manifest(
     artifact_dir: Path,
     *,
@@ -162,6 +177,9 @@ def verify_manifest(
             raise ValueError(f"bytes mismatch for {name}: manifest={row['bytes']}, actual={actual_row['bytes']}")
         if row["sha256"] != actual_row["sha256"]:
             raise ValueError(f"sha256 mismatch for {name}: manifest={row['sha256']}, actual={actual_row['sha256']}")
+
+    if manifest.get("platform") == "android" and require_signed:
+        _verify_android_signed_evidence(actual)
 
     _verify_checksums(artifact_dir, rows)
     return manifest
