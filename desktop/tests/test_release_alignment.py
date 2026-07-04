@@ -748,15 +748,28 @@ def test_v1_7_field_test_packages_use_release_candidates_without_stable_overclai
     handoff = _read("docs/HANDOFF.md")
     workflow = _read(".github/workflows/release-candidate.yml")
     script = _ROOT / "tools/field_test_evidence.py"
+    readiness_script = _ROOT / "tools/field_test_readiness.py"
 
     assert script.exists()
+    assert readiness_script.exists()
     script_text = script.read_text(encoding="utf-8")
+    readiness_text = readiness_script.read_text(encoding="utf-8")
     assert "does not download artifacts" in script_text
     assert "--verify-artifacts" in script_text
     assert "verify_release_manifest.py" in script_text
     assert "expect_dry_run=True" in script_text
     assert "field_test_ready" in script_text
+    assert "Read-only readiness report" in readiness_text
+    assert "does not trigger workflows" in readiness_text
+    assert "download artifacts" in readiness_text
+    assert "claim v1.7 stable" in readiness_text
+    assert "gh api" in readiness_text
+    assert "refusing write-capable gh api flag" in readiness_text
     assert "--verify-artifacts" in field_test
+    assert "python tools/field_test_readiness.py --no-fail" in field_test
+    assert "python tools/field_test_readiness.py --json --no-fail" in field_test
+    assert "stale issue-body baseline" in field_test
+    assert "does not download artifacts, verify local artifact bytes" in field_test
     assert "artifact-only Issue #82" in field_test
     assert "expected to remain `BLOCKED`" in field_test
     assert "tools/field_test_evidence.py `" in field_test
@@ -795,10 +808,16 @@ def test_v1_7_field_test_packages_use_release_candidates_without_stable_overclai
     assert "does not claim v1.7 stable" in handoff
     assert "unsigned candidate artifacts as signed/final release evidence" in handoff
     assert "tools/field_test_evidence.py" in handoff
+    assert "tools/field_test_readiness.py" in handoff
+    assert "stale issue-body baselines" in handoff
+    assert "does not trigger workflows" in handoff
     assert "can use `--verify-artifacts`" in handoff
     assert "run device QA, post to GitHub" in handoff
     assert "R86 | v1.7 candidate package upload lane" in research
     assert "R87 | Structured v1.7 field-test evidence" in research
+    assert "R88 | Read-only v1.7 field-test readiness" in research
+    assert "workflow-run artifacts REST API" in research
+    assert "does not replace `tools/field_test_evidence.py`" in research
     assert "can use `--verify-artifacts`" in research
     assert "dry-run manifest/checksum verifier" in research
     assert "candidate-only upload/download/manifest-verification path" in research
