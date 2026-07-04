@@ -139,6 +139,7 @@ class ClipVaultPanelImeService : InputMethodService() {
             return
         }
         thread {
+            if (!privacySession.allowsPersonalData(token)) return@thread
             // Ask Runtime for the tab-specific source/kind before applying the UI
             // limit. This prevents one memory kind from starving another kind.
             val items = PanelCandidateTabs.filter(
