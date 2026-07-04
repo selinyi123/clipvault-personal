@@ -42,6 +42,8 @@ Required evidence before closing Issue #36:
 Agent-executable work while the Owner gate remains blocked:
 
 - Keep release/runbook docs free of stale commit IDs and stale run URLs.
+- Keep README and architecture docs honest about the difference between current
+  source-tree hardening and published/signed release artifacts.
 - Keep workflow security least-privilege guards in tests.
 - Keep packaging dry-run green on current main.
 - Fix only release, CI, documentation, or verified safety defects that do not
@@ -90,6 +92,14 @@ Recommended v1.7 themes:
      storage, telemetry, or network work inside `ime/`.
    - Acceptance: sync tests remain deterministic, secrets never enter outbox,
      and logs never include clip bodies.
+
+6. **Documentation-as-release-evidence**
+   - Keep user-facing README status, architecture topology, and release runbooks
+     aligned with current implementation and GitHub release state.
+   - Acceptance: static tests fail if README claims unpublished v1.6 binaries,
+     stale fixed test counts, or signed artifacts before Issue #36 evidence
+     exists; architecture docs describe HTTP push/pull sync rather than the
+     retired WebSocket/FastAPI plan.
 
 ## Version and branch policy
 

@@ -123,6 +123,19 @@
   This preserves the existing fail-soft sync contract while preventing one
   request from applying multiple payloads for the same remote sequence number
   or wedging future sync retries on a permanently bad event.
+- README now separates current source-tree progress from published release
+  assets: source metadata remains `1.6.0`, but `v1.6.0` binaries are not
+  published, latest downloadable binaries remain `v1.5.10`, and Issue #36 is
+  still the release gate for signed artifacts, manual QA, and final
+  publication. `test_release_alignment.py` guards against restoring stale fixed
+  test-count claims or current-release signed-artifact wording.
+- `docs/ARCHITECTURE.md` now describes the current stdlib `HTTPServer` +
+  HTTP push/pull sync implementation and Android `HttpURLConnection` client
+  rather than the retired FastAPI/WebSocket/syncserver/OkHttp-WebSocket plan.
+  `test_release_alignment.py` guards those current runtime names.
+- This README/status gate is documentation/test truthfulness only; it does not
+  change product runtime behavior, sign artifacts, create a GitHub Release, or
+  close Issue #36.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 

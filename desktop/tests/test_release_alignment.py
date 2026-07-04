@@ -56,6 +56,57 @@ def test_version_sync_doc_matches_source_tree():
     assert "Issue #36" in doc
 
 
+def test_readme_does_not_overstate_unreleased_v1_6_status():
+    readme = _read("README.md")
+    status = readme.split("---", 1)[0]
+
+    assert "v1.6.0 二进制尚未发布" in status
+    assert "最新**已发布**二进制仍为 [v1.5.10]" in status
+    assert "Issue #36" in status
+    assert "signed Windows/Android artifacts" in status
+    assert "manual device QA" in status
+    assert "v1.7 仅作为稳定化/隐私/同步可靠性规划线推进" in status
+
+    for stale_claim in (
+        "桌面端 **166** 项测试",
+        "共 170",
+        "app 整体编译产出已签名 APK",
+        "唯一长期剩余：Android 真机体验确认",
+        "# 170 passed",
+        "# 166 passed",
+    ):
+        assert stale_claim not in readme
+
+    assert "pytest 回归套件（具体数量以当前命令输出为准）" in readme
+    assert "不要把旧测试数量写成发布证据" in readme
+
+
+def test_architecture_matches_current_http_sync_runtime():
+    arch = _read("docs/ARCHITECTURE.md")
+
+    assert "stdlib HTTPServer: REST + Web UI + HTTP sync" in arch
+    assert "HTTP push/pull + 配对 token" in arch
+    assert "sync/" in arch
+    assert "engine.py      # HTTP push/pull 事件日志同步（合同 SYNC-2）" in arch
+    assert "server.py      # stdlib HTTPServer：REST（合同 API-1）" in arch
+    assert "handlers.py    # endpoint 逻辑，直接单测" in arch
+    assert "HttpURLConnection 客户端" in arch
+
+    for stale_claim in (
+        "FastAPI",
+        "WebSocket /sync",
+        "syncserver/",
+        "WS /sync",
+        "uvicorn",
+        "OkHttp WebSocket",
+        "WS 长连",
+        "WS 推送",
+        "WS 推到桌面",
+        "WS 半开连接",
+    ):
+        assert stale_claim not in arch
+
+
 def test_panel_candidate_tabs_helper_and_test_exist():
     base = _ROOT / "android/app/src"
     assert (base / "main/kotlin/com/clipvault/app/ime/PanelCandidateTabs.kt").exists()
