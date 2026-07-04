@@ -507,6 +507,43 @@ def test_residual_ime_android_test_scaffolds_stay_ignored_until_device_qa_runs()
         ), f"{method} must remain an ignored device/emulator scaffold until executed QA is recorded"
 
 
+def test_windows_clipboard_privacy_manual_qa_probe_is_documented():
+    probe_path = _ROOT / "tools/clipboard_privacy_probe.py"
+    assert probe_path.exists()
+    probe = probe_path.read_text(encoding="utf-8")
+    manual_qa = _read("docs/MANUAL_QA_V1_6_0.md")
+    handoff = _read("docs/HANDOFF.md")
+
+    assert "Manual QA helper" in probe
+    assert "Issue #36" in probe
+    assert "overwrites the current Windows clipboard" in manual_qa
+    assert "does not by itself satisfy the" in manual_qa
+    assert "tools/clipboard_privacy_probe.py" in manual_qa
+    assert "tools/clipboard_privacy_probe.py" in handoff
+
+    for probe_case in ("exclude-monitor", "viewer-ignore", "history-off", "cloud-off", "normal"):
+        assert f"python tools/clipboard_privacy_probe.py {probe_case}" in manual_qa
+
+    for format_name in (
+        "ExcludeClipboardContentFromMonitorProcessing",
+        "Clipboard Viewer Ignore",
+        "CanIncludeInClipboardHistory",
+        "CanUploadToCloudClipboard",
+    ):
+        assert format_name in probe
+        assert format_name in manual_qa
+        assert format_name in handoff
+
+    for win32_api in (
+        "OpenClipboard",
+        "EmptyClipboard",
+        "SetClipboardData",
+        "GlobalAlloc",
+        "GMEM_MOVEABLE",
+    ):
+        assert win32_api in probe
+
+
 def test_workflows_use_node24_compatible_github_actions():
     minimum_major = {
         "actions/checkout": 5,
