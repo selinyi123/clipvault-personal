@@ -81,6 +81,9 @@ def test_verify_artifacts_builds_partial_blocked_issue82_comment(tmp_path):
     assert "candidate-only artifact verification" in markdown
     assert "ClipVault-Android-v1.6.0-release-unsigned.apk" in markdown
     assert "not signed/final release evidence" in markdown
+    assert "- Windows environment: OS pending Owner Windows smoke" in markdown
+    assert "- Android device: model pending Owner Android smoke" in markdown
+    assert "Android: pending Owner Android smoke, Android pending Owner Android smoke" not in markdown
 
 
 def test_cli_verify_artifacts_writes_partial_comment_with_no_fail(tmp_path):

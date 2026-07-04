@@ -563,8 +563,8 @@ def render_markdown(
         f"- Release candidate run: {_escape_table(data.get('candidate_run_url'))}",
         f"- Tester: {_escape_table(data.get('tester'))}",
         f"- Tested at: {_escape_table(data.get('tested_at'))}",
-        f"- Windows: {_escape_table(windows.get('os'))}, artifact {_escape_table(windows.get('artifact_name'))}, package {_escape_table(windows.get('portable_or_installer'))}",
-        f"- Android: {_escape_table(android.get('model'))}, Android {_escape_table(android.get('android_version'))}, artifact {_escape_table(android.get('artifact_name'))}, install APK {_escape_table(android.get('install_apk'))}",
+        f"- Windows environment: OS {_escape_table(windows.get('os'))}, artifact {_escape_table(windows.get('artifact_name'))}, package {_escape_table(windows.get('portable_or_installer'))}",
+        f"- Android device: model {_escape_table(android.get('model'))}, Android version {_escape_table(android.get('android_version'))}, artifact {_escape_table(android.get('artifact_name'))}, install APK {_escape_table(android.get('install_apk'))}",
         "",
         "Item counts: "
         f"{result.item_counts.get('pass', 0)} pass, "
