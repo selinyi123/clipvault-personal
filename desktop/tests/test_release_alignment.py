@@ -65,7 +65,9 @@ def test_readme_does_not_overstate_unreleased_v1_6_status():
     assert "v1.6.0 二进制尚未发布" in status
     assert "最新**已发布**二进制仍为 [v1.5.10]" in status
     assert "Issue #36" in status
-    assert "signed Windows/Android artifacts" in status
+    assert "final Windows artifacts" in status
+    assert "signed Android artifacts" in status
+    assert "signed Windows/Android artifacts" not in status
     assert "manual device QA" in status
     assert "v1.7 仅作为稳定化/隐私/同步可靠性规划线推进" in status
 
@@ -227,6 +229,11 @@ def test_manual_qa_links_v1_6_release_runbook():
 def test_release_runbook_uses_live_main_evidence_commands():
     runbook = _read("docs/RELEASE_RUNBOOK_V1_6_0.md")
 
+    assert "python tools/release_readiness.py --no-fail" in runbook
+    assert "python tools/release_readiness.py --json --no-fail" in runbook
+    assert "The checker is read-only." in runbook
+    assert "must not trigger workflows, set secrets, create or" in runbook
+    assert (_ROOT / "tools/release_readiness.py").exists()
     assert "gh run list" in runbook
     assert "gh workflow run \"Release candidate dry run\"" in runbook
     assert "Release artifact build` only with `--ref main`" in runbook
@@ -675,7 +682,7 @@ def test_top_level_agents_file_matches_current_release_gate():
     assert "Do not claim v1.6 stable" in agents
     assert "Current main CI result is known." in agents
     assert "Current main release-candidate dry run result is known." in agents
-    assert "Owner-controlled signed Windows/Android artifacts exist." in agents
+    assert "Owner-controlled final Windows artifacts and signed Android artifacts exist." in agents
     assert "Manual QA checklist passes with evidence." in agents
     assert "Final `v1.6.0` GitHub Release publication is Owner-approved." in agents
     assert "Do not claim v1.7 stable until docs/STABILITY_PLAN_V1_6_V1_7.md" in agents
@@ -685,6 +692,7 @@ def test_top_level_agents_file_matches_current_release_gate():
         "Current v1.5 blockers",
         "Do not start v1.6 work until these are closed",
         "Do not close Issue 3 without CI and manual QA evidence.",
+        "Owner-controlled signed Windows/Android artifacts exist.",
     ):
         assert stale_claim not in agents
 
@@ -709,9 +717,17 @@ def test_handoff_current_state_anchors_v1_6_gate_before_v1_7_or_v2_work():
     current_state = handoff.split("## Current development note", 1)[0]
     assert "v1.6.0 release gate and v1.7 stability planning" in current_state
     assert "Issue #36 remains open" in current_state
+    assert "Owner-controlled final Windows artifacts, signed Android artifacts" in current_state
     assert "Owner-approved GitHub Release publication" in current_state
     assert "v1.7 stays planning/stability-only" in current_state
+    assert "signed Windows/Android artifacts" not in current_state
     assert "v2.1 V2-S004" not in current_state
+
+    current_development_note = handoff.split("## Current development note", 1)[1].split(
+        "## Recent completed note", 1
+    )[0]
+    assert "tools/release_readiness.py" in current_development_note
+    assert "without triggering workflows, setting secrets, creating releases" in current_development_note
 
     current_version = handoff.split("## Current Version Status", 1)[1].split(
         "## Hardening Support Line Snapshot", 1
@@ -720,16 +736,20 @@ def test_handoff_current_state_anchors_v1_6_gate_before_v1_7_or_v2_work():
     assert "Latest downloadable binaries remain **v1.5.10**" in current_version
     assert re.search(r"do not cite stale fixed test counts as\s+current release evidence", current_version)
     assert "Issue #36 remains the release gate" in current_version
+    assert "final Windows artifacts, signed Android" in current_version
     for stale_release_evidence in (
         "桌面 134 测试",
         "166 项 Linux 跑通",
         "4 项 Windows-only",
+        "signed Windows/Android artifacts",
     ):
         assert stale_release_evidence not in current_version
 
     assert "## v1.6 Release Gate — Issue #36 OPEN" in handoff
     release_gate = handoff.split("## v1.6 Release Gate — Issue #36 OPEN", 1)[1]
     assert re.search(r"v1\.6\s+stable/release is not complete", release_gate)
-    assert re.search(r"Owner-controlled signed\s+Windows/Android artifacts", release_gate)
+    assert "Owner-controlled final" in release_gate
+    assert "signed Android artifacts" in release_gate
+    assert "signed Windows/Android artifacts" not in release_gate
     assert re.search(r"must not claim\s+`v1\.7\.0` stable or published", release_gate)
     assert "v1.6 Entry Gate" not in handoff

@@ -12,7 +12,7 @@
 **状态**：源码树 `__version__` = **1.6.0**（2026-06-28 由 1.5.16 bump，反映累计加固），但 **v1.6.0 二进制尚未发布**。
 当前 main 的自动化证据以 GitHub Actions 的当前 main CI 与 release-candidate dry run 为准；本地测试数量会随稳定化补丁变化，请以实际命令输出为准。
 最新**已发布**二进制仍为 [v1.5.10](https://github.com/selinyi123/clipvault-personal/releases/tag/v1.5.10)（main 领先于它）。
-v1.6 release gate（Issue #36）仍需 Owner-controlled signing secrets、signed Windows/Android artifacts、manual device QA 和最终 `v1.6.0` GitHub Release publication；完成前不得宣称 v1.6 稳定发布。
+v1.6 release gate（Issue #36）仍需 Owner-controlled signing secrets、final Windows artifacts、signed Android artifacts、manual device QA 和最终 `v1.6.0` GitHub Release publication；完成前不得宣称 v1.6 稳定发布。
 v1.7 仅作为稳定化/隐私/同步可靠性规划线推进，不绕过 v1.6 release gate（见 [docs/STABILITY_PLAN_V1_6_V1_7.md](docs/STABILITY_PLAN_V1_6_V1_7.md) 与 [docs/HANDOFF.md](docs/HANDOFF.md)）。
 
 ---

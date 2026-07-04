@@ -15,6 +15,21 @@ It does not replace the manual Android/IME/sync/Windows clipboard QA evidence.
 - Run `Release artifact build` only with `--ref main`; the workflow fails closed
   if manually dispatched from any other branch or tag.
 
+## 0. Run the read-only readiness report
+
+Start with the repository readiness checker so the current main SHA, automated
+workflow evidence, release-environment setup, signed-artifact workflow status,
+GitHub Release state, and Issue #36 checklist state are evaluated together:
+
+```powershell
+python tools/release_readiness.py --no-fail
+python tools/release_readiness.py --json --no-fail
+```
+
+The checker is read-only. It must not trigger workflows, set secrets, create or
+publish a GitHub Release, upload artifacts, complete manual QA, or close Issue
+#36. Treat every `blocked` row as the next real evidence gap to close.
+
 ## 1. Confirm current main evidence
 
 ```powershell

@@ -22,7 +22,7 @@ until these are recorded:
 
 - Current main CI result is known.
 - Current main release-candidate dry run result is known.
-- Owner-controlled signed Windows/Android artifacts exist.
+- Owner-controlled final Windows artifacts and signed Android artifacts exist.
 - Manual QA checklist passes with evidence.
 - Final `v1.6.0` GitHub Release publication is Owner-approved.
 

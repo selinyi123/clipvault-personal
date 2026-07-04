@@ -15,7 +15,7 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
-| Current slice | v1.6.0 release gate and v1.7 stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled signed Windows/Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. |
+| Current slice | v1.6.0 release gate and v1.7 stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. |
 | Last updated | 2026-07-04 |
 
 ## Current development note - 2026-07-04 / v1.6 release gate and v1.7 stability gates in progress
@@ -45,6 +45,11 @@
 - `Release artifact build` now fails closed unless a manual dispatch runs from
   the `main` ref; `test_release_alignment.py` guards this so signed release
   evidence cannot be prepared from a stale branch or tag by accident.
+- `tools/release_readiness.py` is a read-only Issue #36 readiness report. It
+  checks current-main CI/dry-run evidence, release environment/secret names,
+  signed-artifact workflow status, GitHub Release state, and the Issue #36
+  checklist without triggering workflows, setting secrets, creating releases,
+  uploading artifacts, completing manual QA, or closing the issue.
 - `test_webui_security.py` now runs `node --check` when Node is available so the
   packaged Web UI cannot regress to syntactically invalid JavaScript unnoticed.
 - `test_webui_security.py` now also guards the local Web UI against additional
@@ -450,9 +455,9 @@ Follow-on planning:
 - **Release state**：源码树元数据是 `1.6.0`，但 `v1.6.0` GitHub Release is not published.
   Latest downloadable binaries remain **v1.5.10**; use current command output and
   GitHub Actions runs as evidence, and do not cite stale fixed test counts as current release evidence.
-- Issue #36 remains the release gate: signed Windows/Android artifacts, manual
-  QA evidence, and Owner-approved final GitHub Release publication are still
-  required before claiming v1.6 stable or published.
+- Issue #36 remains the release gate: final Windows artifacts, signed Android
+  artifacts, manual QA evidence, and Owner-approved final GitHub Release
+  publication are still required before claiming v1.6 stable or published.
 
 ## Hardening Support Line Snapshot（v1.6–v1.8，已并入 main）
 
@@ -558,9 +563,9 @@ Issue #3 closed 2026-06-26（state_reason: completed，closed_by: selinyi123，A
 ## v1.6 Release Gate — Issue #36 OPEN
 
 Issue #3 is closed, so v1.6 source-tree hardening may proceed; however v1.6 stable/release is not complete. Issue #36 remains open until the repository has
-current-main CI and release-candidate dry-run evidence, Owner-controlled signed
-Windows/Android artifacts, recorded manual QA evidence, and Owner-approved final
-GitHub Release publication.
+current-main CI and release-candidate dry-run evidence, Owner-controlled final
+Windows artifacts, signed Android artifacts, recorded manual QA evidence, and
+Owner-approved final GitHub Release publication.
 
 The work above is the historical hardening support line. Future v1.7 work must
 continue through `docs/STABILITY_PLAN_V1_6_V1_7.md` and must not claim
