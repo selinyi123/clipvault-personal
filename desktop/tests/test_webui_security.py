@@ -13,6 +13,7 @@ import pytest
 
 
 WEBUI_JS = Path(__file__).parents[1] / "clipvault" / "api" / "webui" / "app.js"
+WEBUI_HTML = Path(__file__).parents[1] / "clipvault" / "api" / "webui" / "index.html"
 NODE_CHECK_TIMEOUT_SECONDS = 60
 
 
@@ -60,6 +61,53 @@ def test_webui_surfaces_sync_blocked_status_without_html_sinks():
     assert "sync.blocked_pull" in src
     assert "同步阻塞" in src
     assert ".textContent = statusText;" in src
+
+
+def test_webui_avoids_cross_window_storage_and_navigation_sinks():
+    src = WEBUI_JS.read_text(encoding="utf-8")
+
+    forbidden = [
+        "postMessage(",
+        'addEventListener("message"',
+        "addEventListener('message'",
+        "onmessage",
+        "localStorage",
+        "sessionStorage",
+        "window.location",
+        "location.href",
+        "location.assign",
+        "location.replace",
+        "javascript:",
+    ]
+    for sink in forbidden:
+        assert sink not in src
+
+
+def test_webui_does_not_dynamically_load_script_resources():
+    src = WEBUI_JS.read_text(encoding="utf-8")
+
+    forbidden = [
+        'createElement("script"',
+        "createElement('script'",
+        ".appendChild(script",
+        ".insertBefore(script",
+    ]
+    for sink in forbidden:
+        assert sink not in src
+
+
+def test_webui_html_uses_only_first_party_static_resources_and_no_inline_handlers():
+    html = WEBUI_HTML.read_text(encoding="utf-8")
+
+    assert 'src="/app.js"' in html
+    assert 'href="/style.css"' in html
+    assert '<button data-tab="quarantine">隔离区</button>' in html
+    assert "http://" not in html
+    assert "https://" not in html
+    assert "javascript:" not in html.lower()
+    assert "<script>" not in html
+    assert "onclick=" not in html.lower()
+    assert "onload=" not in html.lower()
 
 
 def test_webui_javascript_is_parseable_when_node_is_available():

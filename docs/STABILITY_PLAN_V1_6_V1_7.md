@@ -104,10 +104,15 @@ Recommended v1.7 themes:
    - Keep user-facing README status, architecture/product topology, threat-model
      network boundary, and release runbooks aligned with current implementation
      and GitHub release state.
+   - Keep the local Web UI entrypoint and JavaScript guarded against browser
+     security regressions such as DOM XSS sinks, cross-window messaging, Web
+     Storage, navigation URL sinks, dynamic script loading, remote resources,
+     and inline event handlers.
    - Acceptance: static tests fail if README claims unpublished v1.6 binaries,
-     stale fixed test counts, or signed artifacts before Issue #36 evidence
-     exists; architecture, product, and threat-model docs describe HTTP
-     push/pull sync rather than the retired WebSocket/FastAPI plan.
+     stale fixed test counts, signed artifacts before Issue #36 evidence
+     exists, or local Web UI code drifts away from safe first-party DOM usage;
+     architecture, product, and threat-model docs describe HTTP push/pull sync
+     rather than the retired WebSocket/FastAPI plan.
 
 7. **Current-main packaging evidence**
    - Keep unsigned release-candidate packaging evidence tied to the exact main
@@ -130,7 +135,7 @@ get mistaken for completed device validation.
 | Release supply-chain | Static tests guard workflow token permissions, checkout credential persistence, privileged untrusted-code triggers, artifact upload failure on missing files, manifest verification, action major floors, and signed Android evidence requirements. | Current-main CI and release-candidate dry run both pass on the same main SHA. | Owner-controlled signing/release approval remains outside autonomous agent scope unless explicitly authorized. | Not stable if unsigned dry-run artifacts are described as signed release artifacts. Also not stable if PR code can run in a privileged `pull_request_target`/`workflow_run` path without a reviewed ADR. |
 | Capture-layer privacy | Unit tests cover Windows registered clipboard exclusion formats and Secret Guard provider parity on both desktop and Android core. | Desktop full suite and Android core/app unit tests pass for the target commit. | Windows clipboard privacy QA records a source app or harness that sets the registered privacy formats. | Not stable if secrets or producer-marked private clipboard items can enter Obsidian, GitHub backup, sync, FTS, or memory candidates. |
 | Local-first sync reliability | Deterministic tests cover auth-failure token clearing, auth-failure response-body skipping, bounded pull responses, outbound push request-body budgeting, oversized-event diagnostics, duplicate event sequence handling, redirect refusal with bearer tokens, host normalization, re-pair host/token write ordering, explicit-capture sync scheduling only after new public outbox events, and non-cancelling immediate sync work policy. | Android sync/capture unit tests and desktop sync tests pass for the target commit. | Owner confirms LAN/Tailscale pair, restart, and bidirectional sync smoke checks without cloud relay or telemetry. | Not stable if sync introduces cloud storage, analytics, IME-network work, wrong-host credential exposure, unconditional local-only capture sync scheduling, cancellation-prone burst sync scheduling, auth-failure bodies can mask token clearing, oversized push bodies can wedge WorkManager retries, or unbounded response/log exposure. |
-| Documentation-as-release-evidence | Static tests guard README release truthfulness, architecture/product-spec runtime topology, threat-model network boundary, top-level agent instructions, live-evidence runbook commands, and avoidance of stale fixed test counts. | CI includes those static tests for every PR/main commit. | Owner confirms public-facing release notes match the actual published assets before publication. | Not stable if docs or agent instructions imply unpublished v1.6/v1.7 signed binaries, stale Issue #3/v1.5 blockers, stale WebSocket/FastAPI sync topology, stale cleartext-LAN risk wording, or stale test-count evidence. |
+| Documentation-as-release-evidence | Static tests guard README release truthfulness, architecture/product-spec runtime topology, threat-model network boundary, top-level agent instructions, live-evidence runbook commands, local Web UI browser-security shape, and avoidance of stale fixed test counts. | CI includes those static tests for every PR/main commit. | Owner confirms public-facing release notes match the actual published assets before publication. | Not stable if docs or agent instructions imply unpublished v1.6/v1.7 signed binaries, stale Issue #3/v1.5 blockers, stale WebSocket/FastAPI sync topology, stale cleartext-LAN risk wording, stale test-count evidence, or local Web UI code reintroduces browser-side storage/messaging/navigation/dynamic-script sinks. |
 | Current-main packaging evidence | Static tests guard the release-candidate main-push path and forbid release secrets/environments/write permissions there. | Current-main dry run uploads unsigned Windows/Android candidate artifacts, `SHA256SUMS.txt`, and `RELEASE_MANIFEST.json` for the exact target SHA. | Owner separately approves any signed release workflow or draft GitHub Release creation. | Not stable if packaging evidence cannot be tied to the target main SHA. |
 
 Stable exit rules:
