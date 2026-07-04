@@ -75,6 +75,33 @@ class SyncWorkerSourceTest {
     }
 
     @Test
+    fun workerBuildsBoundedPushBatchesBeforeCallingClientPush() {
+        val src = readSource("SyncWorker.kt")
+
+        assertTrue(src.contains("internal const val MAX_SYNC_PUSH_REQUEST_BYTES = 3 * 1024 * 1024"))
+        assertTrue(src.contains("internal fun buildSyncPushBatch("))
+        assertTrue(src.contains("maxRequestBytes: Int = MAX_SYNC_PUSH_REQUEST_BYTES"))
+        assertTrue(src.contains("internal fun drainSyncOutbox("))
+        assertTrue(src.contains("val pushBatch = buildSyncPushBatch(batch, deviceId, maxRequestBytes)"))
+        assertTrue(src.contains("val acked = push(pushBatch.events)"))
+        assertTrue(src.contains("if (acked < 0) return false"))
+        assertTrue(src.contains("if (acked < pushBatch.maxSeq) return false"))
+        assertTrue(src.contains("if (pushBatch.sourceCount < batch.size) continue"))
+        assertTrue(src.contains("nextBatch = { db.outbox().batch(SYNC_OUTBOX_BATCH_LIMIT) }"))
+        assertTrue(src.contains("push = { events -> client.push(events) }"))
+
+        val loop = src.substring(src.indexOf("// push outbox in batches"), src.indexOf("// pull desktop events"))
+        assertFalse(
+            "SyncWorker must not return to count-only JSON batching before /sync/push",
+            loop.contains("val events = JSONArray()"),
+        )
+        assertFalse(
+            "SyncWorker must not call /sync/push with an unbudgeted count-only batch",
+            loop.contains("val acked = client.push(events)"),
+        )
+    }
+
+    @Test
     fun replacementPairingStoresHostSynchronouslyBeforeFreshToken() {
         val src = readSource("Sync.kt")
 

@@ -68,6 +68,10 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     testImplementation("junit:junit:4.13.2")
+    // Host-JVM tests run against mockable android.jar, where Android's org.json
+    // methods are stubs. Keep the real JSON implementation test-only so sync
+    // batching tests can exercise serialization without changing APK deps.
+    testImplementation("org.json:json:20260522")
 
     // Compile the residual IME manual-QA scaffolds without running them.
     // Device/emulator execution remains an explicit Owner/manual QA gate.
