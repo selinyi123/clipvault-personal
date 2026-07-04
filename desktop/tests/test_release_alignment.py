@@ -470,6 +470,21 @@ def test_workflow_github_token_permissions_are_least_privilege():
     assert "id-token: write" not in draft_block
 
 
+def test_workflows_do_not_use_privileged_untrusted_code_triggers():
+    workflows = sorted((_ROOT / ".github/workflows").glob("*.yml"))
+    assert workflows, "no GitHub Actions workflows found"
+
+    dangerous_triggers = ("pull_request_target", "workflow_run")
+    for path in workflows:
+        text = path.read_text(encoding="utf-8")
+        for trigger in dangerous_triggers:
+            assert not re.search(rf"(?m)^\s*{trigger}:\s*$", text), (
+                f"{path.relative_to(_ROOT)} must not use the privileged "
+                f"{trigger!r} trigger; keep PR code on ordinary pull_request "
+                "or add a reviewed release-chain ADR before changing this gate"
+            )
+
+
 def test_android_workflows_validate_gradle_wrapper_before_gradle_runs():
     workflow_expectations = {
         ".github/workflows/ci.yml": "Run Android unit tests",
@@ -676,3 +691,35 @@ def test_agent_workflows_status_anchor_avoids_stale_test_counts_and_overclaims()
 
     assert "桌面测试：**179**" not in workflows
     assert "Linux/CI 跑通 + 4 项 Windows-only" not in workflows
+
+
+def test_handoff_current_state_anchors_v1_6_gate_before_v1_7_or_v2_work():
+    handoff = _read("docs/HANDOFF.md")
+
+    current_state = handoff.split("## Current development note", 1)[0]
+    assert "v1.6.0 release gate and v1.7 stability planning" in current_state
+    assert "Issue #36 remains open" in current_state
+    assert "Owner-approved GitHub Release publication" in current_state
+    assert "v1.7 stays planning/stability-only" in current_state
+    assert "v2.1 V2-S004" not in current_state
+
+    current_version = handoff.split("## Current Version Status", 1)[1].split(
+        "## Hardening Support Line Snapshot", 1
+    )[0]
+    assert "`v1.6.0` GitHub Release is not published" in current_version
+    assert "Latest downloadable binaries remain **v1.5.10**" in current_version
+    assert re.search(r"do not cite stale fixed test counts as\s+current release evidence", current_version)
+    assert "Issue #36 remains the release gate" in current_version
+    for stale_release_evidence in (
+        "桌面 134 测试",
+        "166 项 Linux 跑通",
+        "4 项 Windows-only",
+    ):
+        assert stale_release_evidence not in current_version
+
+    assert "## v1.6 Release Gate — Issue #36 OPEN" in handoff
+    release_gate = handoff.split("## v1.6 Release Gate — Issue #36 OPEN", 1)[1]
+    assert re.search(r"v1\.6\s+stable/release is not complete", release_gate)
+    assert re.search(r"Owner-controlled signed\s+Windows/Android artifacts", release_gate)
+    assert re.search(r"must not claim\s+`v1\.7\.0` stable or published", release_gate)
+    assert "v1.6 Entry Gate" not in handoff
