@@ -119,6 +119,14 @@
   secret quarantine behavior are unchanged. Sync-now scheduling is best-effort
   so WorkManager enqueue failure no longer turns a completed local capture into
   a false save failure, and periodic sync remains the fallback.
+- Android immediate `sync-now` scheduling now uses
+  `ExistingWorkPolicy.APPEND_OR_REPLACE` instead of `REPLACE`, guarded by
+  `SyncWorkerSourceTest`, so a burst of explicit saves cannot cancel an
+  in-flight outbox push/pull. The worker still drains the durable outbox and
+  exits on empty batches, so queued duplicates are idempotent. This is v1.7
+  sync reliability hardening only; it does not change sync payloads, add cloud
+  relay/telemetry, move network work into the IME, alter release state, or
+  satisfy Owner/manual LAN QA.
 - Desktop pairing now validates the LAN-supplied Android `device_name` metadata
   before redeeming a one-time code: missing/blank names default to `device`,
   names are trimmed, and non-string, overlong, or control-character values are
@@ -225,6 +233,11 @@
   as evidence, keeps Issue #36 open until signed artifacts/manual QA/final
   release publication exist, and routes v1.7 stable claims through the stability
   plan exit criteria.
+- Top-level `AGENTS.md` now matches the same release-gate truth: Issue #3/v1.5
+  is closed, Issue #36 is the current v1.6.0 gate, and v1.7 stable claims require
+  the stability-plan exit criteria plus Owner approval. `test_release_alignment.py`
+  guards this entrypoint so future agents cannot regress to stale Issue #3 or
+  v1.5 blocker wording.
 - Release manifest generation and verification now reject contradictory
   dry-run state: a `release-candidate-dry-run` manifest cannot be marked
   `signed=true` or `published=true`, and verification rejects unknown manifest

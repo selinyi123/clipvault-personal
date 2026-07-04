@@ -56,6 +56,23 @@ class SyncWorkerSourceTest {
     }
 
     @Test
+    fun immediateSyncDoesNotCancelInFlightUniqueWork() {
+        val src = readSource("SyncWorker.kt")
+
+        val method = src.indexOf("fun requestPush(context: Context)")
+        val bestEffort = src.indexOf("fun requestPushBestEffort(context: Context)", method)
+        assertTrue("requestPush is missing", method >= 0)
+        assertTrue("requestPush boundary is missing", bestEffort > method)
+
+        val body = src.substring(method, bestEffort)
+        assertTrue(body.contains("enqueueUniqueWork(\"sync-now\", ExistingWorkPolicy.APPEND_OR_REPLACE, req)"))
+        assertFalse(
+            "Immediate sync must not cancel in-flight push/pull work on bursty explicit saves",
+            body.contains("ExistingWorkPolicy.REPLACE"),
+        )
+    }
+
+    @Test
     fun replacementPairingStoresHostSynchronouslyBeforeFreshToken() {
         val src = readSource("Sync.kt")
 
