@@ -223,6 +223,20 @@ def test_h4_push_idempotent(api, conn, tmp_path):
     assert len(list((tmp_path / "vault").rglob("*.md"))) == 1  # not rewritten
 
 
+def test_h4_duplicate_seq_in_same_batch_is_applied_once(api, conn):
+    token = _pair(api)
+    events = [
+        _clip_new_event(1, "first seq payload", hash="dupseq1", id="01DUPSEQ000000000000001"),
+        _clip_new_event(1, "second seq payload", hash="dupseq2", id="01DUPSEQ000000000000002"),
+    ]
+
+    status, body = api.sync_push(token, {"events": events})
+
+    assert status == 200 and body["acked_upto"] == 1
+    assert ClipsRepo(conn).get_by_hash("dupseq1") is not None
+    assert ClipsRepo(conn).get_by_hash("dupseq2") is None
+
+
 def test_h5_push_secret_quarantined_not_propagated(api, conn, tmp_path):
     token = _pair(api)
     ev = _clip_new_event(1, FAKE_AWS_KEY, hash="seekrit")
@@ -468,6 +482,26 @@ def test_h10_malformed_event_does_not_wedge_batch(api, conn):
     assert s == 200 and body["acked_upto"] == 3          # malformed #2 acked, no wedge
     assert ClipsRepo(conn).get_by_hash("ok1") is not None
     assert ClipsRepo(conn).get_by_hash("ok3") is not None  # valid event after the bad one still lands
+
+
+def test_h10_integrity_conflict_event_does_not_wedge_batch(api, conn):
+    # A seq-valid event that violates local DB constraints is permanently bad.
+    # Ack it as a no-op so the peer does not retry it forever, but keep applying
+    # later valid events in the same batch.
+    token = _pair(api)
+    duplicate_id = "01SAMEID000000000000001"
+    events = [
+        _clip_new_event(1, "before conflict", hash="ok-before", id=duplicate_id),
+        _clip_new_event(2, "conflicting id", hash="bad-conflict", id=duplicate_id),
+        _clip_new_event(3, "after conflict", hash="ok-after", id="01SAMEID000000000000003"),
+    ]
+
+    s, body = api.sync_push(token, {"events": events})
+
+    assert s == 200 and body["acked_upto"] == 3
+    assert ClipsRepo(conn).get_by_hash("ok-before") is not None
+    assert ClipsRepo(conn).get_by_hash("bad-conflict") is None
+    assert ClipsRepo(conn).get_by_hash("ok-after") is not None
 
 
 def test_h10_event_without_seq_is_dropped(api, conn):

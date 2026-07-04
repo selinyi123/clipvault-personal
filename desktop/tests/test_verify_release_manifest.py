@@ -109,6 +109,25 @@ def test_verify_rejects_manifest_artifact_path_traversal(tmp_path):
         verify_release_manifest.verify_manifest(tmp_path, expect_dry_run=True)
 
 
+def test_verify_rejects_manifest_hidden_artifact_names(tmp_path):
+    _build_fixture(tmp_path)
+    path = tmp_path / "RELEASE_MANIFEST.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["artifacts"][0]["name"] = ".ClipVault-Desktop-v1.6.0-portable.exe"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="artifact name must not be hidden"):
+        verify_release_manifest.verify_manifest(tmp_path, expect_dry_run=True)
+
+
+def test_verify_rejects_actual_hidden_artifacts(tmp_path):
+    _build_fixture(tmp_path)
+    (tmp_path / ".ClipVault-extra.txt").write_text("hidden artifact\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="artifact name must not be hidden"):
+        verify_release_manifest.verify_manifest(tmp_path, expect_dry_run=True)
+
+
 def test_verify_rejects_symlink_artifacts(tmp_path):
     _build_fixture(tmp_path)
     artifact = tmp_path / "ClipVault-Desktop-v1.6.0-portable.exe"

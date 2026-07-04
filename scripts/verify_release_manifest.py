@@ -23,6 +23,8 @@ ANDROID_APKSIGNER_EVIDENCE = "ANDROID_APKSIGNER_VERIFY.txt"
 def _validate_artifact_name(name: str) -> None:
     if not name:
         raise ValueError("artifact name must not be empty")
+    if name.startswith("."):
+        raise ValueError(f"artifact name must not be hidden: {name!r}")
     if not name.isascii():
         raise ValueError(f"artifact name must be ASCII: {name!r}")
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
@@ -42,10 +44,10 @@ def _read_manifest(path: Path) -> dict[str, Any]:
 
 
 def _artifact_path(artifact_dir: Path, name: str) -> Path:
-    _validate_artifact_name(name)
     candidate = Path(name)
     if candidate.name != name or candidate.is_absolute():
         raise ValueError(f"artifact name must be a plain file name: {name!r}")
+    _validate_artifact_name(name)
     return artifact_dir / name
 
 
