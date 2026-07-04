@@ -392,17 +392,6 @@ Issue #36 manual QA requirements.
 
 ## Research log - round 26 (2026-07-04)
 
-Scope filter: serve v1.7 Android log privacy and stable-exit evidence only. Do
-not change runtime logging behavior, Android IME behavior, sync payloads,
-runtime dependencies, typed-text policy, analytics policy, signing authority,
-artifact publication semantics, or Issue #36 manual QA requirements.
-
-| # | Direction | Sources | Key finding | Decision |
-|---|---|---|---|---|
-| R59 | Android production log privacy regression gate | Android Log Info Disclosure guidance (`https://developer.android.com/privacy-and-security/risks/log-info-disclosure`), Android security best practices (`https://developer.android.com/privacy-and-security/security-best-practices`), OWASP MASWE-0001 sensitive data in logs (`https://mas.owasp.org/MASWE/MASVS-STORAGE/MASWE-0001/`) | Android advises sanitizing non-debug Logcat output and removing data that may be sensitive. OWASP identifies sensitive data in mobile app/system logs as a confidentiality risk and recommends avoiding, redacting, or removing nonessential production logging. ClipVault already has desktop log-hygiene tests and Android logs currently use constant messages or exception class names, but no Android app source gate would fail if a future change interpolated clip text, memory text, bearer tokens, sync payloads, hosts, or raw stack traces into production logs. | **Adopt now:** add an Android host-JVM source-shape test that allows only constant production `Log.*` messages or exception class-name interpolation and rejects dynamic message interpolation/concatenation plus `printStackTrace()`. Add this evidence to the v1.7 stable exit matrix. This is a regression gate only; it does not change runtime behavior or replace Owner/manual device log QA. |
-
-## Research log - round 26 (2026-07-04)
-
 Scope filter: serve v1.7 stable-exit planning only. Do not change IME runtime
 behavior, sync payloads, runtime dependencies, typed-text policy, analytics
 policy, signing authority, artifact publication semantics, or Issue #36 manual
@@ -422,3 +411,14 @@ semantics, or Issue #36 manual QA requirements.
 | # | Direction | Sources | Key finding | Decision |
 |---|---|---|---|---|
 | R60 | Release manifest state-machine invariants | GitHub artifact attestations docs (`https://docs.github.com/en/actions/concepts/security/artifact-attestations`), SLSA provenance v1 (`https://slsa.dev/provenance/v1`), GitHub release management docs (`https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository`), F-Droid reproducible builds docs (`https://f-droid.org/en/docs/Reproducible_Builds/`), GitHub release asset digest changelog (`https://github.blog/changelog/2025-06-03-releases-now-expose-digests-for-release-assets/`) | Mature release evidence separates artifact bytes, provenance/checksums, signing, draft/published release state, and reproducibility. ClipVault already verifies file hashes and Android apksigner evidence, but the local manifest helpers still allowed contradictory metadata such as a `release-candidate-dry-run` manifest marked `signed=true` or `published=true` if a caller passed the wrong flags. | **Adopt now:** make manifest generation reject dry-run manifests marked signed or published, and make manifest verification reject illegal `kind` values plus signed/published dry-run metadata even when the caller is not explicitly using `--expect-dry-run`. This is release-evidence semantics hardening only; it does not sign, publish, create a GitHub Release, or close Issue #36. |
+
+## Research log - round 28 (2026-07-04)
+
+Scope filter: serve v1.7 Android log privacy and stable-exit evidence only. Do
+not change runtime logging behavior, Android IME behavior, sync payloads,
+runtime dependencies, typed-text policy, analytics policy, signing authority,
+artifact publication semantics, or Issue #36 manual QA requirements.
+
+| # | Direction | Sources | Key finding | Decision |
+|---|---|---|---|---|
+| R61 | Android production log privacy regression gate | Android Log Info Disclosure guidance (`https://developer.android.com/privacy-and-security/risks/log-info-disclosure`), Android security best practices (`https://developer.android.com/privacy-and-security/security-best-practices`), OWASP MASWE-0001 sensitive data in logs (`https://mas.owasp.org/MASWE/MASVS-STORAGE/MASWE-0001/`) | Android advises sanitizing non-debug Logcat output and removing data that may be sensitive. OWASP identifies sensitive data in mobile app/system logs as a confidentiality risk and recommends avoiding, redacting, or removing nonessential production logging. ClipVault already has desktop log-hygiene tests and Android logs currently use constant messages or exception class names, but no Android app source gate would fail if a future change interpolated clip text, memory text, bearer tokens, sync payloads, hosts, or raw stack traces into production logs. | **Adopt now:** add an Android host-JVM source-shape test that allows only constant production `Log.*` messages or exception class-name interpolation and rejects dynamic message interpolation/concatenation plus `printStackTrace()`. Add this evidence to the v1.7 stable exit matrix. This is a regression gate only; it does not change runtime behavior or replace Owner/manual device log QA. |
