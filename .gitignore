@@ -22,3 +22,5 @@ desktop/packaging/*.spec
 *.keystore
 # Inno Setup output (the built installer ships via GitHub Releases)
 installer/dist/
+# Local field-test downloads and extracted GitHub Actions artifacts
+.field-test-artifacts/
