@@ -110,6 +110,32 @@ Recommended v1.7 themes:
      without release environment/secrets/write permissions, and static tests
      fail if this dry-run path gains release side effects.
 
+## v1.7 stable exit criteria
+
+Do not call v1.7 stable until every row below has evidence recorded in
+`docs/HANDOFF.md` and, if a release is planned, a dedicated release-gate issue.
+The table separates automated, CI, and Owner/manual evidence so scaffolds do not
+get mistaken for completed device validation.
+
+| Area | Required automated evidence | Required CI evidence | Required Owner/manual evidence | Stable exit decision |
+|---|---|---|---|---|
+| IME privacy boundary | Host-JVM tests cover sensitive-field suppression, explicit-save suppression, in-flight candidate invalidation, IME source-boundary imports, IME manifest shape, and Android production log source-shape privacy. | Android unit/debug-unit tests and `:app:compileDebugAndroidTestKotlin` pass for the target main commit. | Real device confirms no ordinary typed text is written to Room, logs, sync payloads, desktop storage, or backup; sensitive editors hide candidates and block explicit save. | Not stable if any typed-text logging, implicit save, Android production log payload interpolation, or IME-local network path exists. |
+| Manual QA automation | Residual `androidTest` checks either remain clearly `@Ignore`-d with backlog wording, or are promoted to real assertions with the `@Ignore` annotations removed. | If promoted, `connectedDebugAndroidTest` or an equivalent device/emulator workflow is recorded for the target commit. | Owner records the device/emulator model, Android version, active IME setup, and pass/fail evidence. | Not stable if compile-only scaffolds are claimed as executed QA. |
+| Release supply-chain | Static tests guard workflow token permissions, checkout credential persistence, artifact upload failure on missing files, manifest verification, action major floors, and signed Android evidence requirements. | Current-main CI and release-candidate dry run both pass on the same main SHA. | Owner-controlled signing/release approval remains outside autonomous agent scope unless explicitly authorized. | Not stable if unsigned dry-run artifacts are described as signed release artifacts. |
+| Capture-layer privacy | Unit tests cover Windows registered clipboard exclusion formats and Secret Guard provider parity on both desktop and Android core. | Desktop full suite and Android core/app unit tests pass for the target commit. | Windows clipboard privacy QA records a source app or harness that sets the registered privacy formats. | Not stable if secrets or producer-marked private clipboard items can enter Obsidian, GitHub backup, sync, FTS, or memory candidates. |
+| Local-first sync reliability | Deterministic tests cover auth-failure token clearing, bounded pull responses, oversized-event diagnostics, duplicate event sequence handling, redirect refusal with bearer tokens, and host normalization. | Android sync unit/debug-unit tests and desktop sync tests pass for the target commit. | Owner confirms LAN/Tailscale pair, restart, and bidirectional sync smoke checks without cloud relay or telemetry. | Not stable if sync introduces cloud storage, analytics, IME-network work, or unbounded response/log exposure. |
+| Documentation-as-release-evidence | Static tests guard README release truthfulness, architecture runtime topology, live-evidence runbook commands, and avoidance of stale fixed test counts. | CI includes those static tests for every PR/main commit. | Owner confirms public-facing release notes match the actual published assets before publication. | Not stable if docs imply unpublished v1.6/v1.7 signed binaries or stale test-count evidence. |
+| Current-main packaging evidence | Static tests guard the release-candidate main-push path and forbid release secrets/environments/write permissions there. | Current-main dry run uploads unsigned Windows/Android candidate artifacts, `SHA256SUMS.txt`, and `RELEASE_MANIFEST.json` for the exact target SHA. | Owner separately approves any signed release workflow or draft GitHub Release creation. | Not stable if packaging evidence cannot be tied to the target main SHA. |
+
+Stable exit rules:
+
+- Keep `v1.7` as a planning/stability label until a dedicated release issue and
+  Owner approval exist; do not publish `v1.7.0` from this plan alone.
+- Treat blocked Owner/manual rows as incomplete, not as failed automation.
+- If a proposed v1.7 fix changes runtime dependencies, schema semantics,
+  privacy policy, sync payload shape, or release authority, pause and write an
+  ADR before implementation.
+
 ## Version and branch policy
 
 - Do not bump beyond `1.6.0` just to signal progress.

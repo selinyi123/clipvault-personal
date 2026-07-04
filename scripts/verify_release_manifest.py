@@ -18,6 +18,7 @@ from typing import Any
 
 EXCLUDED_NAMES = {"SHA256SUMS.txt", "RELEASE_MANIFEST.json"}
 ANDROID_APKSIGNER_EVIDENCE = "ANDROID_APKSIGNER_VERIFY.txt"
+KINDS = {"release-candidate-dry-run", "release"}
 
 
 def _validate_artifact_name(name: str) -> None:
@@ -147,6 +148,9 @@ def verify_manifest(
 
     if manifest.get("schema_version") != 1:
         raise ValueError("manifest schema_version must be 1")
+    kind = manifest.get("kind")
+    if kind not in KINDS:
+        raise ValueError(f"manifest kind must be one of {sorted(KINDS)!r}")
     if platform is not None and manifest.get("platform") != platform:
         raise ValueError(f"manifest platform mismatch: expected {platform!r}, got {manifest.get('platform')!r}")
     if version is not None and manifest.get("version") != version:
@@ -154,13 +158,14 @@ def verify_manifest(
     if commit is not None and manifest.get("commit") != commit:
         raise ValueError(f"manifest commit mismatch: expected {commit!r}, got {manifest.get('commit')!r}")
 
-    if expect_dry_run:
-        if manifest.get("kind") != "release-candidate-dry-run":
-            raise ValueError("dry-run manifest kind must be release-candidate-dry-run")
+    if kind == "release-candidate-dry-run":
         if manifest.get("signed") is not False:
             raise ValueError("dry-run manifest must be unsigned")
         if manifest.get("published") is not False:
             raise ValueError("dry-run manifest must be unpublished")
+    if expect_dry_run:
+        if kind != "release-candidate-dry-run":
+            raise ValueError("dry-run manifest kind must be release-candidate-dry-run")
     if require_signed and manifest.get("signed") is not True:
         raise ValueError("signed release manifest must record signed=true")
     if require_published and manifest.get("published") is not True:

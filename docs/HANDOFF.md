@@ -194,6 +194,30 @@
   `android.view.InputMethod`, and keep `android.view.im` metadata pointed at the
   expected IME config XML. This is a static exposure regression gate only; it
   does not change IME runtime behavior or satisfy Owner/manual device QA.
+- `docs/STABILITY_PLAN_V1_6_V1_7.md` now has an explicit v1.7 stable exit
+  criteria matrix with automated, CI, and Owner/manual evidence columns.
+  `test_release_alignment.py` guards that planning truth boundary so compile-only
+  androidTest scaffolds cannot be claimed as executed device QA, unsigned
+  dry-run artifacts cannot be described as signed releases, and `v1.7.0` cannot
+  be claimed as published/stable from the plan alone.
+- Android production logging now has a host-JVM source-shape privacy gate:
+  `AndroidLogPrivacySourceTest` fails if app production `Log.*` calls start
+  interpolating/concatenating dynamic payload data or calling
+  `printStackTrace()`. Current logs remain limited to constant messages or
+  exception class names. This is a v1.7 privacy regression gate only; it does
+  not change runtime behavior, logging destinations, release state, or manual QA
+  requirements.
+- `docs/AGENT_WORKFLOWS.md` no longer anchors the current state to a stale fixed
+  desktop test count. It now says to use the current pytest output and GitHub CI
+  as evidence, keeps Issue #36 open until signed artifacts/manual QA/final
+  release publication exist, and routes v1.7 stable claims through the stability
+  plan exit criteria.
+- Release manifest generation and verification now reject contradictory
+  dry-run state: a `release-candidate-dry-run` manifest cannot be marked
+  `signed=true` or `published=true`, and verification rejects unknown manifest
+  `kind` values before treating evidence as valid. This is release evidence
+  semantics hardening only; it does not sign artifacts, create or publish a
+  GitHub Release, or close Issue #36.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 

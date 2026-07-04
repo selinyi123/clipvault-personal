@@ -110,6 +110,11 @@ def build_manifest(
         raise ValueError(f"unsupported manifest kind: {kind}")
     if platform not in PLATFORMS:
         raise ValueError(f"unsupported platform: {platform}")
+    if kind == "release-candidate-dry-run":
+        if signed:
+            raise ValueError("dry-run manifest must not be marked signed")
+        if published:
+            raise ValueError("dry-run manifest must not be marked published")
     validate_manifest_value("version", version)
     validate_manifest_value("commit", commit)
     artifact_dir = artifact_dir.resolve()
