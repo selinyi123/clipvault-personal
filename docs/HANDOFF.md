@@ -89,6 +89,12 @@
   empty terminal page may keep it unchanged. This prevents repeated-page loops
   without changing desktop outbox pruning semantics, which still need explicit
   durable peer acknowledgement before delivered cursors can be used for pruning.
+- The draft GitHub Release job now checks out the repository with persisted git
+  credentials disabled, downloads the signed release artifacts, and re-runs
+  `scripts/verify_release_manifest.py` on the downloaded Windows and Android
+  artifact directories before `gh release create`. This keeps downloaded
+  artifact handoff verification hard-failing immediately before draft release
+  asset upload.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 
