@@ -16,6 +16,7 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.KeyStore
+import java.util.Locale
 import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -29,6 +30,27 @@ private const val TOKEN_KEY_ALIAS = "clipvault_sync_token_v1"
 private const val TOKEN_IV = "token_iv"
 private const val TOKEN_CT = "token_ct"
 internal const val MAX_SYNC_RESPONSE_BYTES = 4 * 1024 * 1024
+private val HOST_LABEL_RE = Regex("""^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$""")
+private val BRACKETED_IPV6_RE = Regex("""^\[[0-9A-Fa-f:.%]+]$""")
+
+internal fun normalizeSyncHostOrNull(raw: String?): String? {
+    val host = raw?.trim() ?: return null
+    if (host.isEmpty() || host.length > 253) return null
+    if (host.any { it <= ' ' || it.code == 127 }) return null
+    if (host.any { it == '/' || it == '\\' || it == '?' || it == '#' || it == '@' }) return null
+
+    if (host.startsWith("[") || host.endsWith("]")) {
+        if (!BRACKETED_IPV6_RE.matches(host)) return null
+        val inner = host.substring(1, host.length - 1)
+        if (!inner.contains(":")) return null
+        return host
+    }
+
+    if (host.contains(":")) return null
+    val labels = host.split(".")
+    if (labels.any { it.isEmpty() || !HOST_LABEL_RE.matches(it) }) return null
+    return host.lowercase(Locale.ROOT)
+}
 
 internal fun readUtf8BodyBounded(input: InputStream, maxBytes: Int = MAX_SYNC_RESPONSE_BYTES): String {
     require(maxBytes > 0) { "maxBytes must be positive" }
@@ -148,7 +170,10 @@ class Settings(context: Context) {
 
 /** Minimal HTTP sync client (SYNC-2). Uses HttpURLConnection — no extra deps. */
 class SyncClient(private val s: Settings, private val hostOverride: String? = null) {
-    private fun base() = "http://${hostOverride ?: s.host}:${s.port}/api"
+    private fun base(): String {
+        val host = normalizeSyncHostOrNull(hostOverride ?: s.host) ?: throw IOException("invalid sync host")
+        return "http://$host:${s.port}/api"
+    }
 
     private fun req(method: String, path: String, body: String?, auth: Boolean): Pair<Int, String> {
         val bodyBytes = body?.toByteArray(Charsets.UTF_8)
@@ -196,8 +221,7 @@ class SyncClient(private val s: Settings, private val hostOverride: String? = nu
      * sync worker after a failed pairing attempt. */
     fun pairWithHost(host: String, code: String): Boolean {
         return try {
-            val h = host.trim()
-            if (h.isEmpty()) return false
+            val h = normalizeSyncHostOrNull(host) ?: return false
             val token = SyncClient(s, h).requestPairToken(code) ?: return false
             s.replacePairing(h, token)
             true

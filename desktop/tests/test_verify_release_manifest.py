@@ -32,6 +32,25 @@ def _build_fixture(tmp_path):
     )
 
 
+def _build_signed_android_fixture(
+    tmp_path,
+    *,
+    include_evidence=True,
+    evidence_body=b"Signer #1 certificate SHA-256 digest: abc123\n",
+):
+    (tmp_path / "ClipVault-Android-v1.6.0-release-signed.apk").write_bytes(b"signed apk")
+    if include_evidence:
+        (tmp_path / "ANDROID_APKSIGNER_VERIFY.txt").write_bytes(evidence_body)
+    release_candidate_manifest.build_manifest(
+        tmp_path,
+        kind="release",
+        platform="android",
+        version="1.6.0",
+        commit="123release",
+        signed=True,
+    )
+
+
 def test_verify_accepts_matching_dry_run_manifest(tmp_path):
     _build_fixture(tmp_path)
 
@@ -103,6 +122,62 @@ def test_verify_rejects_symlink_artifacts(tmp_path):
 
     with pytest.raises(ValueError, match="must not be a symlink"):
         verify_release_manifest.verify_manifest(tmp_path, expect_dry_run=True)
+
+
+def test_verify_signed_android_manifest_requires_apksigner_evidence(tmp_path):
+    _build_signed_android_fixture(tmp_path)
+
+    manifest = verify_release_manifest.verify_manifest(
+        tmp_path,
+        platform="android",
+        version="1.6.0",
+        commit="123release",
+        require_signed=True,
+    )
+
+    assert manifest["signed"] is True
+    assert [row["name"] for row in manifest["artifacts"]] == [
+        "ANDROID_APKSIGNER_VERIFY.txt",
+        "ClipVault-Android-v1.6.0-release-signed.apk",
+    ]
+
+
+def test_verify_signed_android_manifest_uses_manifest_platform_for_evidence(tmp_path):
+    _build_signed_android_fixture(tmp_path, include_evidence=False)
+
+    with pytest.raises(ValueError, match="ANDROID_APKSIGNER_VERIFY.txt"):
+        verify_release_manifest.verify_manifest(
+            tmp_path,
+            version="1.6.0",
+            commit="123release",
+            require_signed=True,
+        )
+
+
+def test_verify_rejects_signed_android_manifest_without_apksigner_evidence(tmp_path):
+    _build_signed_android_fixture(tmp_path, include_evidence=False)
+
+    with pytest.raises(ValueError, match="ANDROID_APKSIGNER_VERIFY.txt"):
+        verify_release_manifest.verify_manifest(
+            tmp_path,
+            platform="android",
+            version="1.6.0",
+            commit="123release",
+            require_signed=True,
+        )
+
+
+def test_verify_rejects_empty_android_apksigner_evidence(tmp_path):
+    _build_signed_android_fixture(tmp_path, evidence_body=b"")
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        verify_release_manifest.verify_manifest(
+            tmp_path,
+            platform="android",
+            version="1.6.0",
+            commit="123release",
+            require_signed=True,
+        )
 
 
 def test_cli_returns_nonzero_for_mismatched_version(tmp_path, capsys):
