@@ -478,3 +478,36 @@ Issue #36 manual QA requirements.
 | # | Direction | Sources | Key finding | Decision |
 |---|---|---|---|---|
 | R67 | Android authenticated error-body boundary | RFC 9110 HTTP semantics (`https://www.rfc-editor.org/rfc/rfc9110`), Android `HttpURLConnection` reference (`https://developer.android.com/reference/java/net/HttpURLConnection`), OWASP API4:2023 unrestricted resource consumption (`https://owasp.org/API-Security/editions/2023/en/0xa4-unrestricted-resource-consumption/`) | HTTP status code semantics are available before an application consumes an optional response body, Android documents `disconnect()` as the connection cleanup boundary, and OWASP treats unbounded or unnecessary resource consumption as an API risk. ClipVault already bounds sync response bodies, but authenticated sync 401/403 responses were read before the permanent-auth-failure classifier ran; an oversized error body from a bad paired endpoint could therefore turn a known-bad bearer token into a generic retry path. | **Adopt now:** for authenticated sync requests, skip reading 401/403 response bodies and return the status immediately so `SyncAuthException` still clears the token and stops immediate WorkManager retries. Keep `/api/pair` and non-auth responses reading bodies as before, and keep 413/429/5xx on the existing retry path. This is local-first sync reliability hardening only; it does not change payload format, add telemetry/cloud relay, move network work into the IME, or satisfy Owner/manual LAN QA. |
+
+## Research log - round 34 (2026-07-04)
+
+Scope filter: serve v1.6/v1.7 threat-model release-evidence truthfulness only.
+Do not change runtime behavior, sync payload semantics, Android IME behavior,
+typed-text policy, analytics policy, signing authority, artifact publication
+semantics, or Issue #36 manual QA requirements.
+
+| # | Direction | Sources | Key finding | Decision |
+|---|---|---|---|---|
+| R68 | Threat-model sync transport boundary drift guard | Android `android:usesCleartextTraffic` manifest docs (`https://developer.android.com/guide/topics/manifest/application-element#usesCleartextTraffic`), Android Network Security Configuration cleartext docs (`https://developer.android.com/privacy-and-security/security-config`), Tailscale overview docs (`https://tailscale.com/docs/concepts/what-is-tailscale`) | Android documents that apps targeting API 28+ default cleartext traffic to disabled and must explicitly opt in when they need HTTP; Android also warns cleartext lacks confidentiality, authenticity, and tamper protection. Tailscale documents encrypted device-to-device connectivity over WireGuard. ClipVault's manifest and architecture already describe SYNC-2 as HTTP push/pull over LAN/Tailscale with explicit cleartext opt-in, but `THREAT_MODEL.md` still named the retired WS boundary and residual risk. | **Adopt now:** update `THREAT_MODEL.md` to name the current HTTP push/pull network boundary and record pure-LAN HTTP cleartext as the accepted residual risk, mitigated by pairing-token auth, Tailscale recommendation, and future P2 self-signed TLS + pinning. Extend `test_release_alignment.py` so the threat-model entrypoint cannot regress to the retired WS/FastAPI wording. This is docs/test truthfulness only; it does not change sync behavior, widen Android networking, move network work into the IME, sign artifacts, publish a release, or close Issue #36. |
+
+## Research log - round 35 (2026-07-04)
+
+Scope filter: serve v1.7 Android local-first sync reliability only. Do not
+change Android IME behavior, sync payload schema, runtime dependencies,
+typed-text policy, analytics policy, signing authority, artifact publication
+semantics, or Issue #36 manual QA requirements.
+
+| # | Direction | Sources | Key finding | Decision |
+|---|---|---|---|---|
+| R69 | Android outbound sync push request-body budget | PouchDB replication API docs (`https://pouchdb.com/api.html`), Apache CouchDB replicator configuration docs (`https://docs.couchdb.org/en/stable/config/replicator.html`), Android `HttpURLConnection` reference (`https://developer.android.com/reference/kotlin/java/net/HttpURLConnection`), MDN HTTP 413 Content Too Large (`https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/413`), Android WorkManager retry/backoff docs (`https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work`) | Local-first replication systems expose batch controls because batch size affects memory and request pressure. HTTP 413 means the request body exceeded the server limit, and WorkManager retry keeps rescheduling retryable work. ClipVault's desktop `/api/sync/push` already rejects bodies above 4 MiB, while Android previously batched by event count only; a burst of large but individually valid public outbox events could therefore create a body the desktop rejects, even though smaller sub-batches would sync successfully. | **Adopt now:** bound Android `sync-now` push request bodies before calling `/api/sync/push`. `SyncWorker` builds a JSON batch that fits a conservative local request budget, sends only that prefix, clears only the desktop-acked seqs, and continues with remaining rows in later loop iterations. Preserve at-least-once local-first delivery by including at least one event even when a single row exceeds the budget, instead of silently dropping or rewriting payloads. This keeps payload schema unchanged, adds no telemetry/cloud relay, and does not move network work into the IME. |
+
+## Research log - round 36 (2026-07-04)
+
+Scope filter: serve Android local unit-test reliability only. Do not change
+runtime dependencies, production sync behavior, Android IME behavior,
+typed-text policy, analytics policy, signing authority, artifact publication
+semantics, or Issue #36 manual QA requirements.
+
+| # | Direction | Sources | Key finding | Decision |
+|---|---|---|---|---|
+| R70 | Android host-JVM JSON test runtime | Android local unit-test docs (`https://developer.android.com/training/testing/local-tests`), Stack Overflow `JSONObject.put not mocked` discussion (`https://stackoverflow.com/questions/29402155/android-unit-test-not-mocked`), Maven Central `org.json:json` metadata (`https://repo.maven.apache.org/maven2/org/json/json/`) | Android local unit tests run on the workstation JVM with mockable `android.jar`; framework APIs are present but method bodies are removed, so unmocked Android SDK calls throw "not mocked". ClipVault's host-JVM sync batching tests intentionally exercise `JSONObject`/`JSONArray` serialization logic, and without a real JVM `org.json` implementation they fail before checking the sync budget behavior. | **Adopt now:** add pinned `testImplementation("org.json:json:20260522")` for the Android app module only. Keep it test-only so production still uses Android's platform `org.json` and APK/runtime dependency shape is unchanged. This is test infrastructure hardening only; it does not change sync payload semantics, add cloud relay/telemetry, move network work into the IME, or satisfy Owner/manual LAN QA. |

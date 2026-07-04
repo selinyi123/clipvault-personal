@@ -160,6 +160,11 @@
   HTTP push-pull rather than the retired WebSocket wording. `test_release_alignment.py`
   guards this product-spec entrypoint so future planning cannot reintroduce the
   stale protocol map.
+- `docs/THREAT_MODEL.md` now matches the same sync boundary: desktop to Android
+  is HTTP push/pull over LAN/Tailscale, and pure-LAN HTTP cleartext is recorded
+  as an accepted residual risk guarded by pairing token auth, Tailscale
+  recommendation, and future P2 self-signed TLS + pinning. `test_release_alignment.py`
+  guards this threat-model entrypoint against the retired WS wording.
 - This documentation/status gate is documentation/test truthfulness only; it does not
   change product runtime behavior, sign artifacts, create a GitHub Release, or
   close Issue #36.
@@ -209,6 +214,14 @@
   an oversized error body from masking token clearing behind a generic IO retry,
   while `/api/pair`, 413, 429, and 5xx response handling keep the existing body
   and retry semantics.
+- Android outbound sync push now builds request-body-budgeted batches before
+  calling `/api/sync/push`. A large durable outbox is sent as multiple bounded
+  prefixes; only desktop-acked seqs are cleared, so remaining rows stay queued
+  instead of wedging WorkManager retries behind one oversized request.
+- Android app host-JVM tests now include a pinned test-only `org.json:json`
+  dependency. `SyncPushBatchTest` exercises real `JSONObject`/`JSONArray`
+  serialization on the workstation JVM instead of Android's mockable
+  `android.jar` stubs; the dependency is not on the production runtime classpath.
 - The Android IME source-boundary host-JVM test now also forbids direct
   persistence/capture/core imports and calls from IME services. IME frontends
   must stay thin and go through the Runtime facade instead of reaching Room,

@@ -17,7 +17,7 @@
 
 ```text
 [Win 桌面进程] --(localhost REST)-- [本机浏览器 Web UI]     边界1：本机
-[Win 桌面进程] --(WS over LAN/Tailscale)-- [Android App]    边界2：网络
+[Win 桌面进程] --(HTTP push/pull over LAN/Tailscale)-- [Android App]    边界2：网络
 [Android App] --(同进程/Room)-- [IME 键盘]                  边界3：IME 隐私
 [桌面进程] --(文件系统)-- [Obsidian Vault]                   边界4：Vault 可能被第三方同步盘上传
 [桌面进程] --(git push)-- [GitHub 私库]                      边界5：出境，不可逆
@@ -53,7 +53,7 @@
 | 风险 | 接受理由 | 缓解 |
 |---|---|---|
 | SQLite 明文落盘 | 自用单机，全盘加密更合适 | 文档建议开 BitLocker / Android 默认 FBE |
-| 纯 LAN 模式 WS 明文 | 家庭网络 + 推荐走 Tailscale | P2 提供自签 TLS + 钉扎 |
+| 纯 LAN 模式 HTTP 明文 | 自用家庭/LAN + Android 端为当前 LAN 同步显式允许 cleartext；推荐走 Tailscale | 配对 token；P2 提供自签 TLS + 钉扎 |
 | Secret Guard 永远有漏网 | 模式匹配的本质局限 | 三道闸门 + 熵兜底 + purge runbook |
 | 释放流程被误点 | 单用户，自己负责 | 释放留审计字段，UI 二次确认 |
 

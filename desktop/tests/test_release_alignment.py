@@ -123,6 +123,37 @@ def test_product_spec_tracks_current_http_sync_runtime():
         assert stale_claim not in spec
 
 
+def test_threat_model_tracks_current_http_sync_boundary():
+    threat_model = _read("docs/THREAT_MODEL.md")
+    manifest = _read("android/app/src/main/AndroidManifest.xml")
+
+    assert "HTTP push/pull over LAN/Tailscale" in threat_model
+    assert "纯 LAN 模式 HTTP 明文" in threat_model
+    assert "配对 token" in threat_model
+    assert "P2 提供自签 TLS + 钉扎" in threat_model
+    assert "SYNC-2 uses plain HTTP" in manifest
+    assert 'android:usesCleartextTraffic="true"' in manifest
+
+    for stale_claim in (
+        "WS over LAN/Tailscale",
+        "纯 LAN 模式 WS 明文",
+        "FastAPI",
+        "OkHttp WebSocket",
+    ):
+        assert stale_claim not in threat_model
+
+
+def test_research_log_rounds_and_ids_are_unique():
+    research = _read("docs/RESEARCH_AND_ROADMAP.md")
+
+    rounds = re.findall(r"(?m)^## Research log - round (\d+) ", research)
+    research_ids = re.findall(r"(?m)^\| (R\d+) \|", research)
+
+    assert len(rounds) == len(set(rounds))
+    assert len(research_ids) == len(set(research_ids))
+    assert "R69 | Android outbound sync push request-body budget" in research
+
+
 def test_panel_candidate_tabs_helper_and_test_exist():
     base = _ROOT / "android/app/src"
     assert (base / "main/kotlin/com/clipvault/app/ime/PanelCandidateTabs.kt").exists()
@@ -486,6 +517,8 @@ def test_stability_plan_defines_v1_7_exit_criteria_without_release_overclaim():
         "Not stable if any typed-text logging, implicit save, Android production log payload interpolation",
         "auth-failure response-body skipping",
         "auth-failure bodies can mask token clearing",
+        "outbound push request-body budgeting",
+        "oversized push bodies can wedge WorkManager retries",
         "do not publish `v1.7.0` from this plan alone.",
         "Treat blocked Owner/manual rows as incomplete",
     ):
