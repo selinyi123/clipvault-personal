@@ -124,6 +124,16 @@ def test_verify_rejects_symlink_artifacts(tmp_path):
         verify_release_manifest.verify_manifest(tmp_path, expect_dry_run=True)
 
 
+def test_verify_rejects_nested_artifact_directories(tmp_path):
+    _build_fixture(tmp_path)
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "unexpected.txt").write_text("not covered by manifest\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unexpected subdirectory"):
+        verify_release_manifest.verify_manifest(tmp_path, expect_dry_run=True)
+
+
 def test_verify_signed_android_manifest_requires_apksigner_evidence(tmp_path):
     _build_signed_android_fixture(tmp_path)
 

@@ -23,6 +23,7 @@ from clipvault.sync.pairing import Pairing, hash_token
 
 _SUGGEST_WINDOW_DAYS = 30
 _DEVICE_ID_RE = re.compile(r"^[0-9A-Za-z_-]{1,80}$")
+_DEVICE_NAME_MAX_CHARS = 80
 _SYNC_PUSH_EVENT_LIMIT = 100
 
 
@@ -61,6 +62,21 @@ def _memory_dict(m) -> dict:
 
 def _bad_param(name: str, message: str) -> tuple[int, dict]:
     return 400, {"error": {"code": "bad_request", "message": f"{name}: {message}"}}
+
+
+def _normalize_device_name(value) -> str:
+    if value is None:
+        return "device"
+    if not isinstance(value, str):
+        raise ValueError("device_name must be a string")
+    name = value.strip()
+    if not name:
+        return "device"
+    if len(name) > _DEVICE_NAME_MAX_CHARS:
+        raise ValueError(f"device_name must be at most {_DEVICE_NAME_MAX_CHARS} characters")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        raise ValueError("device_name must not contain control characters")
+    return name
 
 
 def _int_param(params: dict, name: str, default: int, *, min_value: int, max_value: int) -> int:
@@ -288,11 +304,14 @@ class Api:
     def pair(self, body: dict) -> tuple[int, dict]:
         code = str(body.get("code", ""))
         device_id = body.get("device_id")
-        device_name = body.get("device_name", "device")
         if not isinstance(device_id, str) or not device_id:
             return 400, {"error": {"code": "bad_request", "message": "device_id required"}}
         if not _DEVICE_ID_RE.fullmatch(device_id):
             return 400, {"error": {"code": "bad_request", "message": "device_id must use 1-80 URL-safe characters"}}
+        try:
+            device_name = _normalize_device_name(body.get("device_name"))
+        except ValueError as exc:
+            return 400, {"error": {"code": "bad_request", "message": str(exc)}}
         if self.pairing.is_rate_limited():
             return 429, {"error": {"code": "rate_limited", "message": "too many attempts, try again shortly"}}
         token = self.pairing.redeem(code)
