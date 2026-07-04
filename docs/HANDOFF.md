@@ -95,6 +95,11 @@
   artifact directories before `gh release create`. This keeps downloaded
   artifact handoff verification hard-failing immediately before draft release
   asset upload.
+- The draft GitHub Release job now downloads only the two expected release
+  artifacts by explicit artifact name and stages files only from those two
+  verified flat directories. `test_release_alignment.py` guards against
+  returning to a download-all/stage-all shape that could sweep an unverified
+  future workflow artifact into a draft release.
 - Draft release asset staging now fails if two downloaded artifact files would
   map to the same final GitHub Release asset name, preventing a local overwrite
   before `gh release create`.

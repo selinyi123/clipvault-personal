@@ -310,16 +310,33 @@ def test_draft_release_reverifies_downloaded_artifacts_before_release_creation()
     workflow = _read(".github/workflows/release.yml")
     draft = _workflow_job_block(workflow, "draft-github-release")
 
-    download = draft.index("Download release artifacts")
+    download_windows = draft.index("Download Windows release artifacts")
+    download_android = draft.index("Download Android signed release artifacts")
     verify = draft.index("Verify downloaded release artifacts")
     create = draft.index("Create draft GitHub Release")
-    assert download < verify < create
+    assert download_windows < verify < create
+    assert download_android < verify < create
 
+    assert "name: clipvault-windows-release-artifacts" in draft
+    assert "path: release-artifacts/clipvault-windows-release-artifacts" in draft
     assert "--artifact-dir release-artifacts/clipvault-windows-release-artifacts" in draft
     assert "--platform windows" in draft
+    assert "name: clipvault-android-signed-release-artifacts" in draft
+    assert "path: release-artifacts/clipvault-android-signed-release-artifacts" in draft
     assert "--artifact-dir release-artifacts/clipvault-android-signed-release-artifacts" in draft
     assert "--platform android" in draft
     assert "--require-signed" in draft
+
+
+def test_draft_release_stages_only_verified_named_artifact_directories():
+    workflow = _read(".github/workflows/release.yml")
+    draft = _workflow_job_block(workflow, "draft-github-release")
+
+    assert "artifact_dirs=(" in draft
+    assert "release-artifacts/clipvault-windows-release-artifacts" in draft
+    assert "release-artifacts/clipvault-android-signed-release-artifacts" in draft
+    assert 'find "${dir}" -maxdepth 1 -type f -print0' in draft
+    assert "find release-artifacts -type f" not in draft
 
 
 def test_draft_release_staging_fails_on_duplicate_asset_names():
