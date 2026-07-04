@@ -18,21 +18,57 @@ class ImeSourceBoundaryTest {
     )
 
     @Test
-    fun imePackageDoesNotImportNetworkSyncWorkOrLoggingPaths() {
+    fun imePackageStaysThinAndDoesNotBypassRuntimePrivacyBoundary() {
         assertTrue("IME source directory is missing: $imeSourceDir", Files.isDirectory(imeSourceDir))
 
         val blockedPatterns = listOf(
             BlockedPattern(
+                Regex("""^\s*import\s+com\.clipvault\.app\.ClipVaultApp\b"""),
+                "IME services must not reach the application database singleton directly",
+            ),
+            BlockedPattern(
+                Regex("""^\s*import\s+com\.clipvault\.app\.(capture|data)(\.|$)"""),
+                "capture/data persistence belongs behind the Runtime facade",
+            ),
+            BlockedPattern(
+                Regex("""^\s*import\s+com\.clipvault\.core(\.|$)"""),
+                "IME services must not bypass Runtime/Capture privacy gates with direct core scanning",
+            ),
+            BlockedPattern(
                 Regex("""^\s*import\s+com\.clipvault\.app\.sync(\.|$)"""),
                 "project sync imports belong outside IME services",
+            ),
+            BlockedPattern(
+                Regex("""^\s*import\s+androidx\.room(\.|$)"""),
+                "Room access belongs behind the Runtime facade, not in IME services",
             ),
             BlockedPattern(
                 Regex("""^\s*import\s+androidx\.work\."""),
                 "WorkManager scheduling belongs outside IME services",
             ),
             BlockedPattern(
+                Regex("""^\s*import\s+android\.content\.SharedPreferences\b"""),
+                "IME services must not add direct preference persistence paths",
+            ),
+            BlockedPattern(
                 Regex("""^\s*import\s+(android\.net|java\.net|javax\.net|okhttp3|retrofit2|io\.ktor)\."""),
                 "network imports belong outside IME services",
+            ),
+            BlockedPattern(
+                Regex("""^\s*import\s+(java\.io|java\.nio\.file)\."""),
+                "file persistence belongs outside IME services",
+            ),
+            BlockedPattern(
+                Regex("""\b(ClipVaultApp|AppDatabase|ClipDao|OutboxDao|MemoryDao|ClipEntity|OutboxEntity|MemoryEntity)\b"""),
+                "IME services must not touch database types directly",
+            ),
+            BlockedPattern(
+                Regex("""\b(Capture\.ingest|SecretGuard\.scan|Classifier\.classify|Normalize\.)\b"""),
+                "IME services must not bypass Runtime/Capture privacy gates",
+            ),
+            BlockedPattern(
+                Regex("""\b(getSharedPreferences|openFileInput|openFileOutput|getDatabasePath|getExternalFilesDir)\s*\("""),
+                "IME services must not add direct local persistence calls",
             ),
             BlockedPattern(
                 Regex("""\b(java|javax)\.net\."""),
