@@ -329,6 +329,28 @@ def test_gh_command_guard_rejects_write_operations(args):
         release_readiness._assert_read_only_gh(args)
 
 
+@pytest.mark.parametrize("args", [
+    ["gh", "api", "repos/owner/repo/issues/36", "-X", "PATCH"],
+    ["gh", "api", "repos/owner/repo/issues/36", "--method=PATCH"],
+    ["gh", "api", "repos/owner/repo/actions/workflows/1/dispatches", "-f", "ref=main"],
+    ["gh", "api", "repos/owner/repo/actions/workflows/1/dispatches", "-F", "ref=main"],
+    ["gh", "api", "repos/owner/repo/actions/workflows/1/dispatches", "--field", "ref=main"],
+    ["gh", "api", "repos/owner/repo/issues/36", "--raw-field", "state=closed"],
+    ["gh", "api", "repos/owner/repo/releases", "--input", "release.json"],
+])
+def test_gh_command_guard_rejects_write_capable_api_flags(args):
+    with pytest.raises(ValueError, match="write-capable gh api flag"):
+        release_readiness._assert_read_only_gh(args)
+
+
+@pytest.mark.parametrize("args", [
+    ["gh", "api", "repos/owner/repo/branches/main", "--jq", ".commit.sha"],
+    ["gh", "api", "repos/owner/repo/actions/runs?per_page=10"],
+])
+def test_gh_command_guard_allows_release_readiness_api_reads(args):
+    release_readiness._assert_read_only_gh(args)
+
+
 def test_text_renderer_marks_blocked_gates():
     report = {
         "repo": "owner/repo",

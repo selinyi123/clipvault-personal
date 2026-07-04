@@ -35,6 +35,15 @@ READ_ONLY_GH_SUBCOMMANDS = {
     ("run", "list"),
     ("secret", "list"),
 }
+WRITE_CAPABLE_GH_API_FLAGS = {
+    "-X",
+    "--method",
+    "-F",
+    "--field",
+    "-f",
+    "--raw-field",
+    "--input",
+}
 
 
 @dataclass(frozen=True)
@@ -74,6 +83,14 @@ def _assert_read_only_gh(args: list[str]) -> None:
         raise ValueError("release readiness runner only supports gh commands")
     if len(args) < 2:
         raise ValueError("missing gh subcommand")
+
+    if args[1] == "api":
+        for arg in args[2:]:
+            flag = arg.split("=", 1)[0]
+            if flag in WRITE_CAPABLE_GH_API_FLAGS:
+                raise ValueError(
+                    f"refusing write-capable gh api flag in read-only release readiness check: {arg}"
+                )
 
     command = tuple(args[1:3])
     if command in READ_ONLY_GH_SUBCOMMANDS:
