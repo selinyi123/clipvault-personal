@@ -107,7 +107,12 @@ object SyncScheduler {
         val req = OneTimeWorkRequestBuilder<SyncWorker>()
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .build()
-        WorkManager.getInstance(context).enqueueUniqueWork("sync-now", ExistingWorkPolicy.REPLACE, req)
+        // APPEND_OR_REPLACE keeps an in-flight sync from being cancelled by a
+        // burst of explicit saves. SyncWorker drains the durable outbox and
+        // exits quickly when there is no work left, so a queued duplicate is a
+        // safe reliability trade-off; cancellation would force push/pull to
+        // restart mid-transfer.
+        WorkManager.getInstance(context).enqueueUniqueWork("sync-now", ExistingWorkPolicy.APPEND_OR_REPLACE, req)
     }
 
     fun requestPushBestEffort(context: Context): Boolean {

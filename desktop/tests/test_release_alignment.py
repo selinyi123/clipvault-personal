@@ -474,6 +474,28 @@ def test_stability_plan_defines_v1_7_exit_criteria_without_release_overclaim():
         assert blocker_truth in plan
 
 
+def test_top_level_agents_file_matches_current_release_gate():
+    agents = _read("AGENTS.md")
+
+    assert "Issue #3 / the v1.5 gate is closed." in agents
+    assert "Issue #36 is the current v1.6.0 release" in agents
+    assert "Do not claim v1.6 stable" in agents
+    assert "Current main CI result is known." in agents
+    assert "Current main release-candidate dry run result is known." in agents
+    assert "Owner-controlled signed Windows/Android artifacts exist." in agents
+    assert "Manual QA checklist passes with evidence." in agents
+    assert "Final `v1.6.0` GitHub Release publication is Owner-approved." in agents
+    assert "Do not claim v1.7 stable until docs/STABILITY_PLAN_V1_6_V1_7.md" in agents
+    assert "Do not close Issue #36 without CI, signed artifact, final release, and manual" in agents
+
+    for stale_claim in (
+        "Current v1.5 blockers",
+        "Do not start v1.6 work until these are closed",
+        "Do not close Issue 3 without CI and manual QA evidence.",
+    ):
+        assert stale_claim not in agents
+
+
 def test_agent_workflows_status_anchor_avoids_stale_test_counts_and_overclaims():
     workflows = _read("docs/AGENT_WORKFLOWS.md")
 
