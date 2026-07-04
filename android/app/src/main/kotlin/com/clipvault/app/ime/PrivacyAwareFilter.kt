@@ -13,7 +13,7 @@ import android.view.inputmethod.EditorInfo
  */
 object PrivacyAwareFilter {
     fun shouldSuppressCandidates(info: EditorInfo?): Boolean =
-        info?.let { shouldSuppress(it.inputType, it.imeOptions) } ?: false
+        info?.let { shouldSuppress(it.inputType, it.imeOptions) } ?: true
 
     internal fun shouldSuppress(inputType: Int, imeOptions: Int): Boolean {
         // Incognito keyboard (IME_FLAG_NO_PERSONALIZED_LEARNING, API 26+): the

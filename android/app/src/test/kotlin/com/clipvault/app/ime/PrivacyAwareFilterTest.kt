@@ -8,6 +8,11 @@ import org.junit.Test
 
 class PrivacyAwareFilterTest {
     @Test
+    fun suppressesUnknownEditorInfo() {
+        assertTrue(PrivacyAwareFilter.shouldSuppressCandidates(null))
+    }
+
+    @Test
     fun suppressesNoSuggestionsTextFields() {
         val inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
 

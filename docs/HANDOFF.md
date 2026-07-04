@@ -84,6 +84,10 @@
 - Because Android permissions are app-scoped, v1.7 now guards the IME boundary
   with an Android host-JVM test instead of pretending the manifest can deny
   Internet to only `InputMethodService`.
+- `PrivacyAwareFilter.shouldSuppressCandidates(null)` now fails closed and hides
+  ClipVault IME candidates when Android does not provide editor metadata. This
+  preserves the privacy default for unknown fields and is covered by
+  `PrivacyAwareFilterTest.suppressesUnknownEditorInfo`.
 - `ImeSourceBoundaryTest` scans `android/app/src/main/kotlin/com/clipvault/app/ime`
   and fails if an IME source file imports project sync, WorkManager, network
   packages, socket/HTTP APIs, or Android logging.
@@ -171,10 +175,23 @@
   auto-close keywords directly before release-gate issue references, and prefer
   wording such as `Issue #36 remains open` while signed artifacts/manual QA are
   still missing.
+- `tools/check_pr_issue_hygiene.py` and the CI `Release-gate issue hygiene` job
+  now check PR title/body text and push commit messages for GitHub auto-close
+  keyword patterns before protected release-gate issue references. This guards
+  Issue #36 and Issue #82 against accidental metadata-triggered state changes;
+  it does not close issues, publish releases, complete Owner/manual QA, or
+  replace the release-readiness tools.
+- `PrivacyAwareFilter.shouldSuppressCandidates(null)` now fails closed. Unknown
+  Android `EditorInfo` suppresses ClipVault personal candidates instead of
+  showing them by default, and a host-JVM unit test covers that boundary. This
+  does not add typed-text logging, IME networking, analytics, or implicit saving.
 - Android sync requests now disable `HttpURLConnection` automatic redirects
   before adding `Authorization: Bearer ...`. ClipVault sync endpoints never
   redirect, so a 3xx response fails/retries instead of silently changing the
   authenticated request target.
+- Android host-JVM privacy boundary tests now guard app-wide network/tracking
+  shape: network imports/calls stay in `app/sync`, and Gradle files must not add
+  common analytics or crash-reporting SDK dependencies.
 - Android sync pull now validates `next_seq` before applying a returned page:
   a response with events or `has_more=true` must advance the cursor, while an
   empty terminal page may keep it unchanged. This prevents repeated-page loops

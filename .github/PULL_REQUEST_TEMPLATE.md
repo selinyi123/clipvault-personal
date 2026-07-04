@@ -43,9 +43,12 @@ python -m pytest -q --ignore=tests/test_watcher.py --ignore=tests/test_instance_
 
 ## Release-gate issue hygiene
 
-- [ ] If this PR references a release-gate issue, I avoided GitHub auto-close
-      keywords (`close`, `fix`, `resolve`) directly before an issue reference.
-      Use `Issue #36 remains open` style wording for release gates.
+- [ ] If this PR references a release-gate issue, the PR title/body avoid
+      GitHub auto-close keywords (`close`, `fix`, `resolve`) directly before
+      protected issue references.
+      Negative wording with those keywords can still be interpreted by GitHub.
+      Use `Issue #36 remains open` or `does not change issue state for #36 or
+      #82` style wording for release gates.
 
 ## 文档
 

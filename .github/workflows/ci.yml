@@ -11,6 +11,23 @@ permissions:
   contents: read
 
 jobs:
+  release-gate-issue-hygiene:
+    name: Release-gate issue hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Check release-gate issue references
+        run: python tools/check_pr_issue_hygiene.py --event-path "$GITHUB_EVENT_PATH"
+
   desktop:
     name: Desktop tests
     # Windows-only node: watcher + instance_lock use ctypes.WinDLL (user32/kernel32),

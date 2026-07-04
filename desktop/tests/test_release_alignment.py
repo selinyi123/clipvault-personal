@@ -324,11 +324,25 @@ def test_pull_request_template_warns_against_release_gate_auto_close_keywords():
 
     assert "Release-gate issue hygiene" in template
     assert "GitHub auto-close" in template
+    assert "Negative wording with those keywords can still be interpreted by GitHub" in template
     assert "Issue #36 remains open" in template
+    assert "does not change issue state for #36" in template
+    assert "PR title/body" in template
+    assert "tools/check_pr_issue_hygiene.py" not in template
     assert not re.search(
         r"(?i)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#\d+\b",
         template,
     )
+
+
+def test_ci_checks_pull_request_body_for_release_gate_issue_hygiene():
+    workflow = _read(".github/workflows/ci.yml")
+
+    assert "release-gate-issue-hygiene:" in workflow
+    assert "Release-gate issue hygiene" in workflow
+    assert "github.event_name == 'pull_request'" not in workflow
+    assert "python tools/check_pr_issue_hygiene.py --event-path" in workflow
+    assert (_ROOT / "tools/check_pr_issue_hygiene.py").exists()
 
 
 def test_windows_pyinstaller_workflows_bundle_desktop_resources():
