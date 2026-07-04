@@ -12,6 +12,8 @@ It does not replace the manual Android/IME/sync/Windows clipboard QA evidence.
 - The release-candidate dry run runs automatically on pushes to `main`; manual
   dispatch remains a fallback if the current-main run is missing, failed, or
   still queued.
+- Run `Release artifact build` only with `--ref main`; the workflow fails closed
+  if manually dispatched from any other branch or tag.
 
 ## 1. Confirm current main evidence
 
@@ -102,6 +104,10 @@ gh secret set ANDROID_RELEASE_KEY_PASSWORD `
 ```
 
 ## 4. Run the signed artifact workflow without creating a release
+
+The signed release workflow must run from the current `main` ref. It also checks
+that the requested `version` matches the source-tree desktop and Android version
+metadata before building artifacts.
 
 ```powershell
 gh workflow run "Release artifact build" `

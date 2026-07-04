@@ -204,6 +204,12 @@ def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
     assert "--draft" in workflow
     assert "validate-release-input:" in workflow
     assert "version must be a release tag like v1.6.0" in workflow
+    validate_input = _workflow_job_block(workflow, "validate-release-input")
+    assert 'if [[ "${GITHUB_REF_NAME:-}" != "main" ]]' in validate_input
+    assert "Release artifact build must run from main" in validate_input
+    assert validate_input.index("Release artifact build must run from main") < validate_input.index(
+        "version must be a release tag like v1.6.0"
+    )
     assert r"^v[0-9]+\.[0-9]+\.[0-9]+$" in workflow
     assert "needs: validate-release-input" in workflow
     assert "needs.validate-release-input.outputs.version" in workflow
@@ -223,6 +229,8 @@ def test_release_runbook_uses_live_main_evidence_commands():
 
     assert "gh run list" in runbook
     assert "gh workflow run \"Release candidate dry run\"" in runbook
+    assert "Release artifact build` only with `--ref main`" in runbook
+    assert "The signed release workflow must run from the current `main` ref" in runbook
     assert "CI_RUN_ID" in runbook
     assert "RELEASE_CANDIDATE_DRY_RUN_ID" in runbook
     assert not re.search(r"https://github\.com/[^)\s]+/actions/runs/\d+", runbook)
@@ -653,6 +661,8 @@ def test_stability_plan_defines_v1_7_exit_criteria_without_release_overclaim():
         "oversized push bodies can wedge WorkManager retries",
         "do not publish `v1.7.0` from this plan alone.",
         "Treat blocked Owner/manual rows as incomplete",
+        "release-artifact main-ref dispatch",
+        "signed release artifacts can be built from a non-`main` ref",
     ):
         assert blocker_truth in plan
 
