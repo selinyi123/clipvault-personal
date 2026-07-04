@@ -24,6 +24,18 @@ SYNC_PULL_EVENT_LIMIT = 100
 SYNC_PULL_RESPONSE_BYTES = 4 * 1024 * 1024
 
 
+class SyncPullEventTooLarge(ValueError):
+    """A single outbox event cannot fit within the pull response budget."""
+
+    def __init__(self, seq: int, event_bytes: int, max_bytes: int):
+        self.seq = seq
+        self.event_bytes = event_bytes
+        self.max_bytes = max_bytes
+        super().__init__(
+            f"sync event seq={seq} is {event_bytes} bytes, exceeds pull budget {max_bytes}"
+        )
+
+
 def clip_to_data(clip: Clip) -> dict:
     return {
         "id": clip.id, "content": clip.content, "content_hash": clip.content_hash,
@@ -313,6 +325,15 @@ def build_pull(conn, since_seq: int, limit: int = SYNC_PULL_EVENT_LIMIT,
             next_seq = event["seq"]
             continue
         event_bytes = _event_wire_size(event)
+        if event_bytes > max_bytes:
+            if events:
+                stopped_by_budget = True
+                break
+            log.error(
+                "sync pull event too large seq=%s bytes=%s max_bytes=%s",
+                event["seq"], event_bytes, max_bytes,
+            )
+            raise SyncPullEventTooLarge(event["seq"], event_bytes, max_bytes)
         if events and used_bytes + event_bytes > max_bytes:
             stopped_by_budget = True
             break

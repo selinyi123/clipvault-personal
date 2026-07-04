@@ -377,16 +377,49 @@ def test_h8_pull_response_byte_budget_pages_without_skipping(conn):
     first_seq = outbox.append("clip_new", {"content": "a" * 200, "content_hash": "pull-budget-1"}, when)
     second_seq = outbox.append("clip_new", {"content": "b" * 200, "content_hash": "pull-budget-2"}, when)
 
-    first = sync_engine.build_pull(conn, since_seq=0, max_bytes=10)
+    first_event_size = sync_engine._event_wire_size(outbox.list_since(0, limit=1)[0])
+    first = sync_engine.build_pull(conn, since_seq=0, max_bytes=first_event_size)
 
     assert [event["seq"] for event in first["events"]] == [first_seq]
     assert first["next_seq"] == first_seq
     assert first["has_more"] is True
 
-    second = sync_engine.build_pull(conn, since_seq=first["next_seq"], max_bytes=10)
+    second_event_size = sync_engine._event_wire_size(outbox.list_since(first["next_seq"], limit=1)[0])
+    second = sync_engine.build_pull(conn, since_seq=first["next_seq"], max_bytes=second_event_size)
     assert [event["seq"] for event in second["events"]] == [second_seq]
     assert second["next_seq"] == second_seq
     assert second["has_more"] is False
+
+
+def test_h8_pull_single_event_over_response_budget_fails_without_skipping(conn, caplog):
+    outbox = OutboxRepo(conn)
+    when = "2026-06-13T10:00:00Z"
+    seq = outbox.append("clip_new", {"content": "oversized-content", "content_hash": "pull-too-big"}, when)
+
+    with pytest.raises(sync_engine.SyncPullEventTooLarge) as exc_info:
+        sync_engine.build_pull(conn, since_seq=0, max_bytes=10)
+
+    assert exc_info.value.seq == seq
+    assert outbox.list_since(0, limit=1)[0]["seq"] == seq
+    assert "oversized-content" not in caplog.text
+
+
+def test_h8_pull_single_event_over_response_budget_returns_413(api, conn):
+    token = _pair(api)
+    outbox = OutboxRepo(conn)
+    when = "2026-06-13T10:00:00Z"
+    seq = outbox.append(
+        "clip_new",
+        {"content": "x" * sync_engine.SYNC_PULL_RESPONSE_BYTES, "content_hash": "pull-api-too-big"},
+        when,
+    )
+
+    status, body = api.sync_pull(token, {"since_seq": "0"})
+
+    assert status == 413
+    assert body["error"]["code"] == "sync_event_too_large"
+    assert f"seq={seq}" in body["error"]["message"]
+    assert outbox.list_since(0, limit=1)[0]["seq"] == seq
 
 
 def test_h8_push_gap_does_not_advance_ack(api, conn):
