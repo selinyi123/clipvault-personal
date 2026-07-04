@@ -16,10 +16,10 @@
 │                 ├─ Secret Guard (闸门A)       ├──► Backup Worker ──► GitHub 私库  │
 │                 └─ Rule Classifier           └──► Sync Server (闸门B 在出口)      │
 │                                                       ▲                          │
-│  FastAPI: REST + Web UI + WebSocket /sync ────────────┘                          │
+│  stdlib HTTPServer: REST + Web UI + HTTP sync ─────────┘                          │
 └──────────────────────────────────┬───────────────────────────────────────────────┘
                                    │ LAN / Tailscale（WireGuard 加密）
-                                   │ WebSocket + 配对 token
+                                   │ HTTP push/pull + 配对 token
 ┌──────────────────────────────────▼───────────────────────────────────────────────┐
 │                              Android（采集端 + 消费端）                            │
 │                                                                                  │
@@ -28,7 +28,7 @@
 │        ▼                                                                         │
 │  Capture Pipeline（Normalizer/Hash + Secret Guard 闸门A'）──► Room (本地缓存+outbox)│
 │        │                                                       ▲                 │
-│        └──────────────► Sync Client（WS + WorkManager 兜底）────┘                 │
+│        └──────────────► Sync Client（HTTP + WorkManager 兜底）──┘                 │
 │                                                                                  │
 │  ClipVault Keyboard Personal (IME)                                               │
 │   - 只读 Room 缓存出推荐与面板（绝不发网络请求/绝不记录按键流）                       │
@@ -83,11 +83,12 @@ desktop/
       writer.py      # Markdown 生成（合同 OBS-1）+ 原子写 + 幂等
     backup/
       github_backup.py  # JSONL 追加 + git commit/push + 退避重试（合同 GHB-1）
-    syncserver/
-      server.py      # WS /sync 端点（合同 SYNC-1）
+    sync/
+      engine.py      # HTTP push/pull 事件日志同步（合同 SYNC-2）
       pairing.py     # 一次性配对码 → 长期 token（哈希存储）
     api/
-      app.py         # FastAPI 组合根：REST（合同 API-1）+ 静态 Web UI
+      server.py      # stdlib HTTPServer：REST（合同 API-1）+ 静态 Web UI + sync routes
+      handlers.py    # endpoint 逻辑，直接单测
       webui/         # 单页极简 UI（原生 JS/htmx，不引前端框架）
     config.py        # config.toml 加载（合同 CFG-1）
     main.py          # 进程入口：单实例锁、线程编排、优雅退出
@@ -96,7 +97,7 @@ desktop/
 
 **进程模型**：单进程多线程。
 - 线程1：win32 消息泵（剪切板监听）
-- 线程2：uvicorn（REST + Web UI + WS 同步）
+- 线程2：stdlib HTTPServer（REST + Web UI + HTTP push/pull 同步）
 - 线程3：后台 worker（Obsidian 写入队列、GitHub 备份定时器）
 - 全部通过线程安全队列交接；SQLite 开 WAL，写操作串行经过 store 层单写锁。
 
@@ -108,12 +109,12 @@ desktop/
 android/
   app/        # Jetpack Compose：历史、搜索、配对、设置、同步状态
   core/       # Room schema、Clip 模型、normalize/hash、SecretGuard（Kotlin 移植）
-  sync/       # OkHttp WebSocket 客户端、outbox 排空、WorkManager 周期兜底
+  sync/       # HttpURLConnection 客户端、outbox 排空、WorkManager 周期兜底
   ime/        # ClipVaultKeyboardService (InputMethodService) + 面板 UI
 ```
 
 - **跨平台一致性**：normalize/hash、Secret Guard、分类规则在两端各有实现，但必须共同通过 `contracts/vectors/*.json` 测试向量（CONTRACTS §8）。向量文件是唯一仲裁。
-- **同步触发**：App 前台时保持 WS 长连；后台靠 WorkManager（15min 周期 + 充电/WiFi 约束可调）排空 outbox。不做常驻前台服务（自用手机省电优先）。
+- **同步触发**：App 前台可显式 HTTP 同步；后台靠 WorkManager（15min 周期 + 充电/WiFi 约束可调）排空 outbox。不做常驻前台服务（自用手机省电优先）。
 - **IME 进程边界**：IME 只依赖 core 的只读 DAO + 显式保存接口。代码评审门禁：ime/ 模块内不得出现网络依赖、不得出现按键内容持久化路径。
 
 ## 5. 关键数据流
@@ -126,7 +127,7 @@ Ctrl+C → Watcher 捕获 → normalize/hash → 去重（命中则 times_seen+1
 → 分类 → clips 落库 + FTS → outbox 记 clip_new 事件
 → Obsidian Writer（按类型目录写 .md，记 obsidian_path）
 → backup_queue 入队（worker 定时 JSONL+push）
-→ Android 在线：WS 推送；离线：下次连上 pull
+→ Android 在线：HTTP push/pull 同步；离线：下次连上 pull
 → IME 面板"电脑同步"页可见 → 一键粘贴
 ```
 
@@ -134,7 +135,7 @@ Ctrl+C → Watcher 捕获 → normalize/hash → 去重（命中则 times_seen+1
 
 ```text
 分享/手动保存 → Android Capture Pipeline（normalize + Secret Guard）
-→ Room 落库 + outbox → WS 推到桌面（离线则排队）
+→ Room 落库 + outbox → HTTP push 到桌面（离线则排队）
 → 桌面 ingest：去重 → 再过 Secret Guard（桌面规则可能更新）→ 分类
 → Obsidian + backup_queue（同 5.1 尾部）
 → ack 回 Android，标记已同步
@@ -150,7 +151,7 @@ Ctrl+C → Watcher 捕获 → normalize/hash → 去重（命中则 times_seen+1
 
 ## 6. 同步设计要点（协议细节见 CONTRACTS §5）
 
-- **事件日志复制**：每台设备维护自增 `seq` 的 outbox；对端记录"我已应用到对方的哪个 seq"。重连后从游标续传。天然幂等：按 `(origin_device, seq)` 去重，clip_new 再按 content_hash 去重。
+- **事件日志复制**：每台设备维护自增 `seq` 的 outbox；对端记录"我已应用到对方的哪个 seq"。重连后通过 HTTP push/pull 从游标续传。天然幂等：按 `(origin_device, seq)` 去重，clip_new 再按 content_hash 去重。
 - **冲突**：只有元数据标志（pin/favorite/delete）可能冲突 → 字段级 LWW（按事件时间戳），相同时间戳 delete 赢。内容本身永不冲突（追加型 + 哈希去重）。
 - **拓扑**：星型，桌面是 hub。v1 只有一台 Android，协议按多设备设计（device_id 区分）但不实现多端转发。
 - **安全**：配对 = 桌面 Web UI 生成一次性 8 位码（5 分钟有效）→ Android 提交换取 32 字节长期 token → 桌面只存 token 的 sha256。传输加密依赖 Tailscale（WireGuard）；纯 LAN 模式明文是已接受的残余风险（THREAT_MODEL §5），P2 提供自签 TLS + 证书钉扎。
@@ -182,7 +183,7 @@ Ctrl+C → Watcher 捕获 → normalize/hash → 去重（命中则 times_seen+1
 | GitHub 推送失败 | 队列保留 + 退避，UI 红灯 |
 | 桌面离线 | Android outbox 累积，重连续传 |
 | Android 进程被杀 | outbox 持久化在 Room；WorkManager 周期兜底 |
-| WS 半开连接 | 30s ping/pong，超时重连 |
+| HTTP 同步请求失败/超时 | Android outbox 持久化保留，WorkManager 后续重试 |
 | 超大内容（>1MB） | 拒收 + 通知（CFG 可调上限） |
 | 时钟漂移 | 排序靠 ULID/seq，不靠墙钟；LWW 冲突极少且后果轻（仅标志位） |
 

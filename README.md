@@ -9,11 +9,11 @@
 
 非商业 · 单用户 · 本地优先。架构师：Claude Fable 5 ｜ 实现：Claude Fable 5（原 Codex 故障接管）｜ 最终裁决：Owner。
 
-**状态**：源码树 `__version__` = **1.6.0**（2026-06-28 由 1.5.16 bump，反映累计加固；尚未切二进制 Release）；桌面端 **166** 项测试在 Linux/CI 跑通（另有 4 项 Windows-only，共 170），
-可独立日用；Android core 与桌面**跨平台一致性已证（VEC-1 100/100）**，app 整体编译产出已签名 APK。
-最新**已发布**二进制为 [v1.5.10](https://github.com/selinyi123/clipvault-personal/releases/tag/v1.5.10)（main 领先于它）。
-v1.5 release gate（Issue #3）已关闭；其后 main 上并入 v1.6–v1.8 安全/同步/隐私加固支线（见 [docs/HANDOFF.md](docs/HANDOFF.md)）。
-唯一长期剩余：Android 真机体验确认（需设备）。
+**状态**：源码树 `__version__` = **1.6.0**（2026-06-28 由 1.5.16 bump，反映累计加固），但 **v1.6.0 二进制尚未发布**。
+当前 main 的自动化证据以 GitHub Actions 的当前 main CI 与 release-candidate dry run 为准；本地测试数量会随稳定化补丁变化，请以实际命令输出为准。
+最新**已发布**二进制仍为 [v1.5.10](https://github.com/selinyi123/clipvault-personal/releases/tag/v1.5.10)（main 领先于它）。
+v1.6 release gate（Issue #36）仍需 Owner-controlled signing secrets、signed Windows/Android artifacts、manual device QA 和最终 `v1.6.0` GitHub Release publication；完成前不得宣称 v1.6 稳定发布。
+v1.7 仅作为稳定化/隐私/同步可靠性规划线推进，不绕过 v1.6 release gate（见 [docs/STABILITY_PLAN_V1_6_V1_7.md](docs/STABILITY_PLAN_V1_6_V1_7.md) 与 [docs/HANDOFF.md](docs/HANDOFF.md)）。
 
 ---
 
@@ -82,7 +82,7 @@ App 内填桌面 IP + 码完成配对。详见 [android/README.md](android/READM
 clipvault/
   desktop/      Python 桌面主节点（零运行时依赖：stdlib + ctypes）
     clipvault/  core·store·pipeline·watcher·obsidian·backup·sync·api(+webui)
-    tests/      170 项 pytest（166 Linux/CI + 4 Windows-only）
+    tests/      pytest 回归套件（具体数量以当前命令输出为准）
     packaging/  PyInstaller 入口
   android/      Kotlin
     core/       与桌面对应的 normalize/classify/secret-guard（通过 VEC-1）
@@ -97,9 +97,8 @@ clipvault/
 ```powershell
 # 桌面测试
 cd desktop; python -m venv .venv; .\.venv\Scripts\python -m pip install pytest
-.\.venv\Scripts\python -m pytest -q                    # 170 passed (Windows)
-# Linux/CI（无 ctypes.WinDLL）跳过 4 项 Windows-only：
-#   python -m pytest -q --ignore=tests/test_watcher.py --ignore=tests/test_instance_lock.py  # 166 passed
+.\.venv\Scripts\python -m pytest -q                    # 以当前输出为准
+# Linux/CI 会根据平台能力自动跳过 Windows-only 用例；不要把旧测试数量写成发布证据。
 
 # 桌面打包（单文件 exe）
 .\.venv\Scripts\python -m pip install pyinstaller
