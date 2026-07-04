@@ -188,6 +188,12 @@
   Existing UI-application guards still remain after the Runtime read; the new
   guard avoids unnecessary local candidate reads when Android switches from an
   ordinary editor to a sensitive editor while a worker is in flight.
+- `test_android_privacy_manifest.py` now also guards the manifest shape for the
+  two ClipVault IME services: both must remain exported system IME services
+  protected by `android.permission.BIND_INPUT_METHOD`, expose only
+  `android.view.InputMethod`, and keep `android.view.im` metadata pointed at the
+  expected IME config XML. This is a static exposure regression gate only; it
+  does not change IME runtime behavior or satisfy Owner/manual device QA.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 

@@ -46,6 +46,62 @@ def test_android_data_extraction_rules_exclude_cloud_and_device_transfer():
         assert ("root", ".") in excludes
 
 
+def _manifest_services() -> dict[str, ET.Element]:
+    manifest = _read_xml("android/app/src/main/AndroidManifest.xml")
+    app = manifest.find("application")
+    assert app is not None
+
+    services = app.findall("service")
+    return {service.attrib[_android_attr("name")]: service for service in services}
+
+
+def _intent_actions(service: ET.Element) -> list[str]:
+    return [
+        action.attrib[_android_attr("name")]
+        for intent_filter in service.findall("intent-filter")
+        for action in intent_filter.findall("action")
+    ]
+
+
+def _metadata_by_name(service: ET.Element) -> dict[str, ET.Element]:
+    return {
+        metadata.attrib[_android_attr("name")]: metadata
+        for metadata in service.findall("meta-data")
+    }
+
+
+def test_android_ime_services_are_bound_only_as_system_input_methods():
+    expected_ime_services = {
+        ".ime.ClipVaultPanelImeService": "@xml/ime_panel_config",
+        ".ime.ClipVaultFullKeyboardService": "@xml/ime_full_config",
+    }
+    services = _manifest_services()
+
+    bind_input_services = {
+        name
+        for name, service in services.items()
+        if service.attrib.get(_android_attr("permission"))
+        == "android.permission.BIND_INPUT_METHOD"
+    }
+    assert bind_input_services == set(expected_ime_services)
+
+    for name, config_resource in expected_ime_services.items():
+        service = services[name]
+
+        assert service.attrib[_android_attr("exported")] == "true"
+        assert service.attrib[_android_attr("permission")] == "android.permission.BIND_INPUT_METHOD"
+
+        intent_filters = service.findall("intent-filter")
+        assert len(intent_filters) == 1
+        assert _intent_actions(service) == ["android.view.InputMethod"]
+        assert intent_filters[0].findall("category") == []
+        assert intent_filters[0].findall("data") == []
+
+        metadata = _metadata_by_name(service)
+        assert set(metadata) == {"android.view.im"}
+        assert metadata["android.view.im"].attrib[_android_attr("resource")] == config_resource
+
+
 def _read_text(rel: str) -> str:
     return (_ROOT / rel).read_text(encoding="utf-8")
 
