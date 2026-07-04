@@ -28,6 +28,15 @@
   claim v1.7 stable, does not publish `v1.7.0`, does not close Issue #36, and
   does not treat unsigned candidate artifacts as signed/final release evidence.
   Scope note: this does not claim v1.7 stable.
+- `tools/field_test_evidence.py` is a local Issue #82 v1.7 field-test evidence
+  helper. It generates a JSON template, can use `--verify-artifacts` to validate
+  downloaded Windows and Android candidate directories with the dry-run manifest
+  verifier, and validates target commit, CI run, release-candidate run,
+  candidate artifact names, Android debug APK install package,
+  downloaded-manifest verification, Windows smoke rows, and Android IME/privacy
+  smoke rows before rendering a Markdown issue comment draft. It does not
+  download artifacts, install apps, run device QA, post to GitHub, sign or
+  publish releases, close Issue #82, close Issue #36, or claim v1.7 stable.
 - `docs/STABILITY_PLAN_V2_0.md` now defines v2.0 stable as the keyboard
   mainline dual-IME entrypoint stability milestone: ClipVault Panel plus
   ClipVault Keyboard Lab in the same APK with automated, CI, and Owner/manual
