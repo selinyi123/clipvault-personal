@@ -354,7 +354,16 @@ class Api:
             since = _int_param(params, "since_seq", 0, min_value=0, max_value=9_223_372_036_854_775_807)
         except ValueError as exc:
             return _bad_param("since_seq", str(exc))
-        result = sync_engine.build_pull(self.conn, since)
+        try:
+            result = sync_engine.build_pull(self.conn, since)
+        except sync_engine.SyncPullEventTooLarge as exc:
+            return 413, {"error": {
+                "code": "sync_event_too_large",
+                "message": (
+                    f"sync event seq={exc.seq} exceeds the pull response budget "
+                    f"({exc.event_bytes}>{exc.max_bytes} bytes)"
+                ),
+            }}
         self.peers.set_my_acked(device_id, since)
         self.peers.touch_last_seen(device_id, _now_iso())
         return 200, result

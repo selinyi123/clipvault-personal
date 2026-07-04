@@ -136,6 +136,20 @@
 - This README/status gate is documentation/test truthfulness only; it does not
   change product runtime behavior, sign artifacts, create a GitHub Release, or
   close Issue #36.
+- Panel IME explicit clipboard saves are now guarded by a host-JVM source-shape
+  test: `saveClipboard()` must check the active `ImePrivacySession` before
+  reading the clipboard and must re-check inside the worker before calling
+  `runtime.saveExplicit(...)`. This is an IME privacy regression guard only; it
+  does not change runtime behavior, typed-text policy, sync behavior, release
+  state, or the explicit user action boundary.
+- Desktop sync pull now fails closed with a bounded HTTP 413
+  `sync_event_too_large` error when the first sendable outbox event cannot fit
+  within the configured pull response byte budget. It does not advance cursors,
+  skip, delete, or acknowledge the oversized event; normal multi-event
+  pagination still returns preceding events before the blocking oversized item.
+  This is sync compatibility hardening only; it does not change normal payload
+  semantics, Android IME behavior, typed-text policy, release state, or
+  publication semantics.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 
