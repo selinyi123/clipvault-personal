@@ -747,8 +747,27 @@ def test_v1_7_field_test_packages_use_release_candidates_without_stable_overclai
     workflows = _read("docs/AGENT_WORKFLOWS.md")
     handoff = _read("docs/HANDOFF.md")
     workflow = _read(".github/workflows/release-candidate.yml")
+    script = _ROOT / "tools/field_test_evidence.py"
 
+    assert script.exists()
+    script_text = script.read_text(encoding="utf-8")
+    assert "does not download artifacts" in script_text
+    assert "--verify-artifacts" in script_text
+    assert "verify_release_manifest.py" in script_text
+    assert "expect_dry_run=True" in script_text
+    assert "field_test_ready" in script_text
+    assert "--verify-artifacts" in field_test
+    assert "artifact-only Issue #82" in field_test
+    assert "expected to remain `BLOCKED`" in field_test
+    assert "tools/field_test_evidence.py `" in field_test
+    assert "--windows-dir field-test-v1.7/windows" in field_test
+    assert "--android-dir field-test-v1.7/android" in field_test
+    assert "device QA, post to GitHub" in field_test
+    assert "python tools/field_test_evidence.py --write-template field-test-v1.7.json" in field_test
+    assert "python tools/field_test_evidence.py --input field-test-v1.7.json --no-fail" in field_test
+    assert "python tools/field_test_evidence.py --input field-test-v1.7.json --output field-test-v1.7-issue-comment.md" in field_test
     assert "docs/V1_7_FIELD_TEST_PACKAGES.md" in plan
+    assert "tools/field_test_evidence.py --verify-artifacts" in plan
     assert "Release candidate dry run" in field_test
     assert "clipvault-windows-release-candidate" in field_test
     assert "clipvault-android-release-candidate" in field_test
@@ -775,8 +794,15 @@ def test_v1_7_field_test_packages_use_release_candidates_without_stable_overclai
     assert "docs/V1_7_FIELD_TEST_PACKAGES.md" in handoff
     assert "does not claim v1.7 stable" in handoff
     assert "unsigned candidate artifacts as signed/final release evidence" in handoff
+    assert "tools/field_test_evidence.py" in handoff
+    assert "can use `--verify-artifacts`" in handoff
+    assert "run device QA, post to GitHub" in handoff
     assert "R86 | v1.7 candidate package upload lane" in research
+    assert "R87 | Structured v1.7 field-test evidence" in research
+    assert "can use `--verify-artifacts`" in research
+    assert "dry-run manifest/checksum verifier" in research
     assert "candidate-only upload/download/manifest-verification path" in research
+    assert "does not download artifacts, install apps, run device QA" in research
 
 
 def test_stability_plan_defines_v2_0_exit_criteria_without_release_overclaim():

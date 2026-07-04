@@ -91,6 +91,54 @@ python scripts/verify_release_manifest.py `
   --expect-dry-run
 ```
 
+## Evidence helper
+
+After the Owner or agent downloads the artifacts, use the local helper to
+machine-check both candidate directories and render an artifact-only Issue #82
+comment draft. This draft is expected to remain `BLOCKED` because device smoke
+rows still require Owner observation:
+
+```powershell
+python tools/field_test_evidence.py `
+  --verify-artifacts `
+  --windows-dir field-test-v1.7/windows `
+  --android-dir field-test-v1.7/android `
+  --target-commit $targetSha `
+  --ci-run-url "CI_RUN_URL" `
+  --candidate-run-url "RELEASE_CANDIDATE_RUN_URL" `
+  --tester "OWNER_OR_AGENT_NAME" `
+  --tested-at "ISO_8601_TIMESTAMP" `
+  --output field-test-v1.7-artifacts-comment.md `
+  --no-fail
+```
+
+After the Owner runs the real-device smoke checks, use the same helper to
+prepare a complete Issue #82 comment:
+
+```powershell
+python tools/field_test_evidence.py --write-template field-test-v1.7.json
+python tools/field_test_evidence.py --input field-test-v1.7.json --no-fail
+python tools/field_test_evidence.py --input field-test-v1.7.json --output field-test-v1.7-issue-comment.md
+gh issue comment 82 `
+  --repo selinyi123/clipvault-personal `
+  --body-file field-test-v1.7-issue-comment.md
+```
+
+`tools/field_test_evidence.py --verify-artifacts` calls the same manifest and
+checksum verifier used above with `--expect-dry-run`, then marks only the
+artifact-verification rows as `pass`. The helper also validates that any full
+report names the target commit, CI run, release-candidate run, Windows
+candidate artifact, Android candidate artifact, Android debug APK install
+package, downloaded-manifest verification, Windows smoke results, and Android
+IME/privacy smoke results. It does not download artifacts, install apps, run
+device QA, post to GitHub, sign or publish releases, close Issue #82, close
+Issue #36, or claim v1.7 stable.
+Scope note: it does not download artifacts, install apps, run device QA.
+All required rows must be `pass` with observed evidence before the helper marks
+the field-test report ready. `blocked` and `fail` rows must include a concrete
+next step. A ready field-test report is still not v1.7 stable evidence by
+itself; stable release remains gated by the exit criteria below.
+
 ## Device-use rules
 
 - Windows: use the candidate portable executable and installer for install,
