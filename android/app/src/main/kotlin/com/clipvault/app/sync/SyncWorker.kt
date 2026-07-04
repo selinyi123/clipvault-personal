@@ -110,6 +110,16 @@ object SyncScheduler {
         WorkManager.getInstance(context).enqueueUniqueWork("sync-now", ExistingWorkPolicy.REPLACE, req)
     }
 
+    fun requestPushBestEffort(context: Context): Boolean {
+        return try {
+            requestPush(context)
+            true
+        } catch (e: Exception) {
+            Log.w("ClipVaultSync", "sync schedule failed: ${e.javaClass.simpleName}")
+            false
+        }
+    }
+
     fun schedulePeriodic(context: Context) {
         val req = PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES)
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())

@@ -106,6 +106,19 @@
   building `http://host:port/api` URLs. It allows plain LAN/DNS hostnames and
   bracketed IPv6, while rejecting scheme/path/query/fragment/userinfo/port-like
   strings so pairing and later sync stay scoped to an unambiguous host.
+- Android sync re-pairing now writes the replacement desktop host with
+  synchronous `SharedPreferences.commit()` before storing the fresh bearer token.
+  If the host preference write fails, the token remains cleared and pairing
+  fails closed. This preserves the intended order
+  clear-token -> durable host -> fresh-token, so a re-pair flow cannot rely on
+  an async `apply()` write before changing credential state.
+- Android explicit capture paths now request an immediate sync push only when
+  `Capture.ingest(...)` created a new public outbox event. Runtime explicit save,
+  the Share target, and the QS Tile no longer enqueue a WorkManager sync-now job
+  for rejected, duplicate, or newly secret captures; local duplicate touch and
+  secret quarantine behavior are unchanged. Sync-now scheduling is best-effort
+  so WorkManager enqueue failure no longer turns a completed local capture into
+  a false save failure, and periodic sync remains the fallback.
 - Desktop pairing now validates the LAN-supplied Android `device_name` metadata
   before redeeming a one-time code: missing/blank names default to `device`,
   names are trimmed, and non-string, overlong, or control-character values are

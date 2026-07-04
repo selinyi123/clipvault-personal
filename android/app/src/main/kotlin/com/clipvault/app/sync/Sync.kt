@@ -152,14 +152,19 @@ class Settings(context: Context) {
             sp.edit().putString("device_id", id).apply(); id
         }
 
-    /** Commit a new host/token pairing without ever exposing the old token to
-     * the new host. Preferences and AndroidKeyStore are separate stores, so the
-     * safest order is fail-closed: clear token -> write host -> write new token.
-     * A concurrent worker can then see old host+old token, new host+no token, or
-     * new host+new token, but never new host+old token. */
+    /** Commit a new host/token pairing without ever exposing a stale or fresh
+     * token to the wrong host. Preferences and AndroidKeyStore are separate
+     * stores, so the safest order is fail-closed: clear token -> synchronously
+     * write host -> write new token. A concurrent worker can then see old
+     * host+old token, new host+no token, or new host+new token, but never new
+     * host+old token or old host+new token. */
     fun replacePairing(host: String, token: String) {
         tokenStore.set(null)
-        sp.edit().putString("host", host).remove(LEGACY_TOKEN).apply()
+        val hostStored = sp.edit().putString("host", host).remove(LEGACY_TOKEN).commit()
+        if (!hostStored) {
+            tokenStore.set(null)
+            throw IOException("pairing state write failed")
+        }
         tokenStore.set(token)
     }
 
