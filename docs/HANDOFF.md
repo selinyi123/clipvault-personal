@@ -191,6 +191,11 @@
   AndroidX Test dependencies. The tests remain `@Ignore` and are not a substitute
   for Owner/manual device QA in Issue #36; the gate only prevents the scaffold
   source set from silently rotting.
+- `test_release_alignment.py` now also locks the five residual IME
+  `androidTest` scaffold method names, their matching
+  `docs/INSTRUMENTED_QA_BACKLOG.md` rows, and their shared `@Ignore` reason.
+  CI must keep compiling the source set but must not add
+  `connectedDebugAndroidTest` until a real device/emulator run is recorded.
 - The unsigned release-candidate dry run now runs automatically on pushes to
   `main`, while PR runs remain path-filtered. Static release-alignment tests
   guard that this current-main evidence path does not gain release secrets,
