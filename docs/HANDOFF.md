@@ -113,6 +113,16 @@
 - Release manifest generation and verification now reject nested artifact
   directories so every file that can reach release staging must be represented
   in `RELEASE_MANIFEST.json` and `SHA256SUMS.txt`.
+- Release manifest generation and verification now reject hidden dotfile
+  artifact names because GitHub's official artifact upload action excludes
+  hidden files by default; v1.6 release evidence remains a flat visible file
+  set unless the manifest/upload policy is explicitly redesigned.
+- Desktop sync push now ignores duplicate event `seq` values within a single
+  peer batch after applying the first occurrence, and treats local SQLite
+  integrity conflicts from seq-valid malformed events as acknowledged no-ops.
+  This preserves the existing fail-soft sync contract while preventing one
+  request from applying multiple payloads for the same remote sequence number
+  or wedging future sync retries on a permanently bad event.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 

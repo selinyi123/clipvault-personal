@@ -133,6 +133,18 @@ def test_build_manifest_rejects_non_ascii_artifact_names(tmp_path):
         )
 
 
+def test_build_manifest_rejects_hidden_artifact_names(tmp_path):
+    (tmp_path / ".ClipVault-Desktop-v1.6.0-portable.exe").write_bytes(b"portable")
+
+    with pytest.raises(ValueError, match="artifact name must not be hidden"):
+        release_candidate_manifest.build_manifest(
+            tmp_path,
+            platform="windows",
+            version="1.6.0",
+            commit="abc123",
+        )
+
+
 def test_build_manifest_rejects_symlink_artifacts(tmp_path):
     target = tmp_path / "real.exe"
     target.write_bytes(b"portable")

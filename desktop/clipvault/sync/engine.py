@@ -6,6 +6,7 @@ Gate B (secrets never leave) and gate A (re-scan on arrival) both enforced here.
 
 import json
 import logging
+import sqlite3
 
 from clipvault.core import secret_guard
 from clipvault.core.models import Clip
@@ -151,6 +152,13 @@ def _apply_one(conn, ev: dict, service) -> None:
             log.error("unknown sync event kind=%s", kind)
     except KeyError as exc:
         log.error("malformed sync event kind=%s missing key %s", kind, exc)
+    except sqlite3.IntegrityError as exc:
+        # A peer can send a seq-valid but semantically invalid event, for
+        # example a clip_new with a duplicate id and different content hash.
+        # Treat it like the other malformed seq-valid events above: ack as a
+        # no-op so one permanently bad item cannot wedge sync forever, but do
+        # not hide transient database failures such as locks or IO errors.
+        log.error("malformed sync event kind=%s integrity error %s", kind, exc.__class__.__name__)
 
 
 def apply_push(conn, device_id: str, events: list[dict], service) -> int:
@@ -175,10 +183,15 @@ def apply_push(conn, device_id: str, events: list[dict], service) -> int:
         else:
             log.error("sync event without integer seq, dropped")
 
+    seen_batch_seqs = set()
     for ev in sorted(orderable, key=lambda e: e["seq"]):
         seq = ev["seq"]
         if seq <= cursor:
             continue  # already applied
+        if seq in seen_batch_seqs:
+            log.error("duplicate sync event seq=%d from device=%s, dropped", seq, device_id)
+            continue
+        seen_batch_seqs.add(seq)
         _apply_one(conn, ev, service)
         if seq == acked + 1:
             acked = seq

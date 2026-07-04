@@ -30,6 +30,8 @@ def validate_manifest_value(field: str, value: str) -> None:
 def validate_artifact_name(name: str) -> None:
     if not name:
         raise ValueError("artifact name must not be empty")
+    if name.startswith("."):
+        raise ValueError(f"artifact name must not be hidden: {name!r}")
     if not name.isascii():
         raise ValueError(f"artifact name must be ASCII: {name!r}")
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
