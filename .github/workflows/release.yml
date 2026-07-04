@@ -105,7 +105,7 @@ jobs:
           subject-path: release-artifacts/*
 
       - name: Upload Windows release artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: clipvault-windows-release-artifacts
           path: release-artifacts/*
@@ -210,7 +210,7 @@ jobs:
           subject-path: release-artifacts/*
 
       - name: Upload Android signed release artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: clipvault-android-signed-release-artifacts
           path: release-artifacts/*
@@ -229,7 +229,7 @@ jobs:
       contents: write
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-artifacts
 

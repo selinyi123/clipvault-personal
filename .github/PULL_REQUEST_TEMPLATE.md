@@ -41,6 +41,12 @@ python -m pytest -q --ignore=tests/test_watcher.py --ignore=tests/test_instance_
 - [ ] 本 PR **不含**对外/难回退动作
 - [ ] 含 bump 版本号 / 切 Release / 推用户产物 → **已获 Owner 批准**
 
+## Release-gate issue hygiene
+
+- [ ] If this PR references a release-gate issue, I avoided GitHub auto-close
+      keywords (`close`, `fix`, `resolve`) directly before an issue reference.
+      Use `Issue #36 remains open` style wording for release gates.
+
 ## 文档
 
 - [ ] 已更新 HANDOFF / 相关 docs（"不在 repo docs = 没发生"）

@@ -73,7 +73,7 @@ jobs:
           python scripts/verify_release_manifest.py --artifact-dir release-candidate --platform windows --version $version --commit "${{ github.sha }}" --expect-dry-run
 
       - name: Upload Windows release candidate artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: clipvault-windows-release-candidate
           path: release-candidate/*
@@ -130,7 +130,7 @@ jobs:
           python scripts/verify_release_manifest.py --artifact-dir release-candidate --platform android --version "${version}" --commit "${GITHUB_SHA}" --expect-dry-run
 
       - name: Upload Android release candidate artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: clipvault-android-release-candidate
           path: release-candidate/*

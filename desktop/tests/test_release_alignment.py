@@ -122,6 +122,18 @@ def test_release_runbook_uses_release_environment_secrets():
     assert "environment secrets" in manual_qa
 
 
+def test_pull_request_template_warns_against_release_gate_auto_close_keywords():
+    template = _read(".github/PULL_REQUEST_TEMPLATE.md")
+
+    assert "Release-gate issue hygiene" in template
+    assert "GitHub auto-close" in template
+    assert "Issue #36 remains open" in template
+    assert not re.search(
+        r"(?i)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#\d+\b",
+        template,
+    )
+
+
 def test_windows_pyinstaller_workflows_bundle_desktop_resources():
     expected = [
         '--add-data "$PWD/clipvault/store/migrations;clipvault/store/migrations"',
@@ -301,7 +313,8 @@ def test_workflows_use_node24_compatible_github_actions():
         "actions/checkout": 5,
         "actions/setup-python": 6,
         "actions/setup-java": 5,
-        "actions/upload-artifact": 6,
+        "actions/upload-artifact": 7,
+        "actions/download-artifact": 8,
         "actions/attest-build-provenance": 4,
     }
     workflows = sorted((_ROOT / ".github/workflows").glob("*.yml"))
