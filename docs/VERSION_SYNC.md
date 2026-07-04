@@ -29,6 +29,8 @@ All visible source-tree release version metadata is currently aligned at **1.6.0
   must be built before publishing `v1.6.0`.
 - Manual Android device QA and Windows clipboard privacy QA remain owner-run
   gates and are not claimed by this document.
+- Final `v1.6.0` GitHub Release publication remains blocked until Owner
+  approval records the signed artifacts and manual QA evidence on Issue #36.
 
 ## Single-source strategy
 
