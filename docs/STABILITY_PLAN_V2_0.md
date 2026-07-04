@@ -60,6 +60,10 @@ lane.
 3. **Static guard lane:** add tests for any claim that can be proven without a
    device, especially IME service exposure, no typed-text logging, no IME network
    path, and documentation truthfulness.
+   Use `tools/v2_keyboard_readiness.py --no-fail` as the local aggregation
+   report for this lane. The helper checks repository-local manifest/XML/source/
+   test/doc evidence only; it deliberately remains blocked on Owner/manual
+   release gates and must not be cited as v2.0 stable evidence by itself.
 4. **Device-evidence lane:** prepare Owner-run manual QA scripts/checklists for
    Android input-method selection, Keyboard Lab typing, Panel operations,
    sensitive-field privacy, and LAN sync smoke.

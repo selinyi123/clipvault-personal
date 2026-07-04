@@ -46,6 +46,14 @@
   download artifacts, verify downloaded manifest/checksum bytes, run device QA,
   post comments, sign or publish releases, close Issue #82/#36, or claim v1.7
   stable; GitHub artifact inventory still is not downloaded-byte proof.
+- `tools/v2_keyboard_readiness.py` is a local read-only v2.0 Keyboard Lab
+  readiness report. It checks the dual IME manifest registrations, input-method
+  XML switch-back support, Keyboard Lab source controls, Panel IME source
+  controls, Android host-JVM IME privacy/static test coverage, and v2.0
+  docs/release-boundary markers. It intentionally remains blocked on the
+  Owner/manual release gate and does not call GitHub, trigger workflows,
+  download artifacts, run device QA, sign or publish releases, close issues,
+  change version metadata, or claim v2.0 stable.
 - `docs/STABILITY_PLAN_V2_0.md` now defines v2.0 stable as the keyboard
   mainline dual-IME entrypoint stability milestone: ClipVault Panel plus
   ClipVault Keyboard Lab in the same APK with automated, CI, and Owner/manual
