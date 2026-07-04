@@ -233,10 +233,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download release artifacts
+      - name: Download Windows release artifacts
         uses: actions/download-artifact@v8
         with:
-          path: release-artifacts
+          name: clipvault-windows-release-artifacts
+          path: release-artifacts/clipvault-windows-release-artifacts
+
+      - name: Download Android signed release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: clipvault-android-signed-release-artifacts
+          path: release-artifacts/clipvault-android-signed-release-artifacts
 
       - name: Verify downloaded release artifacts
         shell: bash
@@ -268,23 +275,29 @@ jobs:
             exit 1
           fi
           mkdir -p upload-assets
-          while IFS= read -r -d '' file; do
-            parent="$(basename "$(dirname "${file}")")"
-            base="$(basename "${file}")"
-            asset="${base}"
-            if [[ "${base}" == "SHA256SUMS.txt" || "${base}" == "RELEASE_MANIFEST.json" ]]; then
-              case "${parent}" in
-                *windows*) asset="windows-${base}" ;;
-                *android*) asset="android-${base}" ;;
-                *) asset="${parent}-${base}" ;;
-              esac
-            fi
-            if [[ -e "upload-assets/${asset}" ]]; then
-              echo "::error::Duplicate release asset name after staging: ${asset}"
-              exit 1
-            fi
-            cp "${file}" "upload-assets/${asset}"
-          done < <(find release-artifacts -type f -print0)
+          artifact_dirs=(
+            release-artifacts/clipvault-windows-release-artifacts
+            release-artifacts/clipvault-android-signed-release-artifacts
+          )
+          for dir in "${artifact_dirs[@]}"; do
+            while IFS= read -r -d '' file; do
+              parent="$(basename "$(dirname "${file}")")"
+              base="$(basename "${file}")"
+              asset="${base}"
+              if [[ "${base}" == "SHA256SUMS.txt" || "${base}" == "RELEASE_MANIFEST.json" ]]; then
+                case "${parent}" in
+                  *windows*) asset="windows-${base}" ;;
+                  *android*) asset="android-${base}" ;;
+                  *) asset="${parent}-${base}" ;;
+                esac
+              fi
+              if [[ -e "upload-assets/${asset}" ]]; then
+                echo "::error::Duplicate release asset name after staging: ${asset}"
+                exit 1
+              fi
+              cp "${file}" "upload-assets/${asset}"
+            done < <(find "${dir}" -maxdepth 1 -type f -print0)
+          done
           cat > release-notes.md <<'EOF'
           ClipVault Personal release draft.
 
