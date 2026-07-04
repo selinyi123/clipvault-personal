@@ -51,6 +51,11 @@ build alone:
   completes the final publication step.
 - Generate checksums for every release artifact.
 - Verify the signed APK with `apksigner verify --print-certs`.
+- After downloading the Owner-controlled release workflow artifacts, run
+  `python tools/release_artifact_evidence.py` as described in
+  [RELEASE_RUNBOOK_V1_6_0.md](RELEASE_RUNBOOK_V1_6_0.md) to validate the
+  Windows and Android artifact directories before posting signed/final artifact
+  evidence to Issue #36.
 - If Owner approves publication, attach all artifacts and checksums to GitHub
   Release `v1.6.0`.
 

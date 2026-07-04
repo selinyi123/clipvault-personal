@@ -157,6 +157,52 @@ The Android artifact must include:
 - `SHA256SUMS.txt`
 - `RELEASE_MANIFEST.json` with `kind=release` and `signed=true`
 
+Download both artifact bundles from the completed run and validate the
+downloaded bytes before recording the signed/final artifact evidence on Issue
+#36. This is intentionally separate from workflow success: a green workflow run
+does not by itself prove the artifact contents that will be attached or cited;
+a green workflow run does not by itself prove the artifact contents.
+
+```powershell
+$runId = "RELEASE_ARTIFACT_RUN_ID"
+$mainSha = gh api repos/selinyi123/clipvault-personal/branches/main --jq ".commit.sha"
+Remove-Item release-evidence-v1.6.0 -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path release-evidence-v1.6.0 | Out-Null
+
+gh run download $runId `
+  --repo selinyi123/clipvault-personal `
+  --name clipvault-windows-release-artifacts `
+  --name clipvault-android-signed-release-artifacts `
+  --dir release-evidence-v1.6.0
+
+python tools/release_artifact_evidence.py `
+  --windows-dir release-evidence-v1.6.0/clipvault-windows-release-artifacts `
+  --android-dir release-evidence-v1.6.0/clipvault-android-signed-release-artifacts `
+  --version v1.6.0 `
+  --commit $mainSha `
+  --run-url "https://github.com/selinyi123/clipvault-personal/actions/runs/$runId" `
+  --output release-artifact-issue-comment.md
+```
+
+Post the rendered comment only after the helper passes against the downloaded
+artifact directories. The helper validates `RELEASE_MANIFEST.json`,
+`SHA256SUMS.txt`, required release artifact names, and Android
+`ANDROID_APKSIGNER_VERIFY.txt` shape. It does not download artifacts, call
+GitHub, post comments, sign APKs, complete manual QA, publish a Release, or
+close Issue #36.
+
+Because the release workflow emits GitHub artifact attestations, optionally
+verify provenance for the primary binaries before publication, for example:
+
+```powershell
+gh attestation verify `
+  release-evidence-v1.6.0/clipvault-windows-release-artifacts/ClipVault-Desktop-v1.6.0-portable.exe `
+  --repo selinyi123/clipvault-personal
+gh attestation verify `
+  release-evidence-v1.6.0/clipvault-android-signed-release-artifacts/ClipVault-Android-v1.6.0-release-signed.apk `
+  --repo selinyi123/clipvault-personal
+```
+
 ## 5. Record evidence on Issue #36
 
 Comment on Issue #36 with:
@@ -165,6 +211,8 @@ Comment on Issue #36 with:
 - Android signed artifact name
 - `apksigner verify --print-certs` evidence file name
 - confirmation that `RELEASE_MANIFEST.json` records `signed=true`
+- the rendered `tools/release_artifact_evidence.py` report for the downloaded
+  Windows and Android release artifact directories
 
 Do not close Issue #36 until manual device QA is also recorded.
 

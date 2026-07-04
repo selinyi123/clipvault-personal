@@ -82,7 +82,9 @@
 - 桌面测试：以当前 `cd desktop; python -m pytest -q` 输出和 GitHub CI 为准；不要把旧的固定测试数量写成发布证据。
 - v1.6 release gate（Issue #36）：自动化 CI/unsigned dry-run 证据持续更新；signed artifacts、Owner/manual QA、最终 GitHub Release 发布前不得关闭。
 - v1.7 stable：按 `docs/STABILITY_PLAN_V1_6_V1_7.md` 的 exit criteria 推进；未有专门 release issue 与 Owner approval 前不得声称 `v1.7.0` 已发布或稳定完成。
-- 主线下一步：v2.1 librime build PoC → ADR-0010 终裁（🟡🔵，待 Owner 与设备/CI）。
+- v1.7 field-test packages：按 `docs/V1_7_FIELD_TEST_PACKAGES.md` 使用 `Release candidate dry run` 上传双端候选安装包做实机 smoke；不得把 unsigned candidate artifacts 冒充为 signed/final release evidence。
+- v2.0 stable：按 `docs/STABILITY_PLAN_V2_0.md` 的 exit criteria 推进；v2.0 是双 IME 入口稳定线，不得把 v2.1 librime 或 TLS 支线冒充为 v2.0 发布证据。
+- 主线下一步：v2.0 双 IME 稳定证据 → v2.1 librime build PoC → ADR-0010 终裁（🟡🔵，待 Owner 与设备/CI）。
 - 支线候选：v2.0 自签 TLS（受 stdlib-only 约束，需 Architect 定证书生成方式）、Android Room CJK 搜索一致性。
 
 ## 范围刹车（明确不做，违反即范围外）

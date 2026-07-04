@@ -242,6 +242,44 @@ def test_verify_rejects_empty_android_apksigner_evidence(tmp_path):
         )
 
 
+def test_verify_rejects_non_apksigner_signed_evidence_text(tmp_path):
+    _build_signed_android_fixture(tmp_path, evidence_body=b"not empty\n")
+
+    with pytest.raises(ValueError, match="apksigner --print-certs"):
+        verify_release_manifest.verify_manifest(
+            tmp_path,
+            platform="android",
+            version="1.6.0",
+            commit="123release",
+            require_signed=True,
+        )
+
+
+def test_verify_rejects_android_release_with_unexpected_signed_apk_name(tmp_path):
+    (tmp_path / "renamed.apk").write_bytes(b"signed apk")
+    (tmp_path / "ANDROID_APKSIGNER_VERIFY.txt").write_text(
+        "Signer #1 certificate SHA-256 digest: abc123\n",
+        encoding="utf-8",
+    )
+    release_candidate_manifest.build_manifest(
+        tmp_path,
+        kind="release",
+        platform="android",
+        version="1.6.0",
+        commit="123release",
+        signed=True,
+    )
+
+    with pytest.raises(ValueError, match="missing expected artifact"):
+        verify_release_manifest.verify_manifest(
+            tmp_path,
+            platform="android",
+            version="1.6.0",
+            commit="123release",
+            require_signed=True,
+        )
+
+
 def test_cli_returns_nonzero_for_mismatched_version(tmp_path, capsys):
     _build_fixture(tmp_path)
 

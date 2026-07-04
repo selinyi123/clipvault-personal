@@ -651,3 +651,34 @@ analytics, or move network work into the IME service.
 | # | Direction | Sources | Key finding | Decision |
 |---|---|---|---|---|
 | R83 | Structured manual QA evidence | Android input method docs (`https://developer.android.com/develop/ui/views/touch-and-input/creating-input-method`), OWASP MASVS (`https://mas.owasp.org/MASVS/`), OWASP MASVS-STORAGE checklist (`https://mas.owasp.org/checklists/MASVS-STORAGE/`), OWASP MASTG local-storage test (`https://mas.owasp.org/MASTG/tests/android/MASVS-STORAGE/MASTG-TEST-0001/`), GitHub issue forms discussion on required fields (`https://github.com/orgs/community/discussions/51500`) | Manual QA for an IME-backed clipboard app must separately record device behavior, IME privacy transitions, sensitive-data persistence/logging checks, sync isolation, and Windows clipboard source opt-outs. GitHub issue checklists help track release gates, but free-form comments can still omit target commit, device/build source, or blocked-row next steps. | **Adopt now:** add `tools/manual_qa_evidence.py`, a stdlib-only local helper that generates a JSON template, validates every required Issue #36 manual-QA row, and renders a Markdown comment draft. It does not run device QA or infer observations. It exits non-zero unless all required manual-QA rows pass with evidence, and its scope note says the report does not replace signed artifact evidence, final Windows artifact evidence, release environment/secrets evidence, or Owner-approved GitHub Release publication. |
+
+## Research log - round 50 (2026-07-04)
+
+Scope filter: serve v2.0 stability planning and agent-routing precision only.
+Do not change runtime behavior, Android IME behavior, sync payloads, typed-text
+policy, analytics policy, signing authority, artifact publication semantics, or
+the existing Issue #36 / v1.7 gates.
+
+| # | Direction | Sources | Key finding | Decision |
+|---|---|---|---|---|
+| R84 | v2.0 stability evidence taxonomy | Android input method docs (`https://developer.android.com/develop/ui/views/touch-and-input/creating-input-method`), OWASP MASVS (`https://mas.owasp.org/MASVS/`), Semantic Versioning 2.0.0 (`https://semver.org/`), GitHub tasklists docs (`https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/about-tasklists`) | Android IMEs need actual system input-method selection evidence, not only manifest/source presence. OWASP MASVS supports splitting mobile evidence across storage/privacy, network, platform exposure, and manual/device checks. SemVer reinforces that a stable version label needs a declared compatibility surface and immutable published contents. GitHub task lists are useful release gates only when every row maps to inspectable evidence. | **Adopt now:** add `docs/STABILITY_PLAN_V2_0.md` and static release-alignment guards. v2.0 stable remains the keyboard mainline dual-IME entrypoint milestone defined by `ROADMAP_V2_KEYBOARD.md` and `GATES.md`; do not relabel v2.1 librime/fcitx5 build-PoC work or optional LAN TLS hardening as v2.0 release evidence without a future ADR and Owner decision. |
+
+## Research log - round 51 (2026-07-04)
+
+Scope filter: serve Issue #36 release-artifact evidence integrity only. Do not
+trigger workflows, set secrets, read secret values, publish a Release, infer
+manual QA, change runtime behavior, or close Issue #36.
+
+| # | Direction | Sources | Key finding | Decision |
+|---|---|---|---|---|
+| R85 | Downloaded release artifact evidence and provenance | GitHub Artifact Attestations overview (`https://docs.github.com/en/actions/concepts/security/artifact-attestations`), GitHub artifact-attestation generation docs (`https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds`), GitHub CLI `gh attestation verify` manual (`https://cli.github.com/manual/gh_attestation_verify`), GitHub CLI `gh run download` manual (`https://cli.github.com/manual/gh_run_download`) | GitHub artifact attestations provide signed provenance and integrity claims for artifacts built in Actions, and `gh attestation verify` can validate a local artifact against repository/workflow identity. `gh run download` extracts multiple named artifacts into separate artifact-name directories, which keeps Windows and Android manifests/checksums from colliding when the Owner downloads both bundles together. These checks complement but do not replace ClipVault's local manifest/checksum/APK-signature evidence: a successful workflow run still needs downloaded artifact bytes checked before Issue #36 artifact rows are marked complete. | **Adopt now:** add `tools/release_artifact_evidence.py`, a stdlib-only local helper that validates downloaded Windows and Android release artifact directories with `RELEASE_MANIFEST.json`, `SHA256SUMS.txt`, required release artifact names, and Android `ANDROID_APKSIGNER_VERIFY.txt` shape, then renders an Issue #36 comment draft. Document optional `gh attestation verify` provenance checks for primary binaries. This is evidence validation only; it does not download artifacts, run or trigger workflows, sign APKs, publish `v1.6.0`, run manual QA, or close Issue #36. |
+
+## Research log - round 52 (2026-07-04)
+
+Scope filter: serve v1.7 field-test package upload and real-device smoke
+evidence only. Do not publish `v1.7.0`, do not sign artifacts, do not close
+Issue #36, and do not treat candidate artifacts as stable release evidence.
+
+| # | Direction | Sources | Key finding | Decision |
+|---|---|---|---|---|
+| R86 | v1.7 candidate package upload lane | GitHub `actions/upload-artifact` README (`https://github.com/actions/upload-artifact`), GitHub CLI `gh workflow run` manual (`https://cli.github.com/manual/gh_workflow_run`), GitHub docs for manually running workflows (`https://docs.github.com/actions/managing-workflow-runs/manually-running-a-workflow`), GitHub CLI `gh run download` manual (`https://cli.github.com/manual/gh_run_download`) | `actions/upload-artifact` can fail closed when no files match via `if-no-files-found: error`; `gh workflow run` requires `workflow_dispatch` and can run a workflow against a selected ref with `--ref`; `gh run download` supports named artifact download and extracts multiple artifacts under separate artifact-name directories. | **Adopt now:** add `docs/V1_7_FIELD_TEST_PACKAGES.md` as the candidate-only upload/download/manifest-verification path for dual-end real-device smoke testing. Use `Release candidate dry run` artifacts for field tests, keep them separate from signed/final release artifacts, and keep `1.7.0` version bump/publish blocked until a dedicated v1.7 release-gate issue and Owner approval exist. |

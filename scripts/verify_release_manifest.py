@@ -19,6 +19,7 @@ from typing import Any
 EXCLUDED_NAMES = {"SHA256SUMS.txt", "RELEASE_MANIFEST.json"}
 ANDROID_APKSIGNER_EVIDENCE = "ANDROID_APKSIGNER_VERIFY.txt"
 KINDS = {"release-candidate-dry-run", "release"}
+PLATFORMS = {"windows", "android"}
 
 
 def _validate_artifact_name(name: str) -> None:
@@ -117,11 +118,54 @@ def _verify_checksums(artifact_dir: Path, rows: list[dict[str, str | int]]) -> N
         raise ValueError("SHA256SUMS.txt does not match manifest artifacts")
 
 
-def _verify_android_signed_evidence(
+def _expected_artifact_names(manifest: dict[str, Any]) -> set[str]:
+    platform = manifest.get("platform")
+    kind = manifest.get("kind")
+    version = manifest.get("version")
+    signed = manifest.get("signed")
+    if platform not in PLATFORMS:
+        raise ValueError(f"manifest platform must be one of {sorted(PLATFORMS)!r}")
+    if not isinstance(version, str) or not version:
+        raise ValueError("manifest version must be a non-empty string")
+
+    if platform == "windows":
+        return {
+            f"ClipVault-Desktop-v{version}-portable.exe",
+            f"ClipVault-Setup-v{version}.exe",
+        }
+    if kind == "release-candidate-dry-run":
+        return {
+            f"ClipVault-Android-v{version}-debug.apk",
+            f"ClipVault-Android-v{version}-release-unsigned.apk",
+        }
+    if kind == "release":
+        if signed is not True:
+            raise ValueError("Android release manifest must record signed=true")
+        return {
+            ANDROID_APKSIGNER_EVIDENCE,
+            f"ClipVault-Android-v{version}-release-signed.apk",
+        }
+    return set()
+
+
+def _verify_expected_artifacts(
+    manifest: dict[str, Any],
     actual: dict[str, dict[str, str | int]],
 ) -> None:
-    if not any(name.endswith(".apk") for name in actual):
-        raise ValueError("signed Android manifest must include an APK artifact")
+    expected = _expected_artifact_names(manifest)
+    missing = sorted(expected - set(actual))
+    if missing:
+        raise ValueError(f"missing expected artifact(s): {missing!r}")
+
+
+def _verify_android_signed_evidence(
+    artifact_dir: Path,
+    actual: dict[str, dict[str, str | int]],
+    version: str,
+) -> None:
+    signed_apk = f"ClipVault-Android-v{version}-release-signed.apk"
+    if signed_apk not in actual:
+        raise ValueError(f"signed Android manifest must include {signed_apk}")
     evidence = actual.get(ANDROID_APKSIGNER_EVIDENCE)
     if evidence is None:
         raise ValueError(
@@ -129,6 +173,18 @@ def _verify_android_signed_evidence(
         )
     if int(evidence["bytes"]) <= 0:
         raise ValueError(f"{ANDROID_APKSIGNER_EVIDENCE} must not be empty")
+    evidence_text = (artifact_dir / ANDROID_APKSIGNER_EVIDENCE).read_text(
+        encoding="utf-8",
+        errors="replace",
+    ).lower()
+    required_fragments = ("signer #", "certificate", "sha-256")
+    missing_fragments = [
+        fragment for fragment in required_fragments if fragment not in evidence_text
+    ]
+    if missing_fragments:
+        raise ValueError(
+            f"{ANDROID_APKSIGNER_EVIDENCE} does not look like apksigner --print-certs output"
+        )
 
 
 def verify_manifest(
@@ -151,6 +207,8 @@ def verify_manifest(
     kind = manifest.get("kind")
     if kind not in KINDS:
         raise ValueError(f"manifest kind must be one of {sorted(KINDS)!r}")
+    if manifest.get("platform") not in PLATFORMS:
+        raise ValueError(f"manifest platform must be one of {sorted(PLATFORMS)!r}")
     if platform is not None and manifest.get("platform") != platform:
         raise ValueError(f"manifest platform mismatch: expected {platform!r}, got {manifest.get('platform')!r}")
     if version is not None and manifest.get("version") != version:
@@ -177,6 +235,7 @@ def verify_manifest(
     actual_names = sorted(actual)
     if manifest_names != actual_names:
         raise ValueError(f"artifact set mismatch: manifest={manifest_names!r}, actual={actual_names!r}")
+    _verify_expected_artifacts(manifest, actual)
 
     for row in rows:
         name = str(row["name"])
@@ -187,8 +246,9 @@ def verify_manifest(
         if row["sha256"] != actual_row["sha256"]:
             raise ValueError(f"sha256 mismatch for {name}: manifest={row['sha256']}, actual={actual_row['sha256']}")
 
-    if manifest.get("platform") == "android" and require_signed:
-        _verify_android_signed_evidence(actual)
+    if manifest.get("platform") == "android" and (kind == "release" or require_signed):
+        assert isinstance(manifest.get("version"), str)
+        _verify_android_signed_evidence(artifact_dir, actual, manifest["version"])
 
     _verify_checksums(artifact_dir, rows)
     return manifest
