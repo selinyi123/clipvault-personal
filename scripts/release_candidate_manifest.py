@@ -45,8 +45,10 @@ def artifact_rows(artifact_dir: Path) -> list[dict[str, str | int]]:
             continue
         if path.is_symlink():
             raise ValueError(f"artifact must not be a symlink: {path.name}")
+        if path.is_dir():
+            raise ValueError(f"artifact directory must be flat; unexpected subdirectory: {path.name}")
         if not path.is_file():
-            continue
+            raise ValueError(f"artifact must be a regular file: {path.name}")
         validate_artifact_name(path.name)
         data = path.read_bytes()
         rows.append({

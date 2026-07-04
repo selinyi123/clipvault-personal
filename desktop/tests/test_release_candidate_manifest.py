@@ -149,3 +149,18 @@ def test_build_manifest_rejects_symlink_artifacts(tmp_path):
             version="1.6.0",
             commit="abc123",
         )
+
+
+def test_build_manifest_rejects_nested_artifact_directories(tmp_path):
+    (tmp_path / "ClipVault-Desktop-v1.6.0-portable.exe").write_bytes(b"portable")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "unexpected.txt").write_text("not covered by manifest\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unexpected subdirectory"):
+        release_candidate_manifest.build_manifest(
+            tmp_path,
+            platform="windows",
+            version="1.6.0",
+            commit="abc123",
+        )

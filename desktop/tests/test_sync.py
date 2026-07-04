@@ -87,6 +87,48 @@ def test_h1_pair_rejects_unsafe_device_id(api):
     assert api.pair({"code": code, "device_id": "android_phone-01"})[0] == 200
 
 
+def test_h1_pair_normalizes_device_name_metadata(api):
+    code = api.pairing.mint_code()
+    status, body = api.pair({
+        "code": code,
+        "device_id": PEER,
+        "device_name": "  张三的 Pixel 8  ",
+    })
+
+    assert status == 200 and len(body["token"]) > 20
+    peer = api.list_peers()[1]["peers"][0]
+    assert peer["device_name"] == "张三的 Pixel 8"
+
+
+def test_h1_pair_defaults_blank_device_name(api):
+    code = api.pairing.mint_code()
+
+    status, _ = api.pair({"code": code, "device_id": PEER, "device_name": "   "})
+
+    assert status == 200
+    assert api.list_peers()[1]["peers"][0]["device_name"] == "device"
+
+
+def test_h1_pair_rejects_unsafe_device_name_without_redeeming_code(api):
+    code = api.pairing.mint_code()
+    for device_name in (
+        ["Pixel"],
+        "Pixel\n8",
+        "x" * 81,
+    ):
+        status, body = api.pair({
+            "code": code,
+            "device_id": PEER,
+            "device_name": device_name,
+        })
+        assert status == 400
+        assert body["error"]["code"] == "bad_request"
+
+    # Validation happens before code redemption, so a corrected display name can
+    # still use the same one-time pairing code.
+    assert api.pair({"code": code, "device_id": PEER, "device_name": "Pixel 8"})[0] == 200
+
+
 def test_h1_pair_rate_limited_after_repeated_bad_codes(api):
     # /api/pair is LAN-reachable; repeated bad codes must lock out (429), not just
     # 403 forever, to bound brute-force and flood of the single-threaded server.

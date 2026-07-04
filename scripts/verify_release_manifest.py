@@ -65,8 +65,10 @@ def _actual_artifacts(artifact_dir: Path) -> dict[str, dict[str, str | int]]:
             continue
         if path.is_symlink():
             raise ValueError(f"artifact must not be a symlink: {path.name}")
+        if path.is_dir():
+            raise ValueError(f"artifact directory must be flat; unexpected subdirectory: {path.name}")
         if not path.is_file():
-            continue
+            raise ValueError(f"artifact must be a regular file: {path.name}")
         _validate_artifact_name(path.name)
         actual[path.name] = _actual_row(path)
     return actual

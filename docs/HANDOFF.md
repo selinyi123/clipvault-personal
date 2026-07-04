@@ -106,6 +106,13 @@
   building `http://host:port/api` URLs. It allows plain LAN/DNS hostnames and
   bracketed IPv6, while rejecting scheme/path/query/fragment/userinfo/port-like
   strings so pairing and later sync stay scoped to an unambiguous host.
+- Desktop pairing now validates the LAN-supplied Android `device_name` metadata
+  before redeeming a one-time code: missing/blank names default to `device`,
+  names are trimmed, and non-string, overlong, or control-character values are
+  rejected without consuming the code.
+- Release manifest generation and verification now reject nested artifact
+  directories so every file that can reach release staging must be represented
+  in `RELEASE_MANIFEST.json` and `SHA256SUMS.txt`.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 
