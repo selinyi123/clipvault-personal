@@ -14,7 +14,7 @@ service, and require explicit user action for saving content.
 |---|---|---|
 | Source metadata | `docs/VERSION_SYNC.md`, `desktop/tests/test_release_alignment.py` | Aligned at `1.6.0` / Android `versionCode=13` |
 | CI | Main CI for the current main commit | Automated gate is available |
-| Packaging dry run | `Release candidate dry run` workflow | Unsigned packaging evidence only |
+| Packaging dry run | `Release candidate dry run` workflow | Unsigned packaging evidence; PR path-filtered and main-push automated |
 | Signed Android APK | `Release artifact build` workflow + `release` environment | Blocked until Owner configures environment secrets |
 | GitHub Release | `v1.6.0` release asset publication | Blocked until Owner approves release creation/publication |
 | Manual QA | `docs/MANUAL_QA_V1_6_0.md` | Blocked until Owner/device evidence is recorded |
@@ -45,7 +45,9 @@ Agent-executable work while the Owner gate remains blocked:
 - Keep README and architecture docs honest about the difference between current
   source-tree hardening and published/signed release artifacts.
 - Keep workflow security least-privilege guards in tests.
-- Keep packaging dry-run green on current main.
+- Keep packaging dry-run green on current main. The `Release candidate dry run`
+  workflow should run automatically on every push to `main`, while PR runs may
+  stay path-filtered to control cost.
 - Fix only release, CI, documentation, or verified safety defects that do not
   change product semantics.
 
@@ -100,6 +102,13 @@ Recommended v1.7 themes:
      stale fixed test counts, or signed artifacts before Issue #36 evidence
      exists; architecture docs describe HTTP push/pull sync rather than the
      retired WebSocket/FastAPI plan.
+
+7. **Current-main packaging evidence**
+   - Keep unsigned release-candidate packaging evidence tied to the exact main
+     commit instead of only to PR heads or manual dispatches.
+   - Acceptance: the release-candidate workflow has a `push` trigger for `main`
+     without release environment/secrets/write permissions, and static tests
+     fail if this dry-run path gains release side effects.
 
 ## Version and branch policy
 

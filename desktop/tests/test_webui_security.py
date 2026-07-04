@@ -53,6 +53,14 @@ def test_webui_keeps_search_debounce_state_module_local():
     assert "searchRefreshTimer = setTimeout(refresh, 200);" in src
 
 
+def test_webui_surfaces_sync_blocked_status_without_html_sinks():
+    src = WEBUI_JS.read_text(encoding="utf-8")
+
+    assert "sync.blocked_pull" in src
+    assert "同步阻塞" in src
+    assert ".textContent = statusText;" in src
+
+
 def test_webui_javascript_is_parseable_when_node_is_available():
     node = shutil.which("node")
     if node is None:

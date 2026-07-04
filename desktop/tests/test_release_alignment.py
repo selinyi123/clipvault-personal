@@ -305,6 +305,21 @@ def test_release_candidate_pr_paths_cover_invoked_release_scripts():
     )
 
 
+def test_release_candidate_runs_on_main_push_without_release_side_effects():
+    workflow = _read(".github/workflows/release-candidate.yml")
+
+    assert "\n  push:\n    branches: [main]\n" in workflow
+    push_block = workflow.split("\n  push:\n", 1)[1].split("\n  pull_request:\n", 1)[0]
+    assert "branches: [main]" in push_block
+    assert "paths:" not in push_block
+
+    assert "environment: release" not in workflow
+    assert "secrets." not in workflow
+    assert "gh release" not in workflow
+    assert "create_draft_release" not in workflow
+    assert "contents: write" not in workflow
+
+
 def _top_level_permissions(workflow_text: str) -> dict[str, str]:
     lines = workflow_text.splitlines()
     try:
@@ -385,6 +400,18 @@ def test_android_workflows_validate_gradle_wrapper_before_gradle_runs():
         assert validation != -1, f"{rel} must validate the Gradle wrapper"
         assert first_gradle_step != -1, f"{rel} missing expected Gradle step"
         assert validation < first_gradle_step, f"{rel} must validate the wrapper before running Gradle"
+
+
+def test_ci_compiles_residual_android_instrumented_qa_sources():
+    workflow = _read(".github/workflows/ci.yml")
+    gradle = _read("android/app/build.gradle.kts")
+    backlog = _read("docs/INSTRUMENTED_QA_BACKLOG.md")
+
+    assert "./gradlew :app:compileDebugAndroidTestKotlin --no-daemon" in workflow
+    assert 'testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"' in gradle
+    assert 'androidTestImplementation("androidx.test:runner:1.6.2")' in gradle
+    assert "Owner/manual QA gate" in backlog
+    assert "Issue #36" in backlog
 
 
 def test_workflows_use_node24_compatible_github_actions():

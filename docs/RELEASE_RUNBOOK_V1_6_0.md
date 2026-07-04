@@ -9,6 +9,9 @@ It does not replace the manual Android/IME/sync/Windows clipboard QA evidence.
 - Do not commit keystores, passwords, generated `.b64` files, or release artifacts.
 - Run the workflow first with `create_draft_release=false`.
 - Treat `Release candidate dry run` artifacts as unsigned packaging evidence only.
+- The release-candidate dry run runs automatically on pushes to `main`; manual
+  dispatch remains a fallback if the current-main run is missing, failed, or
+  still queued.
 
 ## 1. Confirm current main evidence
 
@@ -32,7 +35,8 @@ gh run list `
 
 Pick the latest completed successful run for each workflow whose `headSha`
 equals `$mainSha`. If no release-candidate dry-run exists for the current main
-commit, run it before continuing:
+commit after the automatic main-push run has had time to complete, run it before
+continuing:
 
 ```powershell
 gh workflow run "Release candidate dry run" `

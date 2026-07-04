@@ -15,6 +15,7 @@ object SecretGuard {
         "SG-GOOGLE" to Regex("""\bAIza[0-9A-Za-z_-]{35}\b"""),
         "SG-JWT" to Regex("""\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b"""),
         // High-confidence distinctive-prefix provider keys. Must mirror desktop secret_guard.py.
+        "SG-HUGGINGFACE" to Regex("""\bhf_[A-Za-z0-9]{34}\b"""),
         "SG-STRIPE" to Regex("""\b[sr]k_(live|test)_[0-9A-Za-z]{16,}\b"""),
         "SG-GITLAB" to Regex("""\bglpat-[A-Za-z0-9_-]{20,}\b"""),
         "SG-SENDGRID" to Regex("""\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b"""),

@@ -106,7 +106,7 @@ function memCard(m) {
 async function refresh() {
   const status = await api("/api/status");
   const sync = status.sync || {};
-  $("#status").textContent =
+  let statusText =
     (status.version ? `v${status.version} · ` : "")
     + `共 ${status.clips_total} 条 · 隔离 ${status.quarantined} · 待备份 ${status.backup_pending}`
     + (status.last_backup_at ? ` · 最近备份 ${fmtTime(status.last_backup_at)}` : "")
@@ -114,6 +114,11 @@ async function refresh() {
         ? ` · 已配对 ${sync.paired_devices} 台`
           + (sync.last_peer_sync_at ? `（最近同步 ${fmtTime(sync.last_peer_sync_at)}）` : "")
         : "");
+  if (sync.blocked_pull) {
+    const blocked = sync.blocked_pull;
+    statusText += ` · 同步阻塞：${blocked.code} seq ${blocked.first_seq} (${blocked.event_bytes}/${blocked.max_bytes} bytes)`;
+  }
+  $("#status").textContent = statusText;
 
   if (tab === "memory") {
     const data = await api("/api/memory");

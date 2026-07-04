@@ -345,3 +345,40 @@ def build_pull(conn, since_seq: int, limit: int = SYNC_PULL_EVENT_LIMIT,
         "next_seq": next_seq,
         "has_more": stopped_by_budget or len(raw_events) == limit,
     }
+
+
+def pull_blocked_summary(conn, max_bytes: int = SYNC_PULL_RESPONSE_BYTES) -> dict | None:
+    """Return content-safe status if any peer is blocked by an oversized pull event.
+
+    This is for local status/UI diagnostics only. It must not expose clip text,
+    payload fields, bearer tokens, hostnames, or device identifiers.
+    """
+    peer_rows = conn.execute("SELECT my_acked_seq FROM sync_peers").fetchall()
+    if not peer_rows:
+        return None
+
+    blocked = []
+    outbox = OutboxRepo(conn)
+    for row in peer_rows:
+        for event in outbox.list_since(int(row["my_acked_seq"]), SYNC_PULL_EVENT_LIMIT):
+            if event["kind"] in ("memory_upsert", "memory_delete") and _memory_data_is_secret(event["payload"]):
+                continue
+            event_bytes = _event_wire_size(event)
+            if event_bytes > max_bytes:
+                blocked.append({
+                    "seq": event["seq"],
+                    "event_bytes": event_bytes,
+                })
+            break
+
+    if not blocked:
+        return None
+
+    first = min(blocked, key=lambda item: item["seq"])
+    return {
+        "code": "sync_event_too_large",
+        "blocked_devices": len(blocked),
+        "first_seq": first["seq"],
+        "event_bytes": first["event_bytes"],
+        "max_bytes": max_bytes,
+    }

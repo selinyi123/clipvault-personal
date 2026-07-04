@@ -21,6 +21,7 @@ def _reasons(content: str) -> list[str]:
 def test_provider_key_patterns():
     assert _reasons("sk_" + "live_" + _A * 20) == ["SG-STRIPE"]
     assert _reasons("rk_" + "test_" + _A * 20) == ["SG-STRIPE"]
+    assert _reasons("hf_" + _A * 34) == ["SG-HUGGINGFACE"]
     assert _reasons("glpat-" + _A * 20) == ["SG-GITLAB"]
     assert _reasons("SG." + _A * 22 + "." + _A * 43) == ["SG-SENDGRID"]
     assert _reasons("npm_" + _A * 36) == ["SG-NPM"]
@@ -31,4 +32,6 @@ def test_provider_key_patterns():
 def test_provider_patterns_do_not_overmatch():
     assert sg.scan("npm install --save lodash").is_secret is False
     assert sg.scan("glpat tutorial notes for the team").is_secret is False
+    assert sg.scan("hf_model_cache directory notes").is_secret is False
+    assert sg.scan("hf_" + _A * 33).is_secret is False
     assert sg.scan("the sky is live and well today").is_secret is False
