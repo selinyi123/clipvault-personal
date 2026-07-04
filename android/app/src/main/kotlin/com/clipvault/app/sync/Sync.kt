@@ -39,6 +39,9 @@ internal fun isPermanentSyncAuthFailure(statusCode: Int): Boolean =
     statusCode == HttpURLConnection.HTTP_UNAUTHORIZED ||
         statusCode == HttpURLConnection.HTTP_FORBIDDEN
 
+internal fun shouldReadSyncResponseBody(statusCode: Int, auth: Boolean): Boolean =
+    !auth || !isPermanentSyncAuthFailure(statusCode)
+
 internal fun normalizeSyncHostOrNull(raw: String?): String? {
     val host = raw?.trim() ?: return null
     if (host.isEmpty() || host.length > 253) return null
@@ -205,7 +208,15 @@ class SyncClient(private val s: Settings, private val hostOverride: String? = nu
             if (bodyBytes != null) c.outputStream.use { it.write(bodyBytes) }
             val code = c.responseCode
             val stream = if (code in 200..299) c.inputStream else c.errorStream
-            val text = stream?.use { readUtf8BodyBounded(it) } ?: ""
+            // For authenticated sync, 401/403 already tell us the local bearer
+            // token is invalid for this paired desktop. Do not let an oversized
+            // error body hide that permanent auth signal behind a generic IO
+            // retry; callers do not need the body for that state.
+            val text = if (shouldReadSyncResponseBody(code, auth)) {
+                stream?.use { readUtf8BodyBounded(it) } ?: ""
+            } else {
+                ""
+            }
             return code to text
         } finally {
             c.disconnect()

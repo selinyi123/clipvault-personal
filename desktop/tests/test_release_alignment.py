@@ -107,6 +107,22 @@ def test_architecture_matches_current_http_sync_runtime():
         assert stale_claim not in arch
 
 
+def test_product_spec_tracks_current_http_sync_runtime():
+    spec = _read("docs/PRODUCT_SPEC.md")
+
+    assert "局域网/Tailscale HTTP push-pull 同步服务端 + 设备配对" in spec
+    assert "与桌面双向同步（HTTP push-pull + 离线 outbox）" in spec
+    assert "双端同步：HTTP push-pull、配对、离线队列、去重" in spec
+
+    for stale_claim in (
+        "WebSocket 同步服务端",
+        "WebSocket + 离线 outbox",
+        "双端同步：WebSocket",
+        "FastAPI",
+    ):
+        assert stale_claim not in spec
+
+
 def test_panel_candidate_tabs_helper_and_test_exist():
     base = _ROOT / "android/app/src"
     assert (base / "main/kotlin/com/clipvault/app/ime/PanelCandidateTabs.kt").exists()
@@ -468,6 +484,8 @@ def test_stability_plan_defines_v1_7_exit_criteria_without_release_overclaim():
         "Not stable if unsigned dry-run artifacts are described as signed release artifacts.",
         "Android production log source-shape privacy",
         "Not stable if any typed-text logging, implicit save, Android production log payload interpolation",
+        "auth-failure response-body skipping",
+        "auth-failure bodies can mask token clearing",
         "do not publish `v1.7.0` from this plan alone.",
         "Treat blocked Owner/manual rows as incomplete",
     ):

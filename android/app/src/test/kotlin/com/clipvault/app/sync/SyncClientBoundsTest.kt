@@ -71,6 +71,18 @@ class SyncClientBoundsTest {
     }
 
     @Test
+    fun authenticatedPermanentAuthFailuresDoNotNeedResponseBodies() {
+        assertFalse(shouldReadSyncResponseBody(401, auth = true))
+        assertFalse(shouldReadSyncResponseBody(403, auth = true))
+
+        assertTrue(shouldReadSyncResponseBody(401, auth = false))
+        assertTrue(shouldReadSyncResponseBody(403, auth = false))
+        assertTrue(shouldReadSyncResponseBody(413, auth = true))
+        assertTrue(shouldReadSyncResponseBody(429, auth = true))
+        assertTrue(shouldReadSyncResponseBody(500, auth = true))
+    }
+
+    @Test
     fun pullCursorAllowsEmptyTerminalPageWithoutProgress() {
         val next = nextPullCursorOrThrow(5, eventCount = 0, nextSeq = 5, hasMore = false)
 

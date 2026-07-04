@@ -31,8 +31,10 @@ class SyncWorkerSourceTest {
         assertTrue(src.contains("internal class SyncAuthException : IOException(\"sync auth rejected\")"))
         assertTrue(src.contains("statusCode == HttpURLConnection.HTTP_UNAUTHORIZED"))
         assertTrue(src.contains("statusCode == HttpURLConnection.HTTP_FORBIDDEN"))
+        assertTrue(src.contains("internal fun shouldReadSyncResponseBody(statusCode: Int, auth: Boolean): Boolean"))
         assertTrue(src.contains("if (isPermanentSyncAuthFailure(code)) throw SyncAuthException()"))
         assertTrue(src.contains("val stream = if (code in 200..299) c.inputStream else c.errorStream"))
+        assertTrue(src.contains("if (shouldReadSyncResponseBody(code, auth))"))
         assertTrue(src.contains("?: \"\""))
     }
 

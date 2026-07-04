@@ -16,7 +16,7 @@
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
 | Current slice | v2.1 V2-S004 双 build PoC 规划收口（堆叠在 SG-1.3 + IME privacy 分支上）：NDK r28/16KB、全依赖许可、干净黄金向量、可复现规则、工程预算与 A/B 阻塞态已冻结；尚未接 production 引擎，不改版本号。 |
-| Last updated | 2026-07-03 |
+| Last updated | 2026-07-04 |
 
 ## Current development note - 2026-07-03 / v1.7 stability gates in progress
 
@@ -154,7 +154,13 @@
   HTTP push/pull sync implementation and Android `HttpURLConnection` client
   rather than the retired FastAPI/WebSocket/syncserver/OkHttp-WebSocket plan.
   `test_release_alignment.py` guards those current runtime names.
-- This README/status gate is documentation/test truthfulness only; it does not
+- `docs/PRODUCT_SPEC.md` now matches that same implementation topology: the
+  product goal remains LAN/Tailscale local-first sync with explicit pairing and
+  offline outbox behavior, but the current v1 implementation is documented as
+  HTTP push-pull rather than the retired WebSocket wording. `test_release_alignment.py`
+  guards this product-spec entrypoint so future planning cannot reintroduce the
+  stale protocol map.
+- This documentation/status gate is documentation/test truthfulness only; it does not
   change product runtime behavior, sign artifacts, create a GitHub Release, or
   close Issue #36.
 - Panel IME explicit clipboard saves are now guarded by a host-JVM source-shape
@@ -198,6 +204,11 @@
   sync responses, rate limits, and 5xx responses stay on the existing retry path.
   This is v1.7 sync reliability hardening only and does not change sync payloads,
   IME behavior, typed-text policy, or release state.
+- Android authenticated sync now skips reading 401/403 response bodies before
+  returning the status to the permanent-auth-failure classifier. This prevents
+  an oversized error body from masking token clearing behind a generic IO retry,
+  while `/api/pair`, 413, 429, and 5xx response handling keep the existing body
+  and retry semantics.
 - The Android IME source-boundary host-JVM test now also forbids direct
   persistence/capture/core imports and calls from IME services. IME frontends
   must stay thin and go through the Runtime facade instead of reaching Room,
