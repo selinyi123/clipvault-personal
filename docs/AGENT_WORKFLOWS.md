@@ -79,7 +79,9 @@
 
 - 版本：`__version__` = **1.6.0**（2026-06-28，未对外发版；最新已发布二进制 v1.5.10）。schema 版本 = **5**。
 - v1.5 gate（Issue #3）：**已关闭**（2026-06-26）。
-- 桌面测试：**179** 项 Linux/CI 跑通 + 4 项 Windows-only。
+- 桌面测试：以当前 `cd desktop; python -m pytest -q` 输出和 GitHub CI 为准；不要把旧的固定测试数量写成发布证据。
+- v1.6 release gate（Issue #36）：自动化 CI/unsigned dry-run 证据持续更新；signed artifacts、Owner/manual QA、最终 GitHub Release 发布前不得关闭。
+- v1.7 stable：按 `docs/STABILITY_PLAN_V1_6_V1_7.md` 的 exit criteria 推进；未有专门 release issue 与 Owner approval 前不得声称 `v1.7.0` 已发布或稳定完成。
 - 主线下一步：v2.1 librime build PoC → ADR-0010 终裁（🟡🔵，待 Owner 与设备/CI）。
 - 支线候选：v2.0 自签 TLS（受 stdlib-only 约束，需 Architect 定证书生成方式）、Android Room CJK 搜索一致性。
 

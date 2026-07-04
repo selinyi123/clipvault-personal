@@ -98,6 +98,39 @@ def test_verify_rejects_dry_run_signed_flag_drift(tmp_path):
         verify_release_manifest.verify_manifest(tmp_path, expect_dry_run=True)
 
 
+def test_verify_rejects_dry_run_signed_flag_even_without_dry_run_mode(tmp_path):
+    _build_fixture(tmp_path)
+    path = tmp_path / "RELEASE_MANIFEST.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["signed"] = True
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="dry-run manifest must be unsigned"):
+        verify_release_manifest.verify_manifest(tmp_path)
+
+
+def test_verify_rejects_dry_run_published_flag_even_without_dry_run_mode(tmp_path):
+    _build_fixture(tmp_path)
+    path = tmp_path / "RELEASE_MANIFEST.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["published"] = True
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="dry-run manifest must be unpublished"):
+        verify_release_manifest.verify_manifest(tmp_path)
+
+
+def test_verify_rejects_unknown_manifest_kind(tmp_path):
+    _build_fixture(tmp_path)
+    path = tmp_path / "RELEASE_MANIFEST.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["kind"] = "nightly"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="manifest kind must be one of"):
+        verify_release_manifest.verify_manifest(tmp_path)
+
+
 def test_verify_rejects_manifest_artifact_path_traversal(tmp_path):
     _build_fixture(tmp_path)
     path = tmp_path / "RELEASE_MANIFEST.json"

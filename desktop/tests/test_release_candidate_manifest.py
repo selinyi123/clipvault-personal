@@ -95,6 +95,23 @@ def test_cli_can_record_signed_release_manifest(tmp_path):
     }]
 
 
+@pytest.mark.parametrize(("kwargs", "message"), [
+    ({"signed": True}, "dry-run manifest must not be marked signed"),
+    ({"published": True}, "dry-run manifest must not be marked published"),
+])
+def test_build_manifest_rejects_dry_run_release_state_flags(tmp_path, kwargs, message):
+    (tmp_path / "ClipVault-Android-v1.6.0-debug.apk").write_bytes(b"debug apk")
+
+    with pytest.raises(ValueError, match=message):
+        release_candidate_manifest.build_manifest(
+            tmp_path,
+            platform="android",
+            version="1.6.0",
+            commit="dryrun",
+            **kwargs,
+        )
+
+
 def test_build_manifest_rejects_missing_artifact_directory(tmp_path):
     with pytest.raises(ValueError, match="artifact directory"):
         release_candidate_manifest.build_manifest(

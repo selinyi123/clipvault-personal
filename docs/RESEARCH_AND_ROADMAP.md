@@ -389,3 +389,36 @@ Issue #36 manual QA requirements.
 | # | Direction | Sources | Key finding | Decision |
 |---|---|---|---|---|
 | R58 | IME service manifest exposure regression gate | Android Create an input method docs (`https://developer.android.com/develop/ui/views/touch-and-input/creating-input-method`), Android `<service>` manifest docs (`https://developer.android.com/guide/topics/manifest/service-element`), Android `Manifest.permission.BIND_INPUT_METHOD` reference (`https://developer.android.com/reference/android/Manifest.permission#BIND_INPUT_METHOD`), AOSP `InputMethodManager.java` binding comments (`https://android.googlesource.com/platform/frameworks/base.git/+/refs/heads/master/core/java/android/view/inputmethod/InputMethodManager.java`) | Android IMEs are declared as services with `BIND_INPUT_METHOD`, an `android.view.InputMethod` intent filter, and `android.view.im` metadata. `BIND_INPUT_METHOD` is a signature permission that must be required by `InputMethodService` so only the system can bind; AOSP also documents that the framework refuses to bind to IME services that do not require it. ClipVault's manifest already follows this shape for both IME services, but no test would catch a future manifest edit that drops the permission, adds non-IME actions/data/categories, or registers an unreviewed third IME service. | **Adopt now:** add a desktop static manifest test that locks the two known ClipVault IME services to the Android IME service shape: exported system IME service, `BIND_INPUT_METHOD`, exactly one `android.view.InputMethod` action, no intent categories/data, and `android.view.im` metadata pointing at the expected config XML. This is a regression gate only; it does not change manifest semantics or claim device/manual QA completion. |
+
+## Research log - round 26 (2026-07-04)
+
+Scope filter: serve v1.7 Android log privacy and stable-exit evidence only. Do
+not change runtime logging behavior, Android IME behavior, sync payloads,
+runtime dependencies, typed-text policy, analytics policy, signing authority,
+artifact publication semantics, or Issue #36 manual QA requirements.
+
+| # | Direction | Sources | Key finding | Decision |
+|---|---|---|---|---|
+| R59 | Android production log privacy regression gate | Android Log Info Disclosure guidance (`https://developer.android.com/privacy-and-security/risks/log-info-disclosure`), Android security best practices (`https://developer.android.com/privacy-and-security/security-best-practices`), OWASP MASWE-0001 sensitive data in logs (`https://mas.owasp.org/MASWE/MASVS-STORAGE/MASWE-0001/`) | Android advises sanitizing non-debug Logcat output and removing data that may be sensitive. OWASP identifies sensitive data in mobile app/system logs as a confidentiality risk and recommends avoiding, redacting, or removing nonessential production logging. ClipVault already has desktop log-hygiene tests and Android logs currently use constant messages or exception class names, but no Android app source gate would fail if a future change interpolated clip text, memory text, bearer tokens, sync payloads, hosts, or raw stack traces into production logs. | **Adopt now:** add an Android host-JVM source-shape test that allows only constant production `Log.*` messages or exception class-name interpolation and rejects dynamic message interpolation/concatenation plus `printStackTrace()`. Add this evidence to the v1.7 stable exit matrix. This is a regression gate only; it does not change runtime behavior or replace Owner/manual device log QA. |
+
+## Research log - round 26 (2026-07-04)
+
+Scope filter: serve v1.7 stable-exit planning only. Do not change IME runtime
+behavior, sync payloads, runtime dependencies, typed-text policy, analytics
+policy, signing authority, artifact publication semantics, or Issue #36 manual
+QA requirements.
+
+| # | Direction | Sources | Key finding | Decision |
+|---|---|---|---|---|
+| R59 | v1.7 stable exit criteria and evidence tiers | Android UI Automator docs (`https://developer.android.com/training/testing/other-components/ui-automator`), GitHub environment deployment docs (`https://docs.github.com/actions/deployment/targeting-different-environments/using-environments-for-deployment`), GitHub deployment/environment reference (`https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments`), HeliBoard privacy/offline keyboard repo (`https://github.com/HeliBorg/HeliBoard`), HeliBoard F-Droid listing (`https://f-droid.org/en/packages/helium314.keyboard/`) | Android's UI Automator is the right device-test layer for IME interactions because it can drive user apps and system UI, but a compiled `androidTest` scaffold is still weaker evidence than an executed device/emulator run. GitHub environments provide the right owner-controlled approval/secrets boundary for signed release workflows. Privacy-first Android keyboards such as HeliBoard treat offline/no-Internet behavior as a product boundary, which matches ClipVault's IME-local-first rule. | **Adopt now:** convert the v1.7 stability plan from theme bullets into an explicit stable-exit matrix with automated, CI, and Owner/manual evidence columns. Add a static test so future docs cannot confuse compile-only QA scaffolds with executed device QA, unsigned dry-run artifacts with signed releases, or planning labels with a published/stable `v1.7.0`. This is planning/test truthfulness only; it does not publish, sign, run manual QA, or change runtime behavior. |
+
+## Research log - round 27 (2026-07-04)
+
+Scope filter: serve v1.6 release evidence integrity and v1.7 stable-gate
+truthfulness only. Do not change runtime behavior, Android IME behavior, sync
+payload semantics, version metadata, signing authority, artifact publication
+semantics, or Issue #36 manual QA requirements.
+
+| # | Direction | Sources | Key finding | Decision |
+|---|---|---|---|---|
+| R60 | Release manifest state-machine invariants | GitHub artifact attestations docs (`https://docs.github.com/en/actions/concepts/security/artifact-attestations`), SLSA provenance v1 (`https://slsa.dev/provenance/v1`), GitHub release management docs (`https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository`), F-Droid reproducible builds docs (`https://f-droid.org/en/docs/Reproducible_Builds/`), GitHub release asset digest changelog (`https://github.blog/changelog/2025-06-03-releases-now-expose-digests-for-release-assets/`) | Mature release evidence separates artifact bytes, provenance/checksums, signing, draft/published release state, and reproducibility. ClipVault already verifies file hashes and Android apksigner evidence, but the local manifest helpers still allowed contradictory metadata such as a `release-candidate-dry-run` manifest marked `signed=true` or `published=true` if a caller passed the wrong flags. | **Adopt now:** make manifest generation reject dry-run manifests marked signed or published, and make manifest verification reject illegal `kind` values plus signed/published dry-run metadata even when the caller is not explicitly using `--expect-dry-run`. This is release-evidence semantics hardening only; it does not sign, publish, create a GitHub Release, or close Issue #36. |

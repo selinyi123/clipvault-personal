@@ -435,3 +435,54 @@ def test_workflows_use_node24_compatible_github_actions():
                     f"{path.relative_to(_ROOT)} uses {action}@v{major}; "
                     f"use v{minimum}+ so workflows run on Node.js 24-compatible action runtimes"
                 )
+
+
+def test_stability_plan_defines_v1_7_exit_criteria_without_release_overclaim():
+    plan = _read("docs/STABILITY_PLAN_V1_6_V1_7.md")
+
+    assert "## v1.7 stable exit criteria" in plan
+    assert "Do not call v1.7 stable until every row below has evidence recorded" in plan
+    assert "dedicated release-gate issue" in plan
+
+    for required_area in (
+        "IME privacy boundary",
+        "Manual QA automation",
+        "Release supply-chain",
+        "Capture-layer privacy",
+        "Local-first sync reliability",
+        "Documentation-as-release-evidence",
+        "Current-main packaging evidence",
+    ):
+        assert required_area in plan
+
+    for evidence_tier in (
+        "Required automated evidence",
+        "Required CI evidence",
+        "Required Owner/manual evidence",
+        "Stable exit decision",
+    ):
+        assert evidence_tier in plan
+
+    for blocker_truth in (
+        "Not stable if compile-only scaffolds are claimed as executed QA.",
+        "Not stable if unsigned dry-run artifacts are described as signed release artifacts.",
+        "Android production log source-shape privacy",
+        "Not stable if any typed-text logging, implicit save, Android production log payload interpolation",
+        "do not publish `v1.7.0` from this plan alone.",
+        "Treat blocked Owner/manual rows as incomplete",
+    ):
+        assert blocker_truth in plan
+
+
+def test_agent_workflows_status_anchor_avoids_stale_test_counts_and_overclaims():
+    workflows = _read("docs/AGENT_WORKFLOWS.md")
+
+    assert "python -m pytest -q` 输出和 GitHub CI 为准" in workflows
+    assert "不要把旧的固定测试数量写成发布证据" in workflows
+    assert "v1.6 release gate（Issue #36）" in workflows
+    assert "signed artifacts、Owner/manual QA、最终 GitHub Release 发布前不得关闭" in workflows
+    assert "v1.7 stable" in workflows
+    assert "不得声称 `v1.7.0` 已发布或稳定完成" in workflows
+
+    assert "桌面测试：**179**" not in workflows
+    assert "Linux/CI 跑通 + 4 项 Windows-only" not in workflows
