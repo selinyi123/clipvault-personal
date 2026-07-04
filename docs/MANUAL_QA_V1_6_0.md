@@ -79,8 +79,20 @@ Run on a real Android device with the `v1.6.0` APK installed:
 
 ## Manual Windows clipboard privacy QA
 
-Run with a Windows source app or test harness that sets registered clipboard
-privacy formats:
+Run with a Windows source app or the repository probe that sets registered
+clipboard privacy formats:
+
+```powershell
+python tools/clipboard_privacy_probe.py exclude-monitor
+python tools/clipboard_privacy_probe.py viewer-ignore
+python tools/clipboard_privacy_probe.py history-off
+python tools/clipboard_privacy_probe.py cloud-off
+python tools/clipboard_privacy_probe.py normal
+```
+
+The probe overwrites the current Windows clipboard with non-sensitive marker
+text. It is a manual QA helper only; running it does not by itself satisfy the
+Issue #36 gate unless the Owner also records the observed ClipVault result.
 
 1. `ExcludeClipboardContentFromMonitorProcessing` prevents capture.
 2. `Clipboard Viewer Ignore` prevents capture.

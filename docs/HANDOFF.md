@@ -196,6 +196,14 @@
   `docs/INSTRUMENTED_QA_BACKLOG.md` rows, and their shared `@Ignore` reason.
   CI must keep compiling the source set but must not add
   `connectedDebugAndroidTest` until a real device/emulator run is recorded.
+- `tools/clipboard_privacy_probe.py` is a Windows-only manual QA helper for the
+  Issue #36 clipboard privacy gate. It writes non-sensitive probe text plus one
+  registered privacy format (`ExcludeClipboardContentFromMonitorProcessing`,
+  `Clipboard Viewer Ignore`, `CanIncludeInClipboardHistory=0`, or
+  `CanUploadToCloudClipboard=0`) so the Owner can verify ClipVault ignores
+  producer-marked private clipboard items and still captures a normal control.
+  The helper overwrites the current clipboard and does not by itself satisfy the
+  manual QA gate without recorded Owner observation.
 - The unsigned release-candidate dry run now runs automatically on pushes to
   `main`, while PR runs remain path-filtered. Static release-alignment tests
   guard that this current-main evidence path does not gain release secrets,
