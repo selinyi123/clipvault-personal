@@ -250,6 +250,37 @@ def test_release_runbook_uses_live_main_evidence_commands():
     assert not re.search(r"\b[0-9a-f]{40}\b", runbook)
 
 
+def test_manual_qa_evidence_helper_is_documented_without_release_overclaim():
+    script = _ROOT / "tools/manual_qa_evidence.py"
+    manual_qa = _read("docs/MANUAL_QA_V1_6_0.md")
+    runbook = _read("docs/RELEASE_RUNBOOK_V1_6_0.md")
+    research = _read("docs/RESEARCH_AND_ROADMAP.md")
+    handoff = _read("docs/HANDOFF.md")
+
+    assert script.exists()
+    script_text = script.read_text(encoding="utf-8")
+    assert "does not call GitHub" in script_text
+    assert "does not replace signed artifact evidence" in script_text
+    assert "android_device_qa" in script_text
+    assert "ime_privacy_qa" in script_text
+    assert "sync_qa" in script_text
+    assert "windows_clipboard_privacy_qa" in script_text
+
+    for doc in (manual_qa, runbook):
+        assert "python tools/manual_qa_evidence.py --write-template manual-qa-v1.6.0.json" in doc
+        assert "python tools/manual_qa_evidence.py --input manual-qa-v1.6.0.json --no-fail" in doc
+        assert "python tools/manual_qa_evidence.py --input manual-qa-v1.6.0.json --output manual-qa-issue-comment.md" in doc
+        assert "does not replace signed artifact evidence" in doc
+        assert "Issue #36" in doc
+
+    assert "R83 | Structured manual QA evidence" in research
+    assert "does not run device QA" in research
+    assert "does not replace signed artifact evidence" in research
+    assert "tools/manual_qa_evidence.py" in handoff
+    assert "does not run device QA" in handoff
+    assert "does not replace signed-artifact/final-release evidence" in handoff
+
+
 def test_release_runbook_uses_release_environment_secrets():
     runbook = _read("docs/RELEASE_RUNBOOK_V1_6_0.md")
     manual_qa = _read("docs/MANUAL_QA_V1_6_0.md")

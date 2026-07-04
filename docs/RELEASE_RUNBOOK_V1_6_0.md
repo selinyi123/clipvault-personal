@@ -168,7 +168,26 @@ Comment on Issue #36 with:
 
 Do not close Issue #36 until manual device QA is also recorded.
 
-## 6. Optional draft GitHub Release
+## 6. Record manual QA evidence on Issue #36
+
+After running the real Android device, IME privacy, sync, and Windows clipboard
+privacy checks from `docs/MANUAL_QA_V1_6_0.md`, use the local helper to validate
+and render the manual-QA evidence comment:
+
+```powershell
+python tools/manual_qa_evidence.py --write-template manual-qa-v1.6.0.json
+python tools/manual_qa_evidence.py --input manual-qa-v1.6.0.json --no-fail
+python tools/manual_qa_evidence.py --input manual-qa-v1.6.0.json --output manual-qa-issue-comment.md
+```
+
+Post the rendered comment only after the Owner has filled the JSON with real
+observations. The helper is local-only: it does not call GitHub, run device QA,
+sign artifacts, publish releases, edit checklist rows, or close Issue #36. A
+passing manual-QA report still does not replace signed artifact evidence, final
+Windows artifact evidence, release environment/secrets evidence, or final
+Owner-approved GitHub Release publication.
+
+## 7. Optional draft GitHub Release
 
 Only after Owner approval, rerun the workflow with:
 
