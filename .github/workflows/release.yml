@@ -30,6 +30,10 @@ jobs:
           RELEASE_TAG: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          if [[ "${GITHUB_REF_NAME:-}" != "main" ]]; then
+            echo "::error::Release artifact build must run from main, got ${GITHUB_REF_NAME:-unknown}"
+            exit 1
+          fi
           if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::version must be a release tag like v1.6.0"
             exit 1

@@ -42,6 +42,9 @@
   workflow triggers (`pull_request_target` and `workflow_run`) unless a future
   reviewed ADR deliberately changes that release-chain boundary. Current PR
   code remains on ordinary `pull_request` jobs without release secrets.
+- `Release artifact build` now fails closed unless a manual dispatch runs from
+  the `main` ref; `test_release_alignment.py` guards this so signed release
+  evidence cannot be prepared from a stale branch or tag by accident.
 - `test_webui_security.py` now runs `node --check` when Node is available so the
   packaged Web UI cannot regress to syntactically invalid JavaScript unnoticed.
 - `test_webui_security.py` now also guards the local Web UI against additional
