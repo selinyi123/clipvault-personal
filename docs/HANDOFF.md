@@ -47,9 +47,11 @@
   evidence cannot be prepared from a stale branch or tag by accident.
 - `tools/release_readiness.py` is a read-only Issue #36 readiness report. It
   checks current-main CI/dry-run evidence, release environment/secret names,
-  signed-artifact workflow status, GitHub Release state, and the Issue #36
-  checklist without triggering workflows, setting secrets, creating releases,
-  uploading artifacts, completing manual QA, or closing the issue.
+  signed-artifact workflow status, displayed manual-dispatch inputs, GitHub
+  Release state, and the Issue #36 checklist without triggering workflows, setting secrets, creating releases, uploading artifacts, completing manual QA, or closing the issue.
+- The same readiness report now parses Issue #36 task-list rows and prints the
+  exact unchecked release-gate checklist items, so the next Owner evidence step
+  can target the missing rows directly without treating a count as completion.
 - `test_webui_security.py` now runs `node --check` when Node is available so the
   packaged Web UI cannot regress to syntactically invalid JavaScript unnoticed.
 - `test_webui_security.py` now also guards the local Web UI against additional

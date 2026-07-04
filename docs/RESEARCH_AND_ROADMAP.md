@@ -620,3 +620,23 @@ Releases, upload artifacts, run manual QA, or close Issue #36.
 | # | Direction | Sources | Key finding | Decision |
 |---|---|---|---|---|
 | R80 | Read-only release gate readiness checks | GitHub CLI `gh secret list` manual (`https://cli.github.com/manual/gh_secret_list`), GitHub CLI `gh run list` manual (`https://cli.github.com/manual/gh_run_list`), GitHub CLI `gh workflow run` manual (`https://cli.github.com/manual/gh_workflow_run`), Android `apksigner` docs (`https://developer.android.com/tools/apksigner`) | The GitHub CLI can list environment secret names without exposing values, list workflow runs with JSON fields such as `headSha`/`status`/`conclusion`/`url`, and dispatch workflows only when explicitly asked. Android documents `apksigner verify --print-certs` as the release-signature evidence source. ClipVault's runbook had the right manual commands, but no single read-only tool summarized whether current-main CI/dry-run, `release` environment/secrets, signed-artifact workflow evidence, Release publication, and Issue #36 checklist state were aligned. | **Adopt now:** add `tools/release_readiness.py` as a read-only GitHub-state report that returns blocked/pass/warn rows and refuses write-oriented `gh` subcommands. Link it from the v1.6.0 runbook and guard the link in `test_release_alignment.py`. This reduces evidence drift only; it does not sign artifacts, verify downloaded artifact bytes, complete manual QA, publish `v1.6.0`, or close Issue #36. |
+
+## Research log - round 47 (2026-07-04)
+
+Scope filter: serve signed release workflow input-evidence clarity only. Do not
+trigger workflows, set secrets, create releases, upload artifacts, change
+runtime behavior, complete manual QA, or close Issue #36.
+
+| # | Direction | Sources | Key finding | Decision |
+|---|---|---|---|---|
+| R81 | Manual release run input evidence | GitHub Actions workflow syntax `run-name` docs (`https://docs.github.com/actions/using-workflows/workflow-syntax-for-github-actions`), GitHub manual workflow docs (`https://docs.github.com/actions/managing-workflow-runs/manually-running-a-workflow`), GitHub CLI `gh run view` manual (`https://cli.github.com/manual/gh_run_view`) | GitHub displays a workflow run name in the Actions run list, `run-name` can reference the `inputs` and `github` contexts, manual workflows can be run against a selected branch/ref with supplied inputs, and `gh run view/list --json` exposes `displayTitle`. ClipVault's readiness checker previously saw only that a `Release artifact build` run succeeded for the current commit; it could not prove from the run list that the visible release inputs were `version=v1.6.0` and the expected draft flag. | **Adopt now:** give `Release artifact build` a run name containing version, ref, and draft flag, then require `tools/release_readiness.py` to treat a successful signed-artifact run as usable evidence only when its `displayTitle` matches `Release artifacts v1.6.0 from main draft=false` or the later Owner-approved `draft=true` pass. This is evidence-label hardening only; artifact bytes, APK signature evidence, manual QA, and final publication still require separate proof. |
+
+## Research log - round 48 (2026-07-04)
+
+Scope filter: serve Issue #36 closure-path precision only. Do not edit the
+issue, infer manual QA, sign artifacts, create releases, or replace Owner
+evidence.
+
+| # | Direction | Sources | Key finding | Decision |
+|---|---|---|---|---|
+| R82 | Issue checklist detail in readiness output | GitHub issue forms syntax docs (`https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/syntax-for-issue-forms`), GitHub issue template docs (`https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository`), GitHub CLI `gh issue comment` manual (`https://cli.github.com/manual/gh_issue_comment`) | GitHub task lists and issue forms make release gates more reliable when required evidence is structured and reviewable. ClipVault's readiness checker already read Issue #36, but it only counted unchecked rows; the Owner still had to reopen the issue body and manually identify exact missing checklist items. | **Adopt now:** parse GitHub Markdown task-list rows from Issue #36 and include checked/unchecked counts plus exact unchecked item text in the readiness JSON/text output. This makes the next closure step precise while remaining read-only; it does not update the issue, complete manual QA, sign artifacts, publish a Release, or close #36. |

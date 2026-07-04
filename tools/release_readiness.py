@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ REQUIRED_RELEASE_ENV_SECRETS = {
     "ANDROID_RELEASE_KEY_ALIAS",
     "ANDROID_RELEASE_KEY_PASSWORD",
 }
+CHECKLIST_ITEM_RE = re.compile(r"(?m)^\s*[-*]\s+\[(?P<mark>[ xX])\]\s+(?P<text>.+?)\s*$")
 
 READ_ONLY_GH_SUBCOMMANDS = {
     ("api",),
@@ -49,15 +51,19 @@ class Gate:
     detail: str
     evidence: str = ""
     next_step: str = ""
+    metadata: dict[str, object] | None = None
 
-    def as_dict(self) -> dict[str, str]:
-        return {
+    def as_dict(self) -> dict[str, object]:
+        data: dict[str, object] = {
             "name": self.name,
             "status": self.status,
             "detail": self.detail,
             "evidence": self.evidence,
             "next_step": self.next_step,
         }
+        if self.metadata is not None:
+            data["metadata"] = self.metadata
+        return data
 
 
 Runner = Callable[[list[str]], CommandResult]
@@ -107,16 +113,83 @@ def _run_json(runner: Runner, args: list[str], label: str) -> object:
     return _load_json(runner(args), label)
 
 
-def _pass(name: str, detail: str, *, evidence: str = "") -> Gate:
-    return Gate(name=name, status="pass", detail=detail, evidence=evidence)
+def _pass(
+    name: str,
+    detail: str,
+    *,
+    evidence: str = "",
+    metadata: dict[str, object] | None = None,
+) -> Gate:
+    return Gate(name=name, status="pass", detail=detail, evidence=evidence, metadata=metadata)
 
 
-def _blocked(name: str, detail: str, *, evidence: str = "", next_step: str = "") -> Gate:
-    return Gate(name=name, status="blocked", detail=detail, evidence=evidence, next_step=next_step)
+def _blocked(
+    name: str,
+    detail: str,
+    *,
+    evidence: str = "",
+    next_step: str = "",
+    metadata: dict[str, object] | None = None,
+) -> Gate:
+    return Gate(
+        name=name,
+        status="blocked",
+        detail=detail,
+        evidence=evidence,
+        next_step=next_step,
+        metadata=metadata,
+    )
 
 
-def _warn(name: str, detail: str, *, evidence: str = "", next_step: str = "") -> Gate:
-    return Gate(name=name, status="warn", detail=detail, evidence=evidence, next_step=next_step)
+def _warn(
+    name: str,
+    detail: str,
+    *,
+    evidence: str = "",
+    next_step: str = "",
+    metadata: dict[str, object] | None = None,
+) -> Gate:
+    return Gate(
+        name=name,
+        status="warn",
+        detail=detail,
+        evidence=evidence,
+        next_step=next_step,
+        metadata=metadata,
+    )
+
+
+def parse_issue_checklist(body: str) -> list[dict[str, object]]:
+    """Parse GitHub Markdown task-list rows from an issue body."""
+    items: list[dict[str, object]] = []
+    for match in CHECKLIST_ITEM_RE.finditer(body):
+        text = " ".join(match.group("text").split())
+        if not text:
+            continue
+        items.append({
+            "checked": match.group("mark").lower() == "x",
+            "text": text,
+        })
+    return items
+
+
+def issue_checklist_metadata(items: list[dict[str, object]]) -> dict[str, object]:
+    checked_items = [
+        str(item["text"])
+        for item in items
+        if item.get("checked") is True
+    ]
+    unchecked_items = [
+        str(item["text"])
+        for item in items
+        if item.get("checked") is False
+    ]
+    return {
+        "checked_count": len(checked_items),
+        "unchecked_count": len(unchecked_items),
+        "checked_items": checked_items,
+        "unchecked_items": unchecked_items,
+    }
 
 
 def fetch_main_sha(runner: Runner, repo: str, branch: str) -> tuple[str | None, Gate]:
@@ -189,7 +262,7 @@ def check_workflow_success(
                 "--limit",
                 "10",
                 "--json",
-                "databaseId,status,conclusion,headSha,url,event,createdAt",
+                "databaseId,status,conclusion,headSha,url,event,createdAt,displayTitle",
             ],
             workflow,
         )
@@ -296,6 +369,7 @@ def check_release_artifact_run(
     *,
     repo: str,
     branch: str,
+    version: str,
     sha: str | None,
 ) -> Gate:
     if sha is None:
@@ -320,7 +394,7 @@ def check_release_artifact_run(
                 "--limit",
                 "10",
                 "--json",
-                "databaseId,status,conclusion,headSha,url,event,createdAt",
+                "databaseId,status,conclusion,headSha,url,event,createdAt,displayTitle",
             ],
             "Release artifact build",
         )
@@ -336,13 +410,54 @@ def check_release_artifact_run(
         return _blocked(
             "signed release artifact workflow",
             f"No successful Release artifact build run found for current {branch} SHA {sha}.",
-            next_step="After release environment/secrets exist, Owner runs Release artifact build on `main` with version=v1.6.0 and create_draft_release=false.",
+            next_step=(
+                "After release environment/secrets exist, Owner runs Release artifact build "
+                f"on `{branch}` with version={version} and create_draft_release=false."
+            ),
+        )
+    if run.get("event") != "workflow_dispatch":
+        return _blocked(
+            "signed release artifact workflow",
+            "Successful Release artifact build run did not come from workflow_dispatch.",
+            evidence=str(run.get("url", "")),
+            next_step="Use the Owner-controlled manual release workflow path from the v1.6.0 runbook.",
+        )
+
+    expected_titles = {
+        f"Release artifacts {version} from {branch} draft=false",
+        f"Release artifacts {version} from {branch} draft=true",
+    }
+    display_title = str(run.get("displayTitle") or "")
+    if display_title not in expected_titles:
+        return _blocked(
+            "signed release artifact workflow",
+            (
+                f"Successful Release artifact build run exists for current {branch}, "
+                "but its displayed dispatch inputs do not prove the expected "
+                f"{version} / {branch} release run."
+            ),
+            evidence=str(run.get("url", "")),
+            next_step=(
+                "Run the current workflow from `main`; its run name must be "
+                f"`Release artifacts {version} from {branch} draft=false` for "
+                "the pre-publication artifact pass, or `draft=true` for the "
+                "Owner-approved draft-release pass."
+            ),
+            metadata={
+                "display_title": display_title,
+                "expected_display_titles": sorted(expected_titles),
+            },
         )
     return _warn(
         "signed release artifact workflow",
-        "A successful Release artifact build run exists for current main, but this script cannot verify workflow inputs or downloaded artifact contents.",
+        (
+            f"A successful Release artifact build run exists for current {branch} "
+            "with matching displayed dispatch inputs, but this script cannot verify "
+            "downloaded artifact contents."
+        ),
         evidence=str(run.get("url", "")),
         next_step="Inspect artifacts for ANDROID_APKSIGNER_VERIFY.txt, SHA256SUMS.txt, and RELEASE_MANIFEST.json with signed=true.",
+        metadata={"display_title": display_title},
     )
 
 
@@ -417,13 +532,24 @@ def check_issue_state(runner: Runner, repo: str) -> Gate:
         )
     state = data.get("state")
     body = data.get("body", "")
-    unchecked = body.count("- [ ]") if isinstance(body, str) else 0
+    checklist_items = parse_issue_checklist(body if isinstance(body, str) else "")
+    checklist_metadata = issue_checklist_metadata(checklist_items)
+    unchecked = int(checklist_metadata["unchecked_count"])
     if state != "OPEN":
         return _warn(
             f"Issue #{ISSUE_NUMBER}",
             f"Issue #{ISSUE_NUMBER} is {state}; expected OPEN until all release evidence is recorded.",
             evidence=str(data.get("url", "")),
             next_step="Reopen or verify every owner-controlled release gate before treating v1.6.0 as stable.",
+            metadata=checklist_metadata,
+        )
+    if not checklist_items:
+        return _blocked(
+            f"Issue #{ISSUE_NUMBER}",
+            f"Issue #{ISSUE_NUMBER} body has no GitHub task-list checklist items.",
+            evidence=str(data.get("url", "")),
+            next_step="Restore explicit release-gate checklist items before treating the issue as closable.",
+            metadata=checklist_metadata,
         )
     if unchecked:
         return _blocked(
@@ -431,11 +557,13 @@ def check_issue_state(runner: Runner, repo: str) -> Gate:
             f"Issue #{ISSUE_NUMBER} is open with {unchecked} unchecked release-gate checklist items.",
             evidence=str(data.get("url", "")),
             next_step="Record real evidence for each unchecked item before closing.",
+            metadata=checklist_metadata,
         )
     return _pass(
         f"Issue #{ISSUE_NUMBER}",
         f"Issue #{ISSUE_NUMBER} is open and its body has no unchecked checklist items.",
         evidence=str(data.get("url", "")),
+        metadata=checklist_metadata,
     )
 
 
@@ -467,7 +595,7 @@ def build_report(
     env_exists, env_gate = check_release_environment(runner, repo)
     gates.append(env_gate)
     gates.append(check_release_environment_secrets(runner, repo, env_exists))
-    gates.append(check_release_artifact_run(runner, repo=repo, branch=branch, sha=main_sha))
+    gates.append(check_release_artifact_run(runner, repo=repo, branch=branch, version=version, sha=main_sha))
     gates.append(check_release_publication(runner, repo, version))
     gates.append(check_issue_state(runner, repo))
 
@@ -506,11 +634,18 @@ def _render_text(report: dict[str, object]) -> str:
             lines.append(f"  evidence: {gate['evidence']}")
         if gate.get("next_step"):
             lines.append(f"  next: {gate['next_step']}")
+        metadata = gate.get("metadata")
+        if isinstance(metadata, dict):
+            unchecked_items = metadata.get("unchecked_items")
+            if isinstance(unchecked_items, list) and unchecked_items:
+                lines.append("  unchecked:")
+                for item in unchecked_items:
+                    lines.append(f"    - {item}")
     lines.extend(["", str(report["scope_note"])])
     return "\n".join(lines) + "\n"
 
 
-def _statuses(gates: Iterable[dict[str, str]]) -> set[str]:
+def _statuses(gates: Iterable[dict[str, object]]) -> set[str]:
     return {gate["status"] for gate in gates}
 
 

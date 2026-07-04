@@ -1,4 +1,5 @@
 name: Release artifact build
+run-name: Release artifacts ${{ inputs.version }} from ${{ github.ref_name }} draft=${{ inputs.create_draft_release }}
 
 on:
   workflow_dispatch:
