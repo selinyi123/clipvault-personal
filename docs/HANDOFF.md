@@ -44,6 +44,11 @@
   code remains on ordinary `pull_request` jobs without release secrets.
 - `test_webui_security.py` now runs `node --check` when Node is available so the
   packaged Web UI cannot regress to syntactically invalid JavaScript unnoticed.
+- `test_webui_security.py` now also guards the local Web UI against additional
+  browser-side privacy/security regressions: no cross-window messaging,
+  Web Storage, navigation URL sinks, dynamic script loading, remote static
+  resources, or inline event handlers. This keeps the local clipboard/memory UI
+  on first-party static files and safe DOM APIs.
 - This does not change IME runtime semantics: candidate loading and explicit
   save still go through the Runtime facade; sync work remains outside the IME.
 - The desktop API/Web UI now sends `Cache-Control: no-store`, `Pragma: no-cache`,
