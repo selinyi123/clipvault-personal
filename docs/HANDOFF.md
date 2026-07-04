@@ -37,6 +37,15 @@
   smoke rows before rendering a Markdown issue comment draft. It does not
   download artifacts, install apps, run device QA, post to GitHub, sign or
   publish releases, close Issue #82, close Issue #36, or claim v1.7 stable.
+- `tools/field_test_readiness.py` is a read-only Issue #82 live readiness
+  report. It checks the current `main` SHA, current-main CI, current-main
+  release-candidate dry run, required candidate artifact inventory, Issue #82
+  checklist rows, and whether the issue body/comments mention the current SHA
+  plus matching CI/release-candidate run URLs. It catches stale issue-body baselines
+  without editing the issue. It does not trigger workflows,
+  download artifacts, verify downloaded manifest/checksum bytes, run device QA,
+  post comments, sign or publish releases, close Issue #82/#36, or claim v1.7
+  stable; GitHub artifact inventory still is not downloaded-byte proof.
 - `docs/STABILITY_PLAN_V2_0.md` now defines v2.0 stable as the keyboard
   mainline dual-IME entrypoint stability milestone: ClipVault Panel plus
   ClipVault Keyboard Lab in the same APK with automated, CI, and Owner/manual

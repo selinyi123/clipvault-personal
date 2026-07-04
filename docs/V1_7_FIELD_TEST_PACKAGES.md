@@ -139,6 +139,29 @@ the field-test report ready. `blocked` and `fail` rows must include a concrete
 next step. A ready field-test report is still not v1.7 stable evidence by
 itself; stable release remains gated by the exit criteria below.
 
+## Read-only readiness report
+
+Before asking the Owner to spend device time, run the read-only Issue #82
+readiness checker:
+
+```powershell
+python tools/field_test_readiness.py --no-fail
+python tools/field_test_readiness.py --json --no-fail
+```
+
+The checker reads the current `main` SHA, the latest matching CI and
+`Release candidate dry run` runs, the release-candidate artifact metadata from
+GitHub's workflow-run artifacts API, and the Issue #82 body/comments. It is
+intended to catch evidence drift such as a stale issue-body baseline while a
+newer comment contains the current SHA and run URLs.
+
+The readiness checker does not download artifacts, verify local artifact bytes,
+install apps, run device QA, post comments, edit Issue #82, sign or publish
+releases, close Issue #82, close Issue #36, or claim v1.7 stable. A pass on the
+artifact-metadata row only means GitHub still reports the named candidate
+artifacts as present and not expired; downloaded manifest/checksum verification
+and real-device smoke remain separate Owner/action rows.
+
 ## Device-use rules
 
 - Windows: use the candidate portable executable and installer for install,
