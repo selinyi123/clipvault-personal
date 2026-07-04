@@ -14,6 +14,9 @@ It does not replace the manual Android/IME/sync/Windows clipboard QA evidence.
   still queued.
 - Run `Release artifact build` only with `--ref main`; the workflow fails closed
   if manually dispatched from any other branch or tag.
+- The signed artifact pre-publication run should appear in GitHub Actions as
+  `Release artifacts v1.6.0 from main draft=false`; the optional draft-release
+  pass should appear as `Release artifacts v1.6.0 from main draft=true`.
 
 ## 0. Run the read-only readiness report
 
@@ -28,7 +31,10 @@ python tools/release_readiness.py --json --no-fail
 
 The checker is read-only. It must not trigger workflows, set secrets, create or
 publish a GitHub Release, upload artifacts, complete manual QA, or close Issue
-#36. Treat every `blocked` row as the next real evidence gap to close.
+#36. Treat every `blocked` row as the next real evidence gap to close. The
+Issue #36 row also lists the unchecked release-gate checklist items so the Owner
+can record evidence against the exact remaining rows instead of re-counting the
+issue body manually.
 
 ## 1. Confirm current main evidence
 
@@ -136,6 +142,13 @@ The run must complete these jobs successfully:
 
 - Windows release artifacts
 - Android signed release APK
+
+The run title must match the requested release inputs:
+
+- `Release artifacts v1.6.0 from main draft=false` for the first signed-artifact
+  evidence run.
+- `Release artifacts v1.6.0 from main draft=true` only for the later
+  Owner-approved draft-release pass.
 
 The Android artifact must include:
 

@@ -186,6 +186,10 @@ def test_panel_candidate_tabs_helper_and_test_exist():
 def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
     workflow = _read(".github/workflows/release.yml")
 
+    assert (
+        "run-name: Release artifacts ${{ inputs.version }} from "
+        "${{ github.ref_name }} draft=${{ inputs.create_draft_release }}"
+    ) in workflow
     assert "workflow_dispatch:" in workflow
     assert "\n  push:" not in workflow
     assert "\n  pull_request:" not in workflow
@@ -233,10 +237,12 @@ def test_release_runbook_uses_live_main_evidence_commands():
     assert "python tools/release_readiness.py --json --no-fail" in runbook
     assert "The checker is read-only." in runbook
     assert "must not trigger workflows, set secrets, create or" in runbook
+    assert "lists the unchecked release-gate checklist items" in runbook
     assert (_ROOT / "tools/release_readiness.py").exists()
     assert "gh run list" in runbook
     assert "gh workflow run \"Release candidate dry run\"" in runbook
     assert "Release artifact build` only with `--ref main`" in runbook
+    assert "Release artifacts v1.6.0 from main draft=false" in runbook
     assert "The signed release workflow must run from the current `main` ref" in runbook
     assert "CI_RUN_ID" in runbook
     assert "RELEASE_CANDIDATE_DRY_RUN_ID" in runbook
@@ -727,7 +733,8 @@ def test_handoff_current_state_anchors_v1_6_gate_before_v1_7_or_v2_work():
         "## Recent completed note", 1
     )[0]
     assert "tools/release_readiness.py" in current_development_note
-    assert "without triggering workflows, setting secrets, creating releases" in current_development_note
+    assert re.search(r"without\s+triggering\s+workflows,\s+setting\s+secrets,\s+creating\s+releases", current_development_note)
+    assert re.search(r"prints\s+the\s+exact\s+unchecked\s+release-gate\s+checklist\s+items", current_development_note)
 
     current_version = handoff.split("## Current Version Status", 1)[1].split(
         "## Hardening Support Line Snapshot", 1

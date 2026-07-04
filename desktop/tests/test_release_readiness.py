@@ -54,7 +54,7 @@ def _run_list_command(workflow):
         "--limit",
         "10",
         "--json",
-        "databaseId,status,conclusion,headSha,url,event,createdAt",
+        "databaseId,status,conclusion,headSha,url,event,createdAt,displayTitle",
     )
 
 
@@ -67,6 +67,7 @@ def _base_responses(*, sha="a" * 40, environments=None, issue_body="- [ ] missin
         "url": "https://github.com/owner/repo/actions/runs/123",
         "event": "push",
         "createdAt": "2026-07-04T00:00:00Z",
+        "displayTitle": "CI fixture",
     }]
     return {
         (
@@ -133,7 +134,34 @@ def test_report_blocks_missing_owner_controlled_release_evidence():
     assert gates["signed release artifact workflow"]["status"] == "blocked"
     assert gates["GitHub Release publication"]["status"] == "blocked"
     assert gates["Issue #36"]["status"] == "blocked"
+    assert gates["Issue #36"]["metadata"]["unchecked_items"] == ["missing"]
     assert "does not trigger workflows" in report["scope_note"]
+
+
+def test_issue_checklist_parser_returns_checked_and_unchecked_items():
+    body = """
+Automated evidence:
+- [x] Confirm current-main GitHub Actions CI green.
+- [X] Confirm current-main release-candidate dry run green.
+
+Owner evidence:
+- [ ] Create/configure the `release` GitHub environment.
+* [ ] Manual Windows clipboard privacy QA: source app formats are not captured.
+"""
+
+    items = release_readiness.parse_issue_checklist(body)
+    metadata = release_readiness.issue_checklist_metadata(items)
+
+    assert metadata["checked_count"] == 2
+    assert metadata["unchecked_count"] == 2
+    assert metadata["checked_items"] == [
+        "Confirm current-main GitHub Actions CI green.",
+        "Confirm current-main release-candidate dry run green.",
+    ]
+    assert metadata["unchecked_items"] == [
+        "Create/configure the `release` GitHub environment.",
+        "Manual Windows clipboard privacy QA: source app formats are not captured.",
+    ]
 
 
 def test_release_environment_secret_names_are_checked_without_values():
@@ -169,7 +197,7 @@ def test_release_environment_secret_names_are_checked_without_values():
     assert "ANDROID_RELEASE_KEYSTORE_PASSWORD=" not in gate["detail"]
 
 
-def test_successful_release_artifact_run_is_warning_until_artifacts_are_inspected():
+def test_successful_release_artifact_run_with_matching_dispatch_title_is_warning_until_artifacts_are_inspected():
     sha = "b" * 40
     responses = _base_responses(
         sha=sha,
@@ -198,6 +226,7 @@ def test_successful_release_artifact_run_is_warning_until_artifacts_are_inspecte
         "url": "https://github.com/owner/repo/actions/runs/456",
         "event": "workflow_dispatch",
         "createdAt": "2026-07-04T00:00:00Z",
+        "displayTitle": "Release artifacts v1.6.0 from main draft=false",
     }]))
     fake = FakeGh(responses)
 
@@ -210,8 +239,56 @@ def test_successful_release_artifact_run_is_warning_until_artifacts_are_inspecte
 
     gate = {gate["name"]: gate for gate in report["gates"]}["signed release artifact workflow"]
     assert gate["status"] == "warn"
-    assert "cannot verify workflow inputs or downloaded artifact contents" in gate["detail"]
+    assert "matching displayed dispatch inputs" in gate["detail"]
     assert "ANDROID_APKSIGNER_VERIFY.txt" in gate["next_step"]
+    assert gate["metadata"]["display_title"] == "Release artifacts v1.6.0 from main draft=false"
+
+
+def test_release_artifact_run_blocks_when_displayed_dispatch_inputs_do_not_match():
+    sha = "e" * 40
+    responses = _base_responses(
+        sha=sha,
+        environments=[{"name": "release"}],
+        issue_body="all checklist rows recorded\n",
+    )
+    responses[(
+        "gh",
+        "secret",
+        "list",
+        "--repo",
+        "owner/repo",
+        "--env",
+        "release",
+        "--json",
+        "name,updatedAt",
+    )] = _success(_json([
+        {"name": name, "updatedAt": "2026-07-04T00:00:00Z"}
+        for name in sorted(release_readiness.REQUIRED_RELEASE_ENV_SECRETS)
+    ]))
+    responses[_run_list_command("Release artifact build")] = _success(_json([{
+        "databaseId": 457,
+        "status": "completed",
+        "conclusion": "success",
+        "headSha": sha,
+        "url": "https://github.com/owner/repo/actions/runs/457",
+        "event": "workflow_dispatch",
+        "createdAt": "2026-07-04T00:00:00Z",
+        "displayTitle": "Release artifacts v1.5.10 from main draft=false",
+    }]))
+    fake = FakeGh(responses)
+
+    report = release_readiness.build_report(
+        runner=fake,
+        repo="owner/repo",
+        version="v1.6.0",
+        branch="main",
+    )
+
+    gate = {gate["name"]: gate for gate in report["gates"]}["signed release artifact workflow"]
+    assert gate["status"] == "blocked"
+    assert "do not prove the expected v1.6.0 / main release run" in gate["detail"]
+    assert "Release artifacts v1.6.0 from main draft=false" in gate["next_step"]
+    assert gate["metadata"]["display_title"] == "Release artifacts v1.5.10 from main draft=false"
 
 
 def test_workflow_success_must_match_current_main_sha():
@@ -225,6 +302,7 @@ def test_workflow_success_must_match_current_main_sha():
         "url": "https://github.com/owner/repo/actions/runs/789",
         "event": "push",
         "createdAt": "2026-07-04T00:00:00Z",
+        "displayTitle": "stale CI fixture",
     }]))
     fake = FakeGh(responses)
 
@@ -266,6 +344,12 @@ def test_text_renderer_marks_blocked_gates():
             "detail": "missing",
             "evidence": "",
             "next_step": "create environment",
+            "metadata": {
+                "unchecked_items": [
+                    "Create/configure the `release` GitHub environment.",
+                    "Manual Android device QA.",
+                ],
+            },
         }],
     }
 
@@ -273,3 +357,6 @@ def test_text_renderer_marks_blocked_gates():
 
     assert "[ ] release environment: missing" in text
     assert "next: create environment" in text
+    assert "unchecked:" in text
+    assert "Create/configure the `release` GitHub environment." in text
+    assert "Manual Android device QA." in text
