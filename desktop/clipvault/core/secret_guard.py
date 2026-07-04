@@ -23,6 +23,7 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("SG-GOOGLE", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
     ("SG-JWT", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b")),
     # High-confidence distinctive-prefix provider keys (low false-positive shape).
+    ("SG-HUGGINGFACE", re.compile(r"\bhf_[A-Za-z0-9]{34}\b")),
     ("SG-STRIPE", re.compile(r"\b[sr]k_(?:live|test)_[0-9A-Za-z]{16,}\b")),
     ("SG-GITLAB", re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b")),
     ("SG-SENDGRID", re.compile(r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b")),

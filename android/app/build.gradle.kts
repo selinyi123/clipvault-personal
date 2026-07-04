@@ -15,6 +15,7 @@ android {
         targetSdk = 34
         versionCode = 13
         versionName = "1.6.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     // Release signing reads from -P properties (or ~/.gradle), so the keystore
     // and passwords never live in the repo. Falls back gracefully when unset.
@@ -67,9 +68,12 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     testImplementation("junit:junit:4.13.2")
-    // androidTest holds the residual on-device QA checks (ResidualImeChecksTest).
-    // They are @Ignore-d scaffolds — running them needs the AndroidJUnitRunner +
-    // espresso/uiautomator deps listed in docs/INSTRUMENTED_QA_BACKLOG.md. CI does
-    // not compile or run androidTest, so this stays inert until a device cycle.
+
+    // Compile the residual IME manual-QA scaffolds without running them.
+    // Device/emulator execution remains an explicit Owner/manual QA gate.
     androidTestImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
 }

@@ -23,6 +23,7 @@ class SecretGuardProviderTest {
         val a = "A".repeat(20)
         assertEquals(listOf("SG-STRIPE"), reasons("sk_" + "live_" + a))
         assertEquals(listOf("SG-STRIPE"), reasons("rk_" + "test_" + a))
+        assertEquals(listOf("SG-HUGGINGFACE"), reasons("hf_" + "A".repeat(34)))
         assertEquals(listOf("SG-GITLAB"), reasons("glpat-" + a))
         assertEquals(listOf("SG-SENDGRID"), reasons("SG." + "A".repeat(22) + "." + "A".repeat(43)))
         assertEquals(listOf("SG-NPM"), reasons("npm_" + "A".repeat(36)))
@@ -33,5 +34,11 @@ class SecretGuardProviderTest {
     @Test
     fun ignoresPlainNpmCommand() {
         assertFalse(SecretGuard.scan("npm install --save lodash").isSecret)
+    }
+
+    @Test
+    fun ignoresPlainHuggingFaceNotesAndShortPrefix() {
+        assertFalse(SecretGuard.scan("hf_model_cache directory notes").isSecret)
+        assertFalse(SecretGuard.scan("hf_" + "A".repeat(33)).isSecret)
     }
 }

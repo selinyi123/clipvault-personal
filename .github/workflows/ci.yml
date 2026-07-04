@@ -70,5 +70,8 @@ jobs:
       - name: Run Android unit tests
         run: ./gradlew :core:test :app:testDebugUnitTest --no-daemon
 
+      - name: Compile Android instrumented QA sources
+        run: ./gradlew :app:compileDebugAndroidTestKotlin --no-daemon
+
       - name: Assemble debug APK
         run: ./gradlew :app:assembleDebug --no-daemon

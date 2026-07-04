@@ -4,6 +4,7 @@ real-socket auth check (H2)."""
 
 import threading
 import http.client
+import json
 import tempfile
 import os
 
@@ -446,7 +447,11 @@ def test_h9_local_public_in_outbox_secret_not(api, conn):
 def test_status_reports_paired_device_summary(api, conn):
     # Release-state display: status surfaces how many devices are paired and the
     # most recent peer contact, without exposing any device identifiers.
-    assert api.status()[1]["sync"] == {"paired_devices": 0, "last_peer_sync_at": None}
+    assert api.status()[1]["sync"] == {
+        "paired_devices": 0,
+        "last_peer_sync_at": None,
+        "blocked_pull": None,
+    }
     token = _pair(api)
     assert api.status()[1]["sync"]["paired_devices"] == 1
     # a pull updates last_seen, which then shows as the most recent sync
@@ -454,6 +459,33 @@ def test_status_reports_paired_device_summary(api, conn):
     sync = api.status()[1]["sync"]
     assert sync["paired_devices"] == 1
     assert sync["last_peer_sync_at"] is not None
+    assert sync["blocked_pull"] is None
+
+
+def test_status_reports_oversized_pull_block_without_content(api, conn):
+    _pair(api)
+    outbox = OutboxRepo(conn)
+    secret_text = "status-visible-content-must-not-leak"
+    oversized_content = secret_text + ("x" * sync_engine.SYNC_PULL_RESPONSE_BYTES)
+    seq = outbox.append(
+        "clip_new",
+        {"content": oversized_content, "content_hash": "blocked-status"},
+        "2026-06-13T10:00:00Z",
+    )
+
+    blocked = sync_engine.pull_blocked_summary(conn)
+
+    assert blocked is not None
+    assert blocked["code"] == "sync_event_too_large"
+    assert blocked["blocked_devices"] == 1
+    assert blocked["first_seq"] == seq
+    assert blocked["event_bytes"] > blocked["max_bytes"]
+    assert blocked["max_bytes"] == sync_engine.SYNC_PULL_RESPONSE_BYTES
+
+    status = api.status()[1]
+    assert status["sync"]["blocked_pull"]["code"] == "sync_event_too_large"
+    assert status["sync"]["blocked_pull"]["first_seq"] == seq
+    assert secret_text not in json.dumps(status, ensure_ascii=False)
 
 
 def test_unpair_revokes_device_access(api):

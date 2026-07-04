@@ -150,6 +150,26 @@
   This is sync compatibility hardening only; it does not change normal payload
   semantics, Android IME behavior, typed-text policy, release state, or
   publication semantics.
+- The local desktop status API/Web UI now surfaces a content-safe
+  `sync.blocked_pull` diagnostic for that oversized-event condition. The summary
+  intentionally includes only protocol/code/size/sequence/count metadata and
+  excludes clip content, payload fields, bearer tokens, hostnames, and device
+  identifiers.
+- CI now compiles the residual Android `androidTest` IME QA scaffold with
+  AndroidX Test dependencies. The tests remain `@Ignore` and are not a substitute
+  for Owner/manual device QA in Issue #36; the gate only prevents the scaffold
+  source set from silently rotting.
+- The unsigned release-candidate dry run now runs automatically on pushes to
+  `main`, while PR runs remain path-filtered. Static release-alignment tests
+  guard that this current-main evidence path does not gain release secrets,
+  write permissions, release environments, or `gh release` side effects.
+- Secret Guard now treats Hugging Face user access tokens with the distinctive
+  `hf_` prefix and 34-character token body as a hard provider-key match on both
+  Python desktop and Kotlin Android core. Tests build sample strings by
+  concatenation to avoid committing contiguous secret-shaped fixtures. This is
+  v1.7 capture-layer privacy hardening only; it performs no live token
+  verification, adds no network call, changes no release state, and does not
+  affect IME typed-text policy.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 
