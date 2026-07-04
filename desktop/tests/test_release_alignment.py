@@ -187,6 +187,22 @@ def test_release_artifact_uploads_fail_if_no_files_are_found():
             ), f"{rel} artifact upload must fail when the configured path matches no files"
 
 
+def test_draft_release_reverifies_downloaded_artifacts_before_release_creation():
+    workflow = _read(".github/workflows/release.yml")
+    draft = _workflow_job_block(workflow, "draft-github-release")
+
+    download = draft.index("Download release artifacts")
+    verify = draft.index("Verify downloaded release artifacts")
+    create = draft.index("Create draft GitHub Release")
+    assert download < verify < create
+
+    assert "--artifact-dir release-artifacts/clipvault-windows-release-artifacts" in draft
+    assert "--platform windows" in draft
+    assert "--artifact-dir release-artifacts/clipvault-android-signed-release-artifacts" in draft
+    assert "--platform android" in draft
+    assert "--require-signed" in draft
+
+
 def _pull_request_paths(workflow_text: str) -> set[str]:
     paths: set[str] = set()
     in_pull_request = False

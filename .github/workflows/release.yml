@@ -228,10 +228,33 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
       - name: Download release artifacts
         uses: actions/download-artifact@v8
         with:
           path: release-artifacts
+
+      - name: Verify downloaded release artifacts
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate-release-input.outputs.version }}
+        run: |
+          set -euo pipefail
+          python scripts/verify_release_manifest.py \
+            --artifact-dir release-artifacts/clipvault-windows-release-artifacts \
+            --platform windows \
+            --version "${RELEASE_VERSION}" \
+            --commit "${GITHUB_SHA}"
+          python scripts/verify_release_manifest.py \
+            --artifact-dir release-artifacts/clipvault-android-signed-release-artifacts \
+            --platform android \
+            --version "${RELEASE_VERSION}" \
+            --commit "${GITHUB_SHA}" \
+            --require-signed
 
       - name: Create draft GitHub Release
         shell: bash
