@@ -1,9 +1,10 @@
 # Instrumented QA backlog (residual device-only checks)
 
-The v1.5.16 manual QA gate (`docs/MANUAL_QA_V1_5_16.md`) was automated as far as
-the host JVM allows. Five checks remain that exercise live IME behaviour and
-on-screen rendering; they cannot run on the host JVM and need an instrumented
-(`androidTest`) run on a device or emulator.
+The historical IME manual QA residuals were automated as far as the host JVM
+allows, then carried forward into the current Issue #36 / v1.6.0 manual QA
+gate (`docs/MANUAL_QA_V1_6_0.md`). Five checks still exercise live IME
+behaviour and on-screen rendering; they cannot run on the host JVM and need an
+instrumented (`androidTest`) run on a device or emulator.
 
 Until a device/emulator cycle is picked up, the checks are encoded as
 `@Ignore`-d scaffolds in
@@ -76,5 +77,5 @@ cd android
 
 - The five `@Ignore` annotations are removed and the assertions are real.
 - `connectedDebugAndroidTest` passes on a device/emulator.
-- `docs/MANUAL_QA_V1_5_16.md` residual section is updated to point at the now-live
-  instrumented tests instead of this backlog.
+- `docs/MANUAL_QA_V1_6_0.md` and the Issue #36 evidence comment are updated to
+  point at the now-live instrumented tests instead of this backlog.

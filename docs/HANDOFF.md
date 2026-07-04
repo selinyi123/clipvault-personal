@@ -204,6 +204,11 @@
   producer-marked private clipboard items and still captures a normal control.
   The helper overwrites the current clipboard and does not by itself satisfy the
   manual QA gate without recorded Owner observation.
+- `docs/INSTRUMENTED_QA_BACKLOG.md` now names the current Issue #36 / v1.6.0
+  manual QA gate and `docs/MANUAL_QA_V1_6_0.md` as the residual IME backlog
+  target. `docs/VERSION_SYNC.md` also records final `v1.6.0` GitHub Release
+  publication as Owner-approved release evidence, so future agents do not route
+  remaining blockers through the historical v1.5.16 manual QA checklist.
 - The unsigned release-candidate dry run now runs automatically on pushes to
   `main`, while PR runs remain path-filtered. Static release-alignment tests
   guard that this current-main evidence path does not gain release secrets,

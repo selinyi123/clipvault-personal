@@ -54,6 +54,8 @@ def test_version_sync_doc_matches_source_tree():
     assert f"versionCode: {code.group(1)}" in doc
     assert f"AppVersion: {__version__}" in doc
     assert "Issue #36" in doc
+    assert "Final `v1.6.0` GitHub Release publication remains blocked" in doc
+    assert re.search(r"Owner\s+approval", doc)
 
 
 def test_readme_does_not_overstate_unreleased_v1_6_status():
@@ -505,6 +507,21 @@ def test_residual_ime_android_test_scaffolds_stay_ignored_until_device_qa_runs()
             rf"@Test\s+@Ignore\(\"{re.escape(ignore_reason)}\"\)\s+fun {method}\(\)",
             residual,
         ), f"{method} must remain an ignored device/emulator scaffold until executed QA is recorded"
+
+
+def test_residual_ime_backlog_tracks_current_release_gate():
+    backlog = _read("docs/INSTRUMENTED_QA_BACKLOG.md")
+    version_sync = _read("docs/VERSION_SYNC.md")
+    research = _read("docs/RESEARCH_AND_ROADMAP.md")
+
+    assert re.search(r"current Issue #36 / v1\.6\.0 manual QA\s+gate", backlog)
+    assert "`docs/MANUAL_QA_V1_6_0.md`" in backlog
+    assert "Issue #36 evidence comment" in backlog
+    assert "connectedDebugAndroidTest" in backlog
+    assert "docs/MANUAL_QA_V1_5_16.md" not in backlog
+    assert "v1.5.16 manual QA gate" not in backlog
+    assert "Final `v1.6.0` GitHub Release publication remains blocked" in version_sync
+    assert "R74 | Residual IME backlog gate routing" in research
 
 
 def test_windows_clipboard_privacy_manual_qa_probe_is_documented():
