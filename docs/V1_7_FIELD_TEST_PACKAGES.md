@@ -58,7 +58,26 @@ gh run list `
 ```
 
 Download the artifacts into separate directories so Windows and Android
-manifests/checksums cannot collide:
+manifests/checksums cannot collide. Prefer the repository helper when GitHub
+CLI artifact downloads are flaky, because it reads the workflow-run artifact
+inventory, downloads each artifact ZIP by exact artifact name/id, rejects
+unsafe or non-flat ZIP member paths, checks GitHub's artifact SHA-256 digest
+when the API returns one, and can immediately run the dry-run manifest/checksum
+verifier:
+
+```powershell
+$runId = "RELEASE_CANDIDATE_RUN_ID"
+$targetSha = "TARGET_SHA"
+
+python tools/download_field_test_artifacts.py `
+  --run-id $runId `
+  --output-dir field-test-v1.7 `
+  --target-commit $targetSha `
+  --verify-manifests `
+  --clean
+```
+
+Fallback `gh run download` commands:
 
 ```powershell
 $runId = "RELEASE_CANDIDATE_RUN_ID"
@@ -90,6 +109,11 @@ python scripts/verify_release_manifest.py `
   --commit $targetSha `
   --expect-dry-run
 ```
+
+`tools/download_field_test_artifacts.py` does not trigger workflows, post issue
+comments, install apps, run device QA, sign or publish releases, close Issue
+#82/#36, or claim v1.7 stable. It only prepares and validates local
+release-candidate artifact directories for the next evidence step.
 
 ## Evidence helper
 
