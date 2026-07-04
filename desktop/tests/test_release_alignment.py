@@ -474,10 +474,37 @@ def test_ci_compiles_residual_android_instrumented_qa_sources():
     backlog = _read("docs/INSTRUMENTED_QA_BACKLOG.md")
 
     assert "./gradlew :app:compileDebugAndroidTestKotlin --no-daemon" in workflow
+    assert "connectedDebugAndroidTest" not in workflow
     assert 'testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"' in gradle
     assert 'androidTestImplementation("androidx.test:runner:1.6.2")' in gradle
     assert "Owner/manual QA gate" in backlog
     assert "Issue #36" in backlog
+
+
+def test_residual_ime_android_test_scaffolds_stay_ignored_until_device_qa_runs():
+    backlog = _read("docs/INSTRUMENTED_QA_BACKLOG.md")
+    residual = _read("android/app/src/androidTest/kotlin/com/clipvault/app/ime/ResidualImeChecksTest.kt")
+
+    expected_methods = {
+        "fullKeyboard_stripVisible_and_tapCommitsText": "Full Keyboard #1-2",
+        "panelIme_switch_and_tapCommitsText": "Panel IME #1-3, #5",
+        "panelIme_explicitSave_requiresUserTap": "Panel IME #8",
+        "sensitiveEditor_clearsRenderedAndInFlightCandidates": "FK #3-4, Panel #6-7",
+        "sensitiveEditor_blocksExplicitClipboardSave": "Panel sensitive-save gate",
+    }
+    ignore_reason = "residual: needs a device/emulator; see docs/INSTRUMENTED_QA_BACKLOG.md"
+
+    assert residual.count("@Ignore(") == len(expected_methods)
+    assert "does not run" in backlog
+    assert "`connectedDebugAndroidTest`" in backlog
+    assert re.search(r"does\s+not\s+satisfy\s+the\s+Owner/manual\s+QA\s+gate\s+for\s+Issue\s+#36", backlog)
+
+    for method, manual_item in expected_methods.items():
+        assert f"| `{method}` | {manual_item} |" in backlog
+        assert re.search(
+            rf"@Test\s+@Ignore\(\"{re.escape(ignore_reason)}\"\)\s+fun {method}\(\)",
+            residual,
+        ), f"{method} must remain an ignored device/emulator scaffold until executed QA is recorded"
 
 
 def test_workflows_use_node24_compatible_github_actions():
