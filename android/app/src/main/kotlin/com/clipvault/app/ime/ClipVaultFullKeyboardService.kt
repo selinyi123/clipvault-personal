@@ -117,6 +117,7 @@ class ClipVaultFullKeyboardService : InputMethodService() {
             return
         }
         thread {
+            if (!privacySession.allowsPersonalData(token)) return@thread
             val items = runtime.listCandidates(limit = 20)
             runOnMain {
                 if (!privacySession.isCurrent(token)) return@runOnMain

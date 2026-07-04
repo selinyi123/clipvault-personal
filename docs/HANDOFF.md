@@ -183,6 +183,11 @@
   `ClipVaultApp`, `Capture`, `SecretGuard`, SharedPreferences, file IO, sync,
   network, or logging paths directly. This is v1.7 IME privacy regression
   coverage only; runtime behavior and Owner/manual QA requirements are unchanged.
+- Panel IME and Full Keyboard candidate workers now re-check the captured
+  `ImePrivacySession` token before calling `runtime.listCandidates(...)`.
+  Existing UI-application guards still remain after the Runtime read; the new
+  guard avoids unnecessary local candidate reads when Android switches from an
+  ordinary editor to a sensitive editor while a worker is in flight.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 
