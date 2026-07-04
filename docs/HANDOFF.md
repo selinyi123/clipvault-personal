@@ -170,6 +170,13 @@
   v1.7 capture-layer privacy hardening only; it performs no live token
   verification, adds no network call, changes no release state, and does not
   affect IME typed-text policy.
+- Android sync now treats authenticated 401/403 responses from desktop
+  push/pull endpoints as a permanent local pairing/auth failure. The worker
+  clears the stored bearer token and returns `Result.success()` so WorkManager
+  does not keep retrying a known-bad token; network failures, 413 oversized
+  sync responses, rate limits, and 5xx responses stay on the existing retry path.
+  This is v1.7 sync reliability hardening only and does not change sync payloads,
+  IME behavior, typed-text policy, or release state.
 
 ## Recent completed note - 2026-07-03 / Web UI and sync API hardening
 

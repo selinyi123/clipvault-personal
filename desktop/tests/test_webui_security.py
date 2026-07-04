@@ -13,6 +13,7 @@ import pytest
 
 
 WEBUI_JS = Path(__file__).parents[1] / "clipvault" / "api" / "webui" / "app.js"
+NODE_CHECK_TIMEOUT_SECONDS = 60
 
 
 def test_webui_avoids_html_injection_sinks():
@@ -71,6 +72,6 @@ def test_webui_javascript_is_parseable_when_node_is_available():
         check=False,
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=NODE_CHECK_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr

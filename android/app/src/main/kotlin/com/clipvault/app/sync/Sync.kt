@@ -33,6 +33,12 @@ internal const val MAX_SYNC_RESPONSE_BYTES = 4 * 1024 * 1024
 private val HOST_LABEL_RE = Regex("""^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$""")
 private val BRACKETED_IPV6_RE = Regex("""^\[[0-9A-Fa-f:.%]+]$""")
 
+internal class SyncAuthException : IOException("sync auth rejected")
+
+internal fun isPermanentSyncAuthFailure(statusCode: Int): Boolean =
+    statusCode == HttpURLConnection.HTTP_UNAUTHORIZED ||
+        statusCode == HttpURLConnection.HTTP_FORBIDDEN
+
 internal fun normalizeSyncHostOrNull(raw: String?): String? {
     val host = raw?.trim() ?: return null
     if (host.isEmpty() || host.length > 253) return null
@@ -193,8 +199,8 @@ class SyncClient(private val s: Settings, private val hostOverride: String? = nu
         try {
             if (bodyBytes != null) c.outputStream.use { it.write(bodyBytes) }
             val code = c.responseCode
-            val stream = if (code in 200..299) c.inputStream else (c.errorStream ?: c.inputStream)
-            val text = stream.use { readUtf8BodyBounded(it) }
+            val stream = if (code in 200..299) c.inputStream else c.errorStream
+            val text = stream?.use { readUtf8BodyBounded(it) } ?: ""
             return code to text
         } finally {
             c.disconnect()
@@ -243,12 +249,16 @@ class SyncClient(private val s: Settings, private val hostOverride: String? = nu
     fun push(events: JSONArray): Long {
         val body = JSONObject().put("events", events).toString()
         val (code, text) = req("POST", "/sync/push", body, auth = true)
-        return if (code == 200) JSONObject(text).optLong("acked_upto", 0) else -1
+        if (code == 200) return JSONObject(text).optLong("acked_upto", 0)
+        if (isPermanentSyncAuthFailure(code)) throw SyncAuthException()
+        return -1
     }
 
     fun pull(since: Long): JSONObject? {
         val (code, text) = req("GET", "/sync/pull?since_seq=$since", null, auth = true)
-        return if (code == 200) JSONObject(text) else null
+        if (code == 200) return JSONObject(text)
+        if (isPermanentSyncAuthFailure(code)) throw SyncAuthException()
+        return null
     }
 }
 

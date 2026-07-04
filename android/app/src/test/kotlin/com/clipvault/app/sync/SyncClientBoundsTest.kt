@@ -1,7 +1,9 @@
 package com.clipvault.app.sync
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -55,6 +57,17 @@ class SyncClientBoundsTest {
         } catch (e: IOException) {
             assertEquals("response body too large", e.message)
         }
+    }
+
+    @Test
+    fun syncAuthClassifierOnlyTreatsAuthRejectionsAsPermanent() {
+        assertTrue(isPermanentSyncAuthFailure(401))
+        assertTrue(isPermanentSyncAuthFailure(403))
+
+        assertFalse(isPermanentSyncAuthFailure(400))
+        assertFalse(isPermanentSyncAuthFailure(413))
+        assertFalse(isPermanentSyncAuthFailure(429))
+        assertFalse(isPermanentSyncAuthFailure(500))
     }
 
     @Test

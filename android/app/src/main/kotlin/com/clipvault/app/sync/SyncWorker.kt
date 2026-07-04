@@ -86,6 +86,13 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
                 if (!resp.optBoolean("has_more", false)) break
             }
             Result.success()
+        } catch (e: SyncAuthException) {
+            // The paired desktop rejected the bearer token. Stop immediate
+            // WorkManager retry loops and require an explicit re-pair instead
+            // of repeatedly sending a known-bad token on every backoff attempt.
+            s.token = null
+            Log.w("ClipVaultSync", "sync auth failed")
+            Result.success()
         } catch (e: Exception) {
             // Content-safe: log only the failure class. Raw exception messages can
             // include host/URL details from networking libraries.
