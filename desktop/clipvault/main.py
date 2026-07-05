@@ -61,7 +61,7 @@ def setup_logging(cfg: config_mod.Config) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="clipvault")
     parser.add_argument("--config", default=None,
-                        help="config path (default: %LOCALAPPDATA%/ClipVault/config.toml)")
+                        help="config path (default: %%LOCALAPPDATA%%/ClipVault/config.toml)")
     parser.add_argument("--once", action="store_true",
                         help="ingest the current clipboard once and exit")
     parser.add_argument("--headless", action="store_true",
