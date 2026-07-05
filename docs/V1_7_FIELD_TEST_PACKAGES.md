@@ -163,6 +163,41 @@ the field-test report ready. `blocked` and `fail` rows must include a concrete
 next step. A ready field-test report is still not v1.7 stable evidence by
 itself; stable release remains gated by the exit criteria below.
 
+## Windows portable smoke helper
+
+After candidate artifacts are downloaded and verified, the Owner or agent can
+run a low-side-effect Windows portable smoke before spending time on installer,
+clipboard, sync, or Android checks:
+
+```powershell
+python tools/windows_candidate_smoke.py `
+  --windows-dir field-test-v1.7/windows `
+  --output field-test-v1.7-windows-smoke.json `
+  --no-fail
+
+python tools/field_test_evidence.py `
+  --verify-artifacts `
+  --windows-dir field-test-v1.7/windows `
+  --android-dir field-test-v1.7/android `
+  --target-commit $targetSha `
+  --ci-run-url "CI_RUN_URL" `
+  --candidate-run-url "RELEASE_CANDIDATE_RUN_URL" `
+  --tester "OWNER_OR_AGENT_NAME" `
+  --tested-at "ISO_8601_TIMESTAMP" `
+  --windows-smoke-report field-test-v1.7-windows-smoke.json `
+  --output field-test-v1.7-artifacts-and-windows-smoke-comment.md `
+  --no-fail
+```
+
+The smoke helper runs the portable candidate with `--help`, then starts it with
+an isolated temporary config and probes `/api/health` on a temporary loopback
+port. The smoke config disables backup and sets the watcher poll interval to
+`600000` ms so the short health probe does not read or ingest the user's current
+clipboard. The resulting report can mark only the `portable_launch` row. It
+does not run the installer, write the clipboard, validate clipboard capture,
+test LAN/Tailscale sync, run Android device checks, sign or publish releases,
+close Issue #82/#36, or claim v1.7 stable.
+
 ## Read-only readiness report
 
 Before asking the Owner to spend device time, run the read-only Issue #82
@@ -185,6 +220,47 @@ releases, close Issue #82, close Issue #36, or claim v1.7 stable. A pass on the
 artifact-metadata row only means GitHub still reports the named candidate
 artifacts as present and not expired; downloaded manifest/checksum verification
 and real-device smoke remain separate Owner/action rows.
+
+## Owner action pack
+
+To reduce handoff drift before spending device time, generate a local Owner
+action pack for the current `main` readiness state:
+
+```powershell
+python tools/prepare_field_test_owner_pack.py `
+  --output-dir field-test-owner-pack `
+  --tester "OWNER_OR_AGENT_NAME" `
+  --tested-at "ISO_8601_TIMESTAMP"
+```
+
+If the Windows and Android candidate artifact directories have already been
+downloaded, pass them so the generated evidence JSON/comment can mark the
+manifest/checksum rows as `pass` while leaving device-smoke rows blocked:
+
+```powershell
+python tools/prepare_field_test_owner_pack.py `
+  --output-dir field-test-owner-pack `
+  --windows-dir field-test-v1.7/windows `
+  --android-dir field-test-v1.7/android `
+  --tester "OWNER_OR_AGENT_NAME" `
+  --tested-at "ISO_8601_TIMESTAMP"
+```
+
+The generated pack contains:
+
+- `OWNER_FIELD_TEST_ACTION_PACK.md` with exact current SHA/run URLs, artifact
+  metadata, download/verify commands, Windows smoke commands, Android ADB smoke
+  commands, and remaining Issue #82 rows. The Windows smoke snippet writes a
+  temporary isolated config under the smoke directory, and the Android snippet
+  records/restores the previous input method in a `finally` block;
+- `field-test-v1.7.json`, a prefilled evidence template for Owner observations;
+- `field-test-v1.7-issue-comment.md`, a rendered Issue #82 draft that remains
+  `BLOCKED` until every required Owner/manual row is filled; and
+- `pack-summary.json`, a machine-readable summary of the generated pack.
+
+`tools/prepare_field_test_owner_pack.py` is an action-pack generator only. It
+does not download artifacts, install apps, run device QA, post comments, edit
+issues, sign or publish releases, close Issue #82/#36, or claim v1.7 stable.
 
 ## Device-use rules
 

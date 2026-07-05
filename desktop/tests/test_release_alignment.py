@@ -763,11 +763,14 @@ def test_v1_7_field_test_packages_use_release_candidates_without_stable_overclai
     workflow = _read(".github/workflows/release-candidate.yml")
     script = _ROOT / "tools/field_test_evidence.py"
     readiness_script = _ROOT / "tools/field_test_readiness.py"
+    owner_pack_script = _ROOT / "tools/prepare_field_test_owner_pack.py"
 
     assert script.exists()
     assert readiness_script.exists()
+    assert owner_pack_script.exists()
     script_text = script.read_text(encoding="utf-8")
     readiness_text = readiness_script.read_text(encoding="utf-8")
+    owner_pack_text = owner_pack_script.read_text(encoding="utf-8")
     assert "does not download artifacts" in script_text
     assert "--verify-artifacts" in script_text
     assert "verify_release_manifest.py" in script_text
@@ -779,7 +782,13 @@ def test_v1_7_field_test_packages_use_release_candidates_without_stable_overclai
     assert "claim v1.7 stable" in readiness_text
     assert "gh api" in readiness_text
     assert "refusing write-capable gh api flag" in readiness_text
+    assert "Owner action pack only" in owner_pack_text
+    assert "does not download artifacts, install apps" in owner_pack_text
+    assert "claim v1.7 stable" in owner_pack_text
     assert "--verify-artifacts" in field_test
+    assert "python tools/prepare_field_test_owner_pack.py" in field_test
+    assert "OWNER_FIELD_TEST_ACTION_PACK.md" in field_test
+    assert "pack-summary.json" in field_test
     assert "python tools/field_test_readiness.py --no-fail" in field_test
     assert "python tools/field_test_readiness.py --json --no-fail" in field_test
     assert "stale issue-body baseline" in field_test
@@ -823,6 +832,7 @@ def test_v1_7_field_test_packages_use_release_candidates_without_stable_overclai
     assert "unsigned candidate artifacts as signed/final release evidence" in handoff
     assert "tools/field_test_evidence.py" in handoff
     assert "tools/field_test_readiness.py" in handoff
+    assert "tools/prepare_field_test_owner_pack.py" in handoff
     assert "tools/v2_keyboard_readiness.py" in handoff
     assert "stale issue-body baselines" in handoff
     assert "does not trigger workflows" in handoff
@@ -832,11 +842,13 @@ def test_v1_7_field_test_packages_use_release_candidates_without_stable_overclai
     assert "R87 | Structured v1.7 field-test evidence" in research
     assert "R88 | Read-only v1.7 field-test readiness" in research
     assert "R89 | v2.0 dual-IME local readiness aggregator" in research
+    assert "R96 | Owner field-test action pack" in research
     assert "workflow-run artifacts REST API" in research
     assert "does not replace `tools/field_test_evidence.py`" in research
     assert "can use `--verify-artifacts`" in research
     assert "dry-run manifest/checksum verifier" in research
     assert "candidate-only upload/download/manifest-verification path" in research
+    assert "single current-main action pack" in research
     assert "does not download artifacts, install apps, run device QA" in research
 
 

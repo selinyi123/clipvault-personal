@@ -16,7 +16,7 @@
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
-| Last updated | 2026-07-04 |
+| Last updated | 2026-07-05 |
 
 ## Current development note - 2026-07-04 / v1.6 release gate and v1.7 stability gates in progress
 
@@ -37,6 +37,16 @@
   smoke rows before rendering a Markdown issue comment draft. It does not
   download artifacts, install apps, run device QA, post to GitHub, sign or
   publish releases, close Issue #82, close Issue #36, or claim v1.7 stable.
+- `tools/windows_candidate_smoke.py` is a local Issue #82 Windows portable
+  candidate smoke helper. It runs the downloaded portable executable with
+  `--help`, then starts it with an isolated temporary config and probes
+  `/api/health` on a temporary loopback port. The smoke config disables backup
+  and sets the watcher poll interval to `600000` ms so the short health probe
+  does not read or ingest the user's current clipboard. Its JSON report can be
+  passed to `tools/field_test_evidence.py --windows-smoke-report`, which marks
+  only the `windows_smoke.portable_launch` row; installer, clipboard, sync,
+  Android, signed/final artifact, Issue #36, and stable-release rows remain
+  separate gates.
 - `tools/field_test_readiness.py` is a read-only Issue #82 live readiness
   report. It checks the current `main` SHA, current-main CI, current-main
   release-candidate dry run, required candidate artifact inventory, Issue #82
@@ -59,6 +69,17 @@
   install apps, run device QA, post or edit issues, sign or publish releases,
   close Issue #82/#36, or claim v1.7 stable; candidate artifacts remain
   separate from signed/final release evidence.
+- `tools/prepare_field_test_owner_pack.py` generates a local Owner action pack
+  for Issue #82 from the current read-only field-test readiness state. It writes
+  `OWNER_FIELD_TEST_ACTION_PACK.md`, a prefilled `field-test-v1.7.json`, a
+  rendered Issue #82 comment draft, and `pack-summary.json`. If downloaded
+  Windows/Android candidate directories are supplied, it verifies them through
+  the existing dry-run manifest/checksum path before marking only those rows as
+  pass. Its Owner guide keeps Windows portable smoke in a temporary isolated
+  config directory and restores the previous Android input method from a
+  `finally` block after ADB IME smoke commands. It does not download artifacts,
+  install apps, run device QA, post or edit issues, sign or publish releases,
+  close Issue #82/#36, or claim v1.7 stable.
 - `tools/v2_keyboard_readiness.py` is a local read-only v2.0 Keyboard Lab
   readiness report. It checks the dual IME manifest registrations, input-method
   XML switch-back support, Keyboard Lab source controls, Panel IME source
