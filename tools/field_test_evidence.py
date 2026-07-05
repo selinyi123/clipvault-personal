@@ -266,6 +266,60 @@ def _set_pass(items: dict[str, object], key: str, evidence: str) -> None:
     }
 
 
+def apply_windows_smoke_report(data: dict[str, object], report: object) -> None:
+    """Fold a windows_candidate_smoke.py JSON report into portable_launch only."""
+    if not isinstance(report, dict):
+        raise ValueError("windows smoke report must be a JSON object")
+    status = _string(report.get("status")).lower()
+    if status not in VALID_STATUSES:
+        if report.get("ok") is True:
+            status = "pass"
+        else:
+            raise ValueError("windows smoke report status must be one of: blocked, fail, pass")
+    evidence = _string(report.get("evidence"))
+    next_step = _string(report.get("next_step"))
+    if status == "pass" and not evidence:
+        raise ValueError("windows smoke report evidence is required when status is pass")
+    if status in {"blocked", "fail"} and not next_step:
+        raise ValueError(
+            f"windows smoke report next_step is required when status is {status}"
+        )
+
+    windows = data.get("windows_environment")
+    if isinstance(windows, dict):
+        environment = _string(report.get("windows_environment"))
+        if environment and "pending Owner Windows smoke" in _string(windows.get("os")):
+            windows["os"] = environment
+        portable_name = f"ClipVault-Desktop-v{_string(data.get('source_version'))}-portable.exe"
+        package = _string(windows.get("portable_or_installer"))
+        if package and "install smoke pending" in package:
+            windows["portable_or_installer"] = (
+                f"{portable_name} portable smoke report applied; installer smoke pending"
+            )
+
+    sections = data.get("sections")
+    if not isinstance(sections, dict):
+        raise ValueError("field-test data sections must be an object")
+    windows_section = sections.get("windows_smoke")
+    if not isinstance(windows_section, dict):
+        raise ValueError("field-test data sections.windows_smoke must be an object")
+    items = windows_section.get("items")
+    if not isinstance(items, dict):
+        raise ValueError("field-test data sections.windows_smoke.items must be an object")
+    expected = {
+        item.key: item
+        for section in REQUIRED_SECTIONS
+        for item in section.items
+    }["portable_launch"]
+    items["portable_launch"] = {
+        "status": status,
+        "evidence": evidence or "-",
+        "next_step": next_step,
+        "notes": expected.label
+        + " This automated smoke does not cover installer, clipboard, sync, or Android rows.",
+    }
+
+
 def build_artifact_verified_template(
     *,
     windows_dir: Path,
@@ -639,6 +693,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--candidate-run-url", help="matching Release candidate dry run URL")
     parser.add_argument("--tester", help="person or agent preparing this evidence draft")
     parser.add_argument("--tested-at", help="ISO-8601 timestamp or dated evidence label")
+    parser.add_argument(
+        "--windows-smoke-report",
+        type=Path,
+        help="JSON report from tools/windows_candidate_smoke.py to apply to the portable_launch row",
+    )
     parser.add_argument("--output", type=Path, help="write rendered Markdown to this path instead of stdout")
     parser.add_argument("--json", action="store_true", help="emit validation JSON instead of Markdown")
     parser.add_argument("--no-fail", action="store_true", help="return exit code 0 even when evidence is incomplete")
@@ -707,6 +766,16 @@ def main(argv: Iterable[str] | None = None) -> int:
             return 0 if args.no_fail else 1
     else:
         loaded = load_json(args.input)
+
+    if args.windows_smoke_report:
+        if not isinstance(loaded, dict):
+            print("field-test evidence must be a JSON object before applying Windows smoke")
+            return 0 if args.no_fail else 1
+        try:
+            apply_windows_smoke_report(loaded, load_json(args.windows_smoke_report))
+        except ValueError as exc:
+            print(f"field-test Windows smoke merge failed: {exc}")
+            return 0 if args.no_fail else 1
 
     result = validate_evidence(
         loaded,

@@ -118,6 +118,57 @@ def test_cli_verify_artifacts_writes_partial_comment_with_no_fail(tmp_path):
     assert "12 blocked" in rendered
 
 
+def test_cli_verify_artifacts_can_apply_windows_portable_smoke_report(tmp_path):
+    commit = "1" * 40
+    windows_dir, android_dir = _build_candidate_fixtures(tmp_path, commit=commit)
+    smoke_report = tmp_path / "windows-smoke.json"
+    output = tmp_path / "issue82.md"
+    smoke_report.write_text(
+        json.dumps({
+            "ok": True,
+            "status": "pass",
+            "evidence": (
+                "`ClipVault-Desktop-v1.6.0-portable.exe --help` exited 0; "
+                "`/api/health` returned status=ok, version=1.6.0, db_ok=true."
+            ),
+            "next_step": "",
+            "windows_environment": "Windows-11-smoke",
+            "scope_note": "portable smoke only",
+        }),
+        encoding="utf-8",
+    )
+
+    rc = field_test_evidence.main([
+        "--verify-artifacts",
+        "--windows-dir",
+        str(windows_dir),
+        "--android-dir",
+        str(android_dir),
+        "--target-commit",
+        commit,
+        "--ci-run-url",
+        "https://github.com/selinyi123/clipvault-personal/actions/runs/111",
+        "--candidate-run-url",
+        "https://github.com/selinyi123/clipvault-personal/actions/runs/222",
+        "--tester",
+        "codex-agent",
+        "--tested-at",
+        "2026-07-05T12:00:00+08:00",
+        "--windows-smoke-report",
+        str(smoke_report),
+        "--output",
+        str(output),
+        "--no-fail",
+    ])
+
+    assert rc == 0
+    rendered = output.read_text(encoding="utf-8")
+    assert "4 pass, 0 fail, 11 blocked" in rendered
+    assert "Windows-11-smoke" in rendered
+    assert "installer smoke pending" in rendered
+    assert "`/api/health` returned status=ok" in rendered
+
+
 def test_cli_verify_artifacts_returns_incomplete_without_no_fail(tmp_path):
     commit = "d" * 40
     windows_dir, android_dir = _build_candidate_fixtures(tmp_path, commit=commit)
