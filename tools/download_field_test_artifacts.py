@@ -417,6 +417,7 @@ def _verify_manifests(
 ) -> bool:
     if not target_commit:
         raise ValueError("--verify-manifests requires --target-commit")
+    output_dir = output_dir.resolve()
     evidence = _load_field_test_evidence()
     evidence.verify_candidate_artifacts(
         windows_dir=output_dir / "windows",
@@ -440,6 +441,7 @@ def download_selected_artifacts(
     source_version: str,
     target_commit: str | None,
 ) -> list[DownloadedArtifact]:
+    output_dir = output_dir.resolve()
     _prepare_output_dir(output_dir, clean=clean)
     results: list[DownloadedArtifact] = []
     with tempfile.TemporaryDirectory() as temp_dir_name:
@@ -574,11 +576,12 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     try:
         repo = _repo_path(args.repo)
+        output_dir = args.output_dir.resolve()
         artifacts = fetch_artifacts(run_command, repo=repo, run_id=args.run_id)
         selected = select_required_artifacts(artifacts)
         downloaded = download_selected_artifacts(
             selected=selected,
-            output_dir=args.output_dir,
+            output_dir=output_dir,
             token=_gh_auth_token(),
             timeout=args.timeout,
             retries=args.retries,
@@ -596,7 +599,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         summary = build_summary(
             repo=repo,
             run_id=args.run_id,
-            output_dir=args.output_dir,
+            output_dir=output_dir,
             artifacts=downloaded,
             verification=verification,
         )

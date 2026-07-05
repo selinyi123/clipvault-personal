@@ -171,6 +171,27 @@ def test_download_selected_artifacts_extracts_and_checks_digest(tmp_path, monkey
     assert (tmp_path / "out" / "android" / "ClipVault-Android-v1.6.0-debug.apk").read_bytes() == b"apk"
 
 
+def test_verify_manifests_resolves_relative_output_dir(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+
+    class Evidence:
+        @staticmethod
+        def verify_candidate_artifacts(**kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(download_field_test_artifacts, "_load_field_test_evidence", lambda: Evidence)
+
+    assert download_field_test_artifacts._verify_manifests(
+        output_dir=Path("field-test-v1.7"),
+        source_version="1.6.0",
+        target_commit="a" * 40,
+    )
+
+    assert captured["windows_dir"] == (tmp_path / "field-test-v1.7" / "windows").resolve()
+    assert captured["android_dir"] == (tmp_path / "field-test-v1.7" / "android").resolve()
+
+
 def test_download_selected_artifacts_rejects_zip_digest_mismatch(tmp_path, monkeypatch):
     zip_path = tmp_path / "artifact.zip"
     _write_zip(zip_path, {"ClipVault-Android-v1.6.0-debug.apk": b"apk"})
