@@ -53,10 +53,12 @@
   GitHub's artifact SHA-256 digest when present, rejects unsafe or non-flat ZIP
   member paths before extraction, writes separate `windows/` and `android/`
   directories, and can immediately run the existing dry-run manifest/checksum
-  verifier. It does not trigger workflows, install apps, run device QA, post or
-  edit issues, sign or publish releases, close Issue #82/#36, or claim v1.7
-  stable; candidate artifacts remain separate from signed/final release
-  evidence.
+  verifier. The downloader resolves relative output directories before handing
+  them to the manifest verifier, so Windows relative paths do not fail subpath
+  checks during local field-test package handoff. It does not trigger workflows,
+  install apps, run device QA, post or edit issues, sign or publish releases,
+  close Issue #82/#36, or claim v1.7 stable; candidate artifacts remain
+  separate from signed/final release evidence.
 - `tools/v2_keyboard_readiness.py` is a local read-only v2.0 Keyboard Lab
   readiness report. It checks the dual IME manifest registrations, input-method
   XML switch-back support, Keyboard Lab source controls, Panel IME source
