@@ -15,6 +15,7 @@ from clipvault.core import classifier, normalize, secret_guard, ulid
 from clipvault.core.models import Clip
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
+from clipvault.store.unit_of_work import unit_of_work
 
 STATUS_NEW = "new"
 STATUS_DUPLICATE = "duplicate"
@@ -56,36 +57,37 @@ def ingest(
     content_hash = normalize.content_hash(content)
     now = now_fn()
 
-    existing = clips.get_by_hash(content_hash)
-    if existing is not None:
-        # Deleted clips stay deleted (no resurrection); seen-count still grows.
-        clips.touch_seen(existing.id, now)
-        return IngestOutcome(STATUS_DUPLICATE, clips.get(existing.id))
+    with unit_of_work(conn):
+        existing = clips.get_by_hash(content_hash)
+        if existing is not None:
+            # Deleted clips stay deleted (no resurrection); seen-count still grows.
+            clips.touch_seen(existing.id, now, commit=False)
+            return IngestOutcome(STATUS_DUPLICATE, clips.get(existing.id))
 
-    verdict = secret_guard.scan(content)  # gate A
-    content_type = classifier.classify(content)
+        verdict = secret_guard.scan(content)  # gate A
+        content_type = classifier.classify(content)
 
-    clip = Clip(
-        id=new_id_fn(),
-        content=content,
-        content_hash=content_hash,
-        content_type=content_type,
-        is_secret=verdict.is_secret,
-        secret_level=verdict.level,
-        secret_reasons=verdict.reasons,
-        source_device=source_device,
-        source_app=source_app,
-        created_at=now,
-        last_seen_at=now,
-    )
-    clips.insert(clip)
+        clip = Clip(
+            id=new_id_fn(),
+            content=content,
+            content_hash=content_hash,
+            content_type=content_type,
+            is_secret=verdict.is_secret,
+            secret_level=verdict.level,
+            secret_reasons=verdict.reasons,
+            source_device=source_device,
+            source_app=source_app,
+            created_at=now,
+            last_seen_at=now,
+        )
+        clips.insert(clip, commit=False)
 
-    if clip.is_secret:
-        return IngestOutcome(STATUS_NEW, clip, needs_obsidian=False)
+        if clip.is_secret:
+            return IngestOutcome(STATUS_NEW, clip, needs_obsidian=False)
 
-    backup_queue.enqueue(clip.id, now)
-    # Publish to the sync outbox (gate B inside emit_clip_new skips secrets).
-    # Local captures only; remote-applied clips bypass ingest so there is no echo.
-    from clipvault.sync import engine
-    engine.emit_clip_new(conn, clip, now)
-    return IngestOutcome(STATUS_NEW, clip, needs_obsidian=True)
+        backup_queue.enqueue(clip.id, now, commit=False)
+        # Publish to the sync outbox (gate B inside emit_clip_new skips secrets).
+        # Local captures only; remote-applied clips bypass ingest so there is no echo.
+        from clipvault.sync import engine
+        engine.emit_clip_new(conn, clip, now, commit=False)
+        return IngestOutcome(STATUS_NEW, clip, needs_obsidian=True)
