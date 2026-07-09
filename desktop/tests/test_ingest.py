@@ -50,6 +50,7 @@ def test_a6_secret_clip_quarantined(conn):
     assert not clips.fts_contains(clip.id)            # not in FTS
     assert clips.search_fts("AKIAIOSFODNN7EXAMPLE") == []
     assert not BackupQueueRepo(conn).has(clip.id)     # not queued for backup
+    assert conn.execute("SELECT COUNT(*) FROM sync_outbox").fetchone()[0] == 0
 
 
 def test_backup_queue_refuses_secret_directly(conn):
@@ -83,6 +84,7 @@ def test_ingest_rolls_back_clip_when_backup_enqueue_fails(conn, monkeypatch):
     with pytest.raises(RuntimeError, match="backup queue failure"):
         pipeline.ingest(conn, "atomic backup failure", source_device="d")
 
+    assert conn.in_transaction is False
     assert _write_counts(conn) == {
         "clips": 0,
         "fts": 0,
@@ -104,6 +106,7 @@ def test_ingest_rolls_back_clip_and_backup_when_sync_emit_fails(conn, monkeypatc
     with pytest.raises(RuntimeError, match="sync outbox failure"):
         pipeline.ingest(conn, "atomic sync failure", source_device="d")
 
+    assert conn.in_transaction is False
     assert _write_counts(conn) == {
         "clips": 0,
         "fts": 0,
