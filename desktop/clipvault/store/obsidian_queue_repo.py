@@ -86,35 +86,39 @@ class ObsidianQueueRepo:
         *,
         commit: bool = True,
     ) -> int:
+        eligible = self.conn.execute(
+            "SELECT 1 FROM clips "
+            "WHERE id = ? AND is_secret = 0 AND deleted = 0 AND obsidian_path IS NULL",
+            (clip_id,),
+        ).fetchone()
+        if eligible is None:
+            if commit:
+                self.conn.commit()
+            return 0
+
         row = self.conn.execute(
             "SELECT attempts FROM obsidian_queue WHERE clip_id = ?", (clip_id,)
         ).fetchone()
         attempts = int(row[0]) + 1 if row else 1
         next_at = _next_attempt_at(now, attempts)
         safe_error = _safe_error(error)
-        cur = self.conn.execute(
-            "INSERT INTO obsidian_queue "
-            "(clip_id, state, attempts, next_attempt_at, last_error, created_at, updated_at) "
-            "SELECT id, 'pending', ?, ?, ?, ?, ? FROM clips "
-            "WHERE id = ? AND is_secret = 0 AND deleted = 0 AND obsidian_path IS NULL "
-            "ON CONFLICT(clip_id) DO UPDATE SET "
-            "state='pending', attempts=?, next_attempt_at=?, last_error=?, updated_at=?",
-            (
-                attempts,
-                next_at,
-                safe_error,
-                now,
-                now,
-                clip_id,
-                attempts,
-                next_at,
-                safe_error,
-                now,
-            ),
-        )
+        if row:
+            self.conn.execute(
+                "UPDATE obsidian_queue SET "
+                "state='pending', attempts=?, next_attempt_at=?, last_error=?, updated_at=? "
+                "WHERE clip_id=?",
+                (attempts, next_at, safe_error, now, clip_id),
+            )
+        else:
+            self.conn.execute(
+                "INSERT INTO obsidian_queue "
+                "(clip_id, state, attempts, next_attempt_at, last_error, created_at, updated_at) "
+                "VALUES (?, 'pending', ?, ?, ?, ?, ?)",
+                (clip_id, attempts, next_at, safe_error, now, now),
+            )
         if commit:
             self.conn.commit()
-        return attempts if cur.rowcount > 0 else 0
+        return attempts
 
     def cleanup_ineligible(self, *, commit: bool = True) -> int:
         """Remove stale queue rows for clips that no longer need Obsidian writes."""
