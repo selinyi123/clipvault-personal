@@ -66,7 +66,14 @@ def build_ingest_plan(
     This function performs no database, filesystem, network, Obsidian, backup,
     or sync writes. Callers remain responsible for rejection and dedup so the
     contractual order stays normalize -> reject -> dedup -> secret guard.
+
+    ``content`` must already be normalized and ``content_hash`` must be the
+    corresponding normalized-content hash. The check protects future callers
+    that reuse this helper outside the main ingest path.
     """
+
+    if content_hash != normalize.content_hash(content):
+        raise ValueError("content_hash does not match normalized content")
 
     verdict = secret_guard.scan(content)  # gate A
     content_type = classifier.classify(content)
