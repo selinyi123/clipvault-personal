@@ -22,8 +22,18 @@ def _cfg(tmp_path: Path) -> Config:
 
 
 def test_obsidian_queue_backoff_and_ready_limit(conn):
-    first = pipeline.ingest(conn, "obsidian pending one", source_device="d")
-    second = pipeline.ingest(conn, "obsidian pending two", source_device="d")
+    first = pipeline.ingest(
+        conn,
+        "obsidian pending one",
+        source_device="d",
+        new_id_fn=lambda: "clip-0001",
+    )
+    second = pipeline.ingest(
+        conn,
+        "obsidian pending two",
+        source_device="d",
+        new_id_fn=lambda: "clip-0002",
+    )
     queue = ObsidianQueueRepo(conn)
     now = "2026-07-09T00:00:00Z"
 
@@ -65,8 +75,13 @@ def test_retry_obsidian_sweep_is_bounded(conn, tmp_path, monkeypatch):
     queue = ObsidianQueueRepo(conn)
     now = "2026-07-09T00:00:00Z"
     ids = []
-    for text in ("obsidian retry one", "obsidian retry two", "obsidian retry three"):
-        outcome = pipeline.ingest(conn, text, source_device="d")
+    for index, text in enumerate(("obsidian retry one", "obsidian retry two", "obsidian retry three"), start=1):
+        outcome = pipeline.ingest(
+            conn,
+            text,
+            source_device="d",
+            new_id_fn=lambda index=index: f"clip-retry-{index:04d}",
+        )
         ids.append(outcome.clip.id)
         queue.enqueue(outcome.clip.id, now)
 
