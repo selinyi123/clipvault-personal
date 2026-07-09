@@ -6,6 +6,7 @@ id, hash prefix, length and type.
 
 import logging
 import sqlite3
+import time
 from datetime import datetime, timezone
 
 from clipvault.config import Config
@@ -14,6 +15,7 @@ from clipvault.pipeline import ingest as pipeline
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.memory_repo import MemoryRepo, SecretMemoryError
+from clipvault.store.obsidian_queue_repo import ObsidianQueueRepo
 
 log = logging.getLogger("clipvault.service")
 
@@ -30,6 +32,7 @@ class ClipVaultService:
         self.conn = conn
         self.config = config
         self.clips = ClipsRepo(conn)
+        self.obsidian_queue = ObsidianQueueRepo(conn)
 
     def handle_clipboard_text(self, text: str, source_app: str | None = None) -> pipeline.IngestOutcome:
         outcome = pipeline.ingest(
@@ -61,20 +64,51 @@ class ClipVaultService:
                 clip.id, clip.secret_level, ",".join(clip.secret_reasons),
             )
         if outcome.needs_obsidian:
-            self._write_obsidian(clip)
+            self.write_obsidian_or_queue(clip)
         return outcome
 
-    def _write_obsidian(self, clip) -> bool:
+    def _try_write_obsidian(self, clip) -> tuple[bool, str | None]:
         try:
             path = writer.write_clip(clip, self.config.vault_path, self.config.type_dirs)
         except writer.SecretWriteRefused:
             raise
         except OSError as exc:
-            log.error("obsidian write failed id=%s err=%s", clip.id, exc)
-            return False
+            # No clip content in logs.
+            log.error("obsidian write failed id=%s err=%s", clip.id, exc.__class__.__name__)
+            return False, exc.__class__.__name__
         self.clips.set_obsidian_path(clip.id, str(path))
         log.info("obsidian written id=%s", clip.id)
-        return True
+        return True, None
+
+    def _write_obsidian(self, clip) -> bool:
+        """Backward-compatible Obsidian entrypoint used by older sync code."""
+        return self.write_obsidian_or_queue(clip)
+
+    def write_obsidian_or_queue(self, clip) -> bool:
+        """Try one Obsidian write and keep a bounded retry row on failure.
+
+        The queue row is created before the external file-system effect. This
+        makes the DB the durable source of retry truth without scanning all clips
+        every maintenance cycle.
+        """
+
+        now = _utc_now()
+        try:
+            self.obsidian_queue.enqueue(clip.id, now)
+        except Exception:
+            # Do not prevent the immediate write attempt because queue metadata
+            # failed. Also do not log content.
+            log.exception("obsidian retry enqueue failed id=%s", clip.id)
+
+        ok, err = self._try_write_obsidian(clip)
+        try:
+            if ok:
+                self.obsidian_queue.mark_done(clip.id)
+            else:
+                self.obsidian_queue.record_failure(clip.id, err or "obsidian_write_failed", now)
+        except Exception:
+            log.exception("obsidian retry queue update failed id=%s", clip.id)
+        return ok
 
     def release_clip(self, clip_id: str) -> bool:
         """Release a quarantined clip and re-run the public pipeline
@@ -84,7 +118,7 @@ class ClipVaultService:
             return False
         log.info("released id=%s (was quarantined)", clip.id)
         if not clip.deleted:
-            self._write_obsidian(clip)
+            self.write_obsidian_or_queue(clip)
             now = _utc_now()
             try:
                 BackupQueueRepo(self.conn).enqueue(clip.id, now)
@@ -101,6 +135,7 @@ class ClipVaultService:
 
     def promote_clip(self, clip_id: str, kind: str | None = None):
         """Promote a clip into Personal Memory. Secret clips are refused.
+
         An explicit kind (from a Context Action chip) overrides the default
         content_type mapping; an invalid kind raises ValueError via upsert."""
         clip = self.clips.get(clip_id)
@@ -116,16 +151,38 @@ class ClipVaultService:
             # is_secret=0. Re-scan at the Memory boundary and fail closed.
             return None
 
-    def retry_obsidian_sweep(self) -> int:
-        """The DB is the retry queue: any public clip without obsidian_path
-        is pending. Returns the number of clips repaired."""
-        rows = self.conn.execute(
-            "SELECT id FROM clips "
-            "WHERE obsidian_path IS NULL AND is_secret = 0 AND deleted = 0"
-        ).fetchall()
+    def retry_obsidian_sweep(
+        self,
+        *,
+        limit: int = 50,
+        max_runtime_ms: int = 500,
+        now_fn=_utc_now,
+    ) -> int:
+        """Retry a bounded batch of queued Obsidian writes.
+
+        The old implementation scanned every public clip with obsidian_path NULL
+        on every maintenance pass. This version reads only ready queue rows and
+        enforces both a row limit and a runtime budget.
+        """
+
+        now = now_fn()
+        deadline = time.monotonic() + max(1, max_runtime_ms) / 1000.0
         repaired = 0
-        for (clip_id,) in rows:
+        self.obsidian_queue.cleanup_ineligible()
+        for clip_id in self.obsidian_queue.claim_ready(now, limit=limit):
+            if time.monotonic() >= deadline:
+                break
             clip = self.clips.get(clip_id)
-            if clip and self._write_obsidian(clip):
+            if clip is None or clip.is_secret or clip.deleted or clip.obsidian_path:
+                self.obsidian_queue.mark_done(clip_id)
+                continue
+            ok, err = self._try_write_obsidian(clip)
+            if ok:
+                self.obsidian_queue.mark_done(clip_id)
                 repaired += 1
+            else:
+                self.obsidian_queue.record_failure(clip_id, err or "obsidian_write_failed", now)
         return repaired
+
+    def obsidian_retry_stats(self) -> dict:
+        return self.obsidian_queue.stats(_utc_now())
