@@ -36,7 +36,12 @@ def unit_of_work(conn: sqlite3.Connection) -> Iterator[None]:
             conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             raise
         else:
-            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            try:
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            except BaseException:
+                conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                raise
         return
 
     conn.execute("BEGIN IMMEDIATE")
@@ -46,4 +51,8 @@ def unit_of_work(conn: sqlite3.Connection) -> Iterator[None]:
         conn.rollback()
         raise
     else:
-        conn.commit()
+        try:
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
