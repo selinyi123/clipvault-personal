@@ -95,6 +95,12 @@ def build_ingest_plan(
     )
 
 
+def _duplicate_outcome(clips: ClipsRepo, clip_id: str, now: str) -> IngestOutcome:
+    # Deleted clips stay deleted (no resurrection); seen-count still grows.
+    clips.touch_seen(clip_id, now, commit=False)
+    return IngestOutcome(STATUS_DUPLICATE, clips.get(clip_id))
+
+
 def ingest(
     conn: sqlite3.Connection,
     raw_text: str,
@@ -118,30 +124,49 @@ def ingest(
     content_hash = normalize.content_hash(content)
     now = now_fn()
 
+    # Fast duplicate path preserves the contractual order: dedup happens before
+    # Secret Guard/classification/ID generation. The write is still performed
+    # inside a unit_of_work so touch_seen can join outer transactions safely.
+    existing = clips.get_by_hash(content_hash)
+    if existing is not None:
+        with unit_of_work(conn):
+            current = clips.get_by_hash(content_hash)
+            if current is not None:
+                return _duplicate_outcome(clips, current.id, now)
+        # Extremely defensive: if a row was hard-deleted between the pre-check
+        # and the transaction, fall through to the new-clip path below.
+
+    # Build the deterministic plan outside the writer transaction. This avoids
+    # holding SQLite's write lock while Secret Guard, classification, ID
+    # generation, or lazy sync import work runs.
+    plan = build_ingest_plan(
+        content,
+        content_hash=content_hash,
+        source_device=source_device,
+        source_app=source_app,
+        now=now,
+        new_id_fn=new_id_fn,
+    )
+    sync_emit_clip_new = None
+    if plan.should_sync:
+        from clipvault.sync import engine
+        sync_emit_clip_new = engine.emit_clip_new
+
     with unit_of_work(conn):
+        # Race-safe dedup: another writer may have inserted the same content
+        # after the pre-check and before this transaction acquired the writer lock.
         existing = clips.get_by_hash(content_hash)
         if existing is not None:
-            # Deleted clips stay deleted (no resurrection); seen-count still grows.
-            clips.touch_seen(existing.id, now, commit=False)
-            return IngestOutcome(STATUS_DUPLICATE, clips.get(existing.id))
+            return _duplicate_outcome(clips, existing.id, now)
 
-        plan = build_ingest_plan(
-            content,
-            content_hash=content_hash,
-            source_device=source_device,
-            source_app=source_app,
-            now=now,
-            new_id_fn=new_id_fn,
-        )
         clips.insert(plan.clip, commit=False)
 
         if plan.should_backup:
             backup_queue.enqueue(plan.clip.id, now, commit=False)
-        if plan.should_sync:
+        if sync_emit_clip_new is not None:
             # Publish to the sync outbox (gate B inside emit_clip_new skips secrets).
             # Local captures only; remote-applied clips bypass ingest so there is no echo.
-            from clipvault.sync import engine
-            engine.emit_clip_new(conn, plan.clip, now, commit=False)
+            sync_emit_clip_new(conn, plan.clip, now, commit=False)
 
         return IngestOutcome(
             STATUS_NEW,
