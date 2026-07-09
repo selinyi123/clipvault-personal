@@ -2,6 +2,7 @@
 
 import pytest
 
+from clipvault.core import normalize
 from clipvault.pipeline import ingest as pipeline
 from clipvault.store.backup_queue_repo import BackupQueueRepo, SecretEnqueueError
 from clipvault.store.clips_repo import ClipsRepo
@@ -185,7 +186,7 @@ def test_build_ingest_plan_marks_public_clip_for_downstream_effects():
     content = "git status"
     plan = pipeline.build_ingest_plan(
         content,
-        content_hash="hash-public",
+        content_hash=normalize.content_hash(content),
         source_device="desktop",
         source_app="wt.exe",
         now="2026-07-08T00:00:00Z",
@@ -193,7 +194,7 @@ def test_build_ingest_plan_marks_public_clip_for_downstream_effects():
     )
 
     assert plan.content == content
-    assert plan.content_hash == "hash-public"
+    assert plan.content_hash == normalize.content_hash(content)
     assert plan.clip.id == "clip-public"
     assert plan.clip.content_type == "command"
     assert plan.is_secret is False
@@ -202,10 +203,22 @@ def test_build_ingest_plan_marks_public_clip_for_downstream_effects():
     assert plan.should_write_obsidian is True
 
 
+def test_build_ingest_plan_rejects_mismatched_content_hash():
+    with pytest.raises(ValueError, match="content_hash does not match"):
+        pipeline.build_ingest_plan(
+            "git status",
+            content_hash="not-the-normalized-content-hash",
+            source_device="desktop",
+            source_app="wt.exe",
+            now="2026-07-08T00:00:00Z",
+            new_id_fn=lambda: "clip-public",
+        )
+
+
 def test_build_ingest_plan_keeps_secret_clip_local():
     plan = pipeline.build_ingest_plan(
         FAKE_AWS_KEY,
-        content_hash="hash-secret",
+        content_hash=normalize.content_hash(FAKE_AWS_KEY),
         source_device="desktop",
         source_app=None,
         now="2026-07-08T00:00:00Z",
