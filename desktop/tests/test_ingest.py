@@ -184,9 +184,10 @@ def test_ingest_builds_plan_outside_write_transaction(conn, monkeypatch):
 
 def test_build_ingest_plan_marks_public_clip_for_downstream_effects():
     content = "git status"
+    content_hash = normalize.content_hash(content)
     plan = pipeline.build_ingest_plan(
         content,
-        content_hash=normalize.content_hash(content),
+        content_hash=content_hash,
         source_device="desktop",
         source_app="wt.exe",
         now="2026-07-08T00:00:00Z",
@@ -194,7 +195,7 @@ def test_build_ingest_plan_marks_public_clip_for_downstream_effects():
     )
 
     assert plan.content == content
-    assert plan.content_hash == normalize.content_hash(content)
+    assert plan.content_hash == content_hash
     assert plan.clip.id == "clip-public"
     assert plan.clip.content_type == "command"
     assert plan.is_secret is False
