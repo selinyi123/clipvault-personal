@@ -2,6 +2,7 @@
 
 import pytest
 
+from clipvault.core import normalize
 from clipvault.pipeline import ingest as pipeline
 from clipvault.store.backup_queue_repo import BackupQueueRepo, SecretEnqueueError
 from clipvault.store.clips_repo import ClipsRepo
@@ -139,3 +140,96 @@ def test_duplicate_touch_seen_joins_outer_transaction(conn):
     persisted = ClipsRepo(conn).get(first.clip.id)
     assert persisted.times_seen == 1
     assert persisted.last_seen_at == "2026-07-08T00:00:00Z"
+
+
+def test_duplicate_skips_plan_construction_and_new_id_generation(conn):
+    first = pipeline.ingest(
+        conn,
+        "dedup before planning",
+        source_device="d",
+        new_id_fn=lambda: "clip-dedup-before-planning",
+    )
+    assert first.status == pipeline.STATUS_NEW
+
+    def fail_new_id():
+        raise AssertionError("duplicate ingest must not build a new-clip plan")
+
+    duplicate = pipeline.ingest(
+        conn,
+        "dedup before planning",
+        source_device="d",
+        new_id_fn=fail_new_id,
+    )
+
+    assert duplicate.status == pipeline.STATUS_DUPLICATE
+    assert duplicate.clip.id == first.clip.id
+    assert duplicate.clip.times_seen == 2
+
+
+def test_ingest_builds_plan_outside_write_transaction(conn, monkeypatch):
+    original = pipeline.build_ingest_plan
+    observed: list[bool] = []
+
+    def wrapped_build_ingest_plan(*args, **kwargs):
+        observed.append(conn.in_transaction)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "build_ingest_plan", wrapped_build_ingest_plan)
+
+    outcome = pipeline.ingest(conn, "plan outside transaction", source_device="d")
+
+    assert outcome.status == pipeline.STATUS_NEW
+    assert observed == [False]
+
+
+def test_build_ingest_plan_marks_public_clip_for_downstream_effects():
+    content = "git status"
+    content_hash = normalize.content_hash(content)
+    plan = pipeline.build_ingest_plan(
+        content,
+        content_hash=content_hash,
+        source_device="desktop",
+        source_app="wt.exe",
+        now="2026-07-08T00:00:00Z",
+        new_id_fn=lambda: "clip-public",
+    )
+
+    assert plan.content == content
+    assert plan.content_hash == content_hash
+    assert plan.clip.id == "clip-public"
+    assert plan.clip.content_type == "command"
+    assert plan.is_secret is False
+    assert plan.should_backup is True
+    assert plan.should_sync is True
+    assert plan.should_write_obsidian is True
+
+
+def test_build_ingest_plan_rejects_mismatched_content_hash():
+    with pytest.raises(ValueError, match="content_hash does not match"):
+        pipeline.build_ingest_plan(
+            "git status",
+            content_hash="not-the-normalized-content-hash",
+            source_device="desktop",
+            source_app="wt.exe",
+            now="2026-07-08T00:00:00Z",
+            new_id_fn=lambda: "clip-public",
+        )
+
+
+def test_build_ingest_plan_keeps_secret_clip_local():
+    plan = pipeline.build_ingest_plan(
+        FAKE_AWS_KEY,
+        content_hash=normalize.content_hash(FAKE_AWS_KEY),
+        source_device="desktop",
+        source_app=None,
+        now="2026-07-08T00:00:00Z",
+        new_id_fn=lambda: "clip-secret",
+    )
+
+    assert plan.clip.id == "clip-secret"
+    assert plan.is_secret is True
+    assert plan.clip.secret_level == "hard"
+    assert plan.clip.secret_reasons == ["SG-AWS-ID"]
+    assert plan.should_backup is False
+    assert plan.should_sync is False
+    assert plan.should_write_obsidian is False
