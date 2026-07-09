@@ -23,6 +23,24 @@ STATUS_REJECTED_EMPTY = "rejected_empty"
 STATUS_REJECTED_TOO_LARGE = "rejected_too_large"
 
 
+@dataclass(frozen=True)
+class IngestPlan:
+    """Pure ingest decision output before persistence side effects.
+
+    The plan is built after normalization, rejection, and DB dedup have already
+    happened. It captures the deterministic Gate A/classification result plus
+    which downstream queues may receive the new clip.
+    """
+
+    content: str
+    content_hash: str
+    clip: Clip
+    is_secret: bool
+    should_backup: bool
+    should_sync: bool
+    should_write_obsidian: bool
+
+
 @dataclass
 class IngestOutcome:
     status: str
@@ -32,6 +50,49 @@ class IngestOutcome:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def build_ingest_plan(
+    content: str,
+    *,
+    content_hash: str,
+    source_device: str,
+    source_app: str | None,
+    now: str,
+    new_id_fn: Callable[[], str] = ulid.new,
+) -> IngestPlan:
+    """Build the deterministic ingest plan for a non-duplicate clip.
+
+    This function performs no database, filesystem, network, Obsidian, backup,
+    or sync writes. Callers remain responsible for rejection and dedup so the
+    contractual order stays normalize -> reject -> dedup -> secret guard.
+    """
+
+    verdict = secret_guard.scan(content)  # gate A
+    content_type = classifier.classify(content)
+    clip = Clip(
+        id=new_id_fn(),
+        content=content,
+        content_hash=content_hash,
+        content_type=content_type,
+        is_secret=verdict.is_secret,
+        secret_level=verdict.level,
+        secret_reasons=verdict.reasons,
+        source_device=source_device,
+        source_app=source_app,
+        created_at=now,
+        last_seen_at=now,
+    )
+    public = not clip.is_secret
+    return IngestPlan(
+        content=content,
+        content_hash=content_hash,
+        clip=clip,
+        is_secret=clip.is_secret,
+        should_backup=public,
+        should_sync=public,
+        should_write_obsidian=public,
+    )
 
 
 def ingest(
@@ -64,30 +125,26 @@ def ingest(
             clips.touch_seen(existing.id, now, commit=False)
             return IngestOutcome(STATUS_DUPLICATE, clips.get(existing.id))
 
-        verdict = secret_guard.scan(content)  # gate A
-        content_type = classifier.classify(content)
-
-        clip = Clip(
-            id=new_id_fn(),
-            content=content,
+        plan = build_ingest_plan(
+            content,
             content_hash=content_hash,
-            content_type=content_type,
-            is_secret=verdict.is_secret,
-            secret_level=verdict.level,
-            secret_reasons=verdict.reasons,
             source_device=source_device,
             source_app=source_app,
-            created_at=now,
-            last_seen_at=now,
+            now=now,
+            new_id_fn=new_id_fn,
         )
-        clips.insert(clip, commit=False)
+        clips.insert(plan.clip, commit=False)
 
-        if clip.is_secret:
-            return IngestOutcome(STATUS_NEW, clip, needs_obsidian=False)
+        if plan.should_backup:
+            backup_queue.enqueue(plan.clip.id, now, commit=False)
+        if plan.should_sync:
+            # Publish to the sync outbox (gate B inside emit_clip_new skips secrets).
+            # Local captures only; remote-applied clips bypass ingest so there is no echo.
+            from clipvault.sync import engine
+            engine.emit_clip_new(conn, plan.clip, now, commit=False)
 
-        backup_queue.enqueue(clip.id, now, commit=False)
-        # Publish to the sync outbox (gate B inside emit_clip_new skips secrets).
-        # Local captures only; remote-applied clips bypass ingest so there is no echo.
-        from clipvault.sync import engine
-        engine.emit_clip_new(conn, clip, now, commit=False)
-        return IngestOutcome(STATUS_NEW, clip, needs_obsidian=True)
+        return IngestOutcome(
+            STATUS_NEW,
+            plan.clip,
+            needs_obsidian=plan.should_write_obsidian,
+        )
