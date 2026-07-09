@@ -139,3 +139,43 @@ def test_duplicate_touch_seen_joins_outer_transaction(conn):
     persisted = ClipsRepo(conn).get(first.clip.id)
     assert persisted.times_seen == 1
     assert persisted.last_seen_at == "2026-07-08T00:00:00Z"
+
+
+def test_build_ingest_plan_marks_public_clip_for_downstream_effects():
+    content = "git status"
+    plan = pipeline.build_ingest_plan(
+        content,
+        content_hash="hash-public",
+        source_device="desktop",
+        source_app="wt.exe",
+        now="2026-07-08T00:00:00Z",
+        new_id_fn=lambda: "clip-public",
+    )
+
+    assert plan.content == content
+    assert plan.content_hash == "hash-public"
+    assert plan.clip.id == "clip-public"
+    assert plan.clip.content_type == "command"
+    assert plan.is_secret is False
+    assert plan.should_backup is True
+    assert plan.should_sync is True
+    assert plan.should_write_obsidian is True
+
+
+def test_build_ingest_plan_keeps_secret_clip_local():
+    plan = pipeline.build_ingest_plan(
+        FAKE_AWS_KEY,
+        content_hash="hash-secret",
+        source_device="desktop",
+        source_app=None,
+        now="2026-07-08T00:00:00Z",
+        new_id_fn=lambda: "clip-secret",
+    )
+
+    assert plan.clip.id == "clip-secret"
+    assert plan.is_secret is True
+    assert plan.clip.secret_level == "hard"
+    assert plan.clip.secret_reasons == ["SG-AWS-ID"]
+    assert plan.should_backup is False
+    assert plan.should_sync is False
+    assert plan.should_write_obsidian is False
