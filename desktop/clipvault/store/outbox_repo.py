@@ -10,12 +10,13 @@ class OutboxRepo:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def append(self, kind: str, payload: dict, when: str) -> int:
+    def append(self, kind: str, payload: dict, when: str, *, commit: bool = True) -> int:
         cur = self.conn.execute(
             "INSERT INTO sync_outbox(kind, payload, created_at) VALUES (?,?,?)",
             (kind, json.dumps(payload, ensure_ascii=False), when),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return cur.lastrowid
 
     def list_since(self, since_seq: int, limit: int = 100) -> list[dict]:

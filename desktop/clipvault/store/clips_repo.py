@@ -63,7 +63,7 @@ class ClipsRepo:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def insert(self, clip: Clip) -> None:
+    def insert(self, clip: Clip, *, commit: bool = True) -> None:
         self.conn.execute(
             f"INSERT INTO clips ({_COLUMNS}) VALUES "
             "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -94,7 +94,8 @@ class ClipsRepo:
                 "INSERT INTO clips_fts(id, content) VALUES (?, ?)",
                 (clip.id, clip.content),
             )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def get(self, clip_id: str) -> Clip | None:
         row = self.conn.execute(
@@ -108,12 +109,13 @@ class ClipsRepo:
         ).fetchone()
         return _row_to_clip(row) if row else None
 
-    def touch_seen(self, clip_id: str, when: str) -> None:
+    def touch_seen(self, clip_id: str, when: str, *, commit: bool = True) -> None:
         self.conn.execute(
             "UPDATE clips SET times_seen = times_seen + 1, last_seen_at = ? WHERE id = ?",
             (when, clip_id),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def set_obsidian_path(self, clip_id: str, path: str) -> None:
         self.conn.execute(

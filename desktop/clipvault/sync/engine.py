@@ -50,11 +50,11 @@ def clip_to_data(clip: Clip) -> dict:
 
 # --- local emission (called by ingest / patch) ---
 
-def emit_clip_new(conn, clip: Clip, when: str) -> int | None:
+def emit_clip_new(conn, clip: Clip, when: str, *, commit: bool = True) -> int | None:
     """Publish a locally-created public clip. Gate B: secrets never emitted."""
     if clip.is_secret:
         return None
-    return OutboxRepo(conn).append("clip_new", clip_to_data(clip), when)
+    return OutboxRepo(conn).append("clip_new", clip_to_data(clip), when, commit=commit)
 
 
 def emit_clip_meta(conn, content_hash: str, patch: dict, ts: str, when: str) -> int:

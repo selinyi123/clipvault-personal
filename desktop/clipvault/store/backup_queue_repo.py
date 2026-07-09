@@ -14,7 +14,7 @@ class BackupQueueRepo:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def enqueue(self, clip_id: str, when: str) -> bool:
+    def enqueue(self, clip_id: str, when: str, *, commit: bool = True) -> bool:
         """Queue a clip for backup. Returns False if already queued."""
         secret = self.conn.execute(
             "SELECT is_secret FROM clips WHERE id = ?", (clip_id,)
@@ -25,7 +25,8 @@ class BackupQueueRepo:
             "INSERT OR IGNORE INTO backup_queue(clip_id, created_at) VALUES (?, ?)",
             (clip_id, when),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return cur.rowcount > 0
 
     def reenqueue(self, clip_id: str, when: str) -> None:
