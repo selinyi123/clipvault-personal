@@ -15,12 +15,17 @@ from clipvault.pipeline import ingest as pipeline
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.memory_repo import MemoryRepo, SecretMemoryError
-from clipvault.store.obsidian_queue_repo import ObsidianQueueRepo
+from clipvault.store.obsidian_queue_repo import ObsidianClaim, ObsidianQueueRepo
+from clipvault.store.unit_of_work import unit_of_work
 
 log = logging.getLogger("clipvault.service")
 
 # content_type -> memory kind for clip promotion (S007)
 _PROMOTE_KIND = {"prompt": "prompt", "command": "command"}
+
+
+class _ObsidianClaimLost(RuntimeError):
+    """The leased queue row is no longer owned by this writer."""
 
 
 def _utc_now() -> str:
@@ -67,70 +72,116 @@ class ClipVaultService:
             self.write_obsidian_or_queue(clip)
         return outcome
 
-    def _try_write_obsidian(self, clip) -> tuple[bool, str | None]:
+    def _try_write_obsidian(self, clip) -> tuple[str | None, str | None]:
         try:
             path = writer.write_clip(clip, self.config.vault_path, self.config.type_dirs)
         except writer.SecretWriteRefused:
             raise
-        except OSError as exc:
-            # No clip content in logs.
+        except Exception as exc:
+            # Render validation, filesystem failures, and legacy poison rows are
+            # isolated to this queue item.  Never log the exception message: it
+            # may contain a private Vault path.
             log.error("obsidian write failed id=%s err=%s", clip.id, exc.__class__.__name__)
-            return False, exc.__class__.__name__
-        self.clips.set_obsidian_path(clip.id, str(path))
+            return None, exc.__class__.__name__
+        return str(path), None
+
+    def _record_claim_failure(self, claim: ObsidianClaim, error: str, now: str) -> None:
+        try:
+            self.obsidian_queue.record_failure(claim, error, now)
+        except Exception as exc:
+            log.error(
+                "obsidian retry update failed id=%s err=%s",
+                claim.clip_id,
+                exc.__class__.__name__,
+            )
+
+    def _process_obsidian_claim(self, claim: ObsidianClaim, now: str) -> bool:
+        """Perform one filesystem write owned by ``claim`` and finalize safely."""
+
+        clip = self.clips.get(claim.clip_id)
+        if clip is None or clip.is_secret or clip.deleted or clip.obsidian_path:
+            try:
+                self.obsidian_queue.mark_done(claim)
+            except Exception as exc:
+                log.error(
+                    "obsidian stale claim cleanup failed id=%s err=%s",
+                    claim.clip_id,
+                    exc.__class__.__name__,
+                )
+            return False
+
+        path, error = self._try_write_obsidian(clip)
+        if path is None:
+            self._record_claim_failure(claim, error or "obsidian_write_failed", now)
+            return False
+
+        try:
+            # Recording the durable path and consuming the owned claim are one
+            # DB transition.  If it fails after the file write, the writer finds
+            # the existing clip-id file on the next leased retry.
+            with unit_of_work(self.conn):
+                self.clips.set_obsidian_path(clip.id, path, commit=False)
+                if not self.obsidian_queue.mark_done(claim, commit=False):
+                    # A slow filesystem call may outlive its lease.  Never let
+                    # that stale owner commit the path or consume a newer claim.
+                    raise _ObsidianClaimLost()
+        except Exception as exc:
+            log.error(
+                "obsidian finalize failed id=%s err=%s",
+                clip.id,
+                exc.__class__.__name__,
+            )
+            self._record_claim_failure(claim, exc.__class__.__name__, now)
+            return False
+
         log.info("obsidian written id=%s", clip.id)
-        return True, None
+        return True
 
     def _write_obsidian(self, clip) -> bool:
         """Backward-compatible Obsidian entrypoint used by older sync code."""
         return self.write_obsidian_or_queue(clip)
 
     def write_obsidian_or_queue(self, clip) -> bool:
-        """Try one Obsidian write and keep a bounded retry row on failure.
-
-        The queue row is created before the external file-system effect. This
-        makes the DB the durable source of retry truth without scanning all clips
-        every maintenance cycle.
-        """
+        """Lease and attempt one queued write without racing the sweep worker."""
 
         now = _utc_now()
         try:
             self.obsidian_queue.enqueue(clip.id, now)
-        except Exception:
-            # Do not prevent the immediate write attempt because queue metadata
-            # failed. Also do not log content.
-            log.exception("obsidian retry enqueue failed id=%s", clip.id)
-
-        ok, err = self._try_write_obsidian(clip)
+        except Exception as exc:
+            log.error(
+                "obsidian retry enqueue failed id=%s err=%s",
+                clip.id,
+                exc.__class__.__name__,
+            )
         try:
-            if ok:
-                self.obsidian_queue.mark_done(clip.id)
-            else:
-                self.obsidian_queue.record_failure(clip.id, err or "obsidian_write_failed", now)
-        except Exception:
-            log.exception("obsidian retry queue update failed id=%s", clip.id)
-        return ok
+            claim = self.obsidian_queue.claim_one(clip.id, now)
+        except Exception as exc:
+            log.error(
+                "obsidian claim failed id=%s err=%s", clip.id, exc.__class__.__name__
+            )
+            return False
+        if claim is None:
+            return False
+        return self._process_obsidian_claim(claim, now)
 
     def release_clip(self, clip_id: str) -> bool:
         """Release a quarantined clip and re-run the public pipeline
         (FTS already re-indexed by the repo; here we add Obsidian + backup + sync)."""
-        clip = self.clips.release_secret(clip_id, _utc_now())
-        if clip is None:
-            return False
+        from clipvault.sync import engine
+
+        now = _utc_now()
+        with unit_of_work(self.conn):
+            clip = self.clips.release_secret(clip_id, now, commit=False)
+            if clip is None:
+                return False
+            if not clip.deleted:
+                self.obsidian_queue.enqueue(clip.id, now, commit=False)
+                BackupQueueRepo(self.conn).enqueue(clip.id, now, commit=False)
+                # Explicit release must re-enter the public sync pipeline.
+                engine.emit_clip_new(self.conn, clip, now, commit=False)
         log.info("released id=%s (was quarantined)", clip.id)
         if not clip.deleted:
             self.write_obsidian_or_queue(clip)
-            now = _utc_now()
-            try:
-                BackupQueueRepo(self.conn).enqueue(clip.id, now)
-            except Exception:
-                log.exception("enqueue after release failed id=%s", clip.id)
-            # Released clips have an explicit user decision and must re-enter the
-            # public sync pipeline; otherwise Android never sees them.
-            try:
-                from clipvault.sync import engine
-                engine.emit_clip_new(self.conn, clip, now)
-            except Exception:
-                log.exception("sync emit after release failed id=%s", clip.id)
         return True
 
     def promote_clip(self, clip_id: str, kind: str | None = None):
@@ -165,23 +216,36 @@ class ClipVaultService:
         enforces both a row limit and a runtime budget.
         """
 
-        now = now_fn()
         deadline = time.monotonic() + max(1, max_runtime_ms) / 1000.0
         repaired = 0
-        self.obsidian_queue.cleanup_ineligible()
-        for clip_id in self.obsidian_queue.claim_ready(now, limit=limit):
+        processed = 0
+        now = now_fn()
+        self.obsidian_queue.reconcile_missing(now, limit=limit)
+        self.obsidian_queue.cleanup_ineligible(limit=max(limit, 1))
+        while processed < max(1, min(int(limit), 500)):
             if time.monotonic() >= deadline:
                 break
-            clip = self.clips.get(clip_id)
-            if clip is None or clip.is_secret or clip.deleted or clip.obsidian_path:
-                self.obsidian_queue.mark_done(clip_id)
-                continue
-            ok, err = self._try_write_obsidian(clip)
-            if ok:
-                self.obsidian_queue.mark_done(clip_id)
-                repaired += 1
-            else:
-                self.obsidian_queue.record_failure(clip_id, err or "obsidian_write_failed", now)
+            now = now_fn()
+            try:
+                claims = self.obsidian_queue.claim_ready(now, limit=1)
+            except Exception as exc:
+                log.error("obsidian sweep claim failed err=%s", exc.__class__.__name__)
+                break
+            if not claims:
+                break
+            claim = claims[0]
+            processed += 1
+            try:
+                if self._process_obsidian_claim(claim, now):
+                    repaired += 1
+            except Exception as exc:
+                # One poison row must never prevent later ready rows in a batch.
+                log.error(
+                    "obsidian sweep item failed id=%s err=%s",
+                    claim.clip_id,
+                    exc.__class__.__name__,
+                )
+                self._record_claim_failure(claim, exc.__class__.__name__, now)
         return repaired
 
     def obsidian_retry_stats(self) -> dict:

@@ -87,6 +87,9 @@ jobs:
       - name: Run Android unit tests
         run: ./gradlew :core:test :app:testDebugUnitTest --no-daemon
 
+      - name: Run Android lint
+        run: ./gradlew :app:lintDebug --no-daemon
+
       - name: Compile Android instrumented QA sources
         run: ./gradlew :app:compileDebugAndroidTestKotlin --no-daemon
 

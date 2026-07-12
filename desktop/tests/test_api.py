@@ -15,8 +15,10 @@ import pytest
 from clipvault.api.handlers import Api
 from clipvault.api import server as api_server
 from clipvault.config import Config
+from clipvault.pipeline import ingest as pipeline
 from clipvault.service import ClipVaultService
 from clipvault.store.clips_repo import ClipsRepo
+from clipvault.store.obsidian_queue_repo import ObsidianQueueRepo
 from clipvault.store.outbox_repo import OutboxRepo
 
 FAKE_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
@@ -151,6 +153,35 @@ def test_d7_status_matches_db(api):
     assert st["clips_total"] == 3
     assert st["quarantined"] == 1
     assert st["backup_pending"] == 2  # secret not queued
+    assert st["obsidian_retry"]["pending"] == 0
+    assert st["obsidian_retry"]["ready"] == 0
+
+
+def test_d7_status_exposes_only_aggregate_obsidian_retry_health(api, conn):
+    content = "private status payload must stay hidden"
+    outcome = pipeline.ingest(
+        conn,
+        content,
+        source_device="desktop-test",
+        new_id_fn=lambda: "obsidian-status-private-id",
+    )
+    queue = ObsidianQueueRepo(conn)
+    queue.enqueue(outcome.clip.id, "2026-07-12T00:00:00Z")
+    conn.execute(
+        "UPDATE obsidian_queue SET last_error=? WHERE clip_id=?",
+        (r"PermissionError: D:\\Private\\Vault", outcome.clip.id),
+    )
+    conn.commit()
+
+    code, status = api.status()
+    encoded = json.dumps(status, ensure_ascii=False)
+
+    assert code == 200
+    assert status["obsidian_retry"]["pending"] == 1
+    assert outcome.clip.id not in encoded
+    assert content not in encoded
+    assert "Private" not in encoded
+    assert "PermissionError" not in encoded
 
 
 def test_pair_code_warns_when_bound_to_loopback(conn, cfg):
@@ -253,6 +284,73 @@ def test_d8_pair_rejects_large_body(api):
         resp = conn.getresponse()
         assert resp.status == 413
         resp.read()
+        conn.close()
+    finally:
+        stop.set()
+
+
+def test_d8_partial_pair_body_times_out_without_blocking_server(api):
+    stop = threading.Event()
+    httpd = api_server.build_server(
+        api,
+        "127.0.0.1",
+        0,
+        read_timeout_s=0.1,
+    )
+    port = httpd.server_address[1]
+    t = threading.Thread(target=_serve_until, args=(httpd, stop), daemon=True)
+    t.start()
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2) as sock:
+            sock.settimeout(2)
+            sock.sendall(
+                b"POST /api/pair HTTP/1.1\r\n"
+                b"Host: 127.0.0.1\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Content-Length: 10\r\n"
+                b"Connection: close\r\n\r\n"
+                b"{"
+            )
+            response = sock.recv(4096)
+        assert b" 408 " in response.split(b"\r\n", 1)[0]
+
+        # The only serving thread must accept a later request after closing the
+        # stalled connection.
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/health")
+        health = conn.getresponse()
+        assert health.status == 200
+        health.read()
+        conn.close()
+    finally:
+        stop.set()
+
+
+def test_d8_unauthorized_sync_rejects_without_draining_partial_body(api):
+    stop = threading.Event()
+    httpd = api_server.build_server(api, "127.0.0.1", 0, read_timeout_s=1.0)
+    port = httpd.server_address[1]
+    t = threading.Thread(target=_serve_until, args=(httpd, stop), daemon=True)
+    t.start()
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2) as sock:
+            sock.settimeout(0.5)
+            sock.sendall(
+                b"POST /api/sync/push HTTP/1.1\r\n"
+                b"Host: 127.0.0.1\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Content-Length: 7340032\r\n"
+                b"Connection: close\r\n\r\n"
+                b"{"
+            )
+            response = sock.recv(4096)
+        assert b" 401 " in response.split(b"\r\n", 1)[0]
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/health")
+        health = conn.getresponse()
+        assert health.status == 200
+        health.read()
         conn.close()
     finally:
         stop.set()

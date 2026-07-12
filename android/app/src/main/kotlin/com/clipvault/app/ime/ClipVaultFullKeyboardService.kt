@@ -67,7 +67,7 @@ class ClipVaultFullKeyboardService : InputMethodService() {
 
         val toolbar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         toolbar.addView(key("📋 ClipVault", weight = 2f) { showCandidates() })
-        toolbar.addView(key("切回", weight = 1f) { switchToPreviousInputMethod() })
+        toolbar.addView(key("切回", weight = 1f) { switchToPreviousInputMethodCompat() })
         root.addView(toolbar)
 
         val strip = HorizontalScrollView(this)

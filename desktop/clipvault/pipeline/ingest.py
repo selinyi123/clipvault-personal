@@ -15,6 +15,7 @@ from clipvault.core import classifier, normalize, secret_guard, ulid
 from clipvault.core.models import Clip
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
+from clipvault.store.obsidian_queue_repo import ObsidianQueueRepo
 from clipvault.store.unit_of_work import unit_of_work
 
 STATUS_NEW = "new"
@@ -120,6 +121,7 @@ def ingest(
 ) -> IngestOutcome:
     clips = ClipsRepo(conn)
     backup_queue = BackupQueueRepo(conn)
+    obsidian_queue = ObsidianQueueRepo(conn)
 
     content = normalize.normalize(raw_text)
     reason = normalize.reject_reason(content, max_bytes)
@@ -170,6 +172,10 @@ def ingest(
 
         if plan.should_backup:
             backup_queue.enqueue(plan.clip.id, now, commit=False)
+        if plan.should_write_obsidian:
+            # Obsidian is an external effect, but its durable intent belongs in
+            # the same transaction as the clip, backup queue, and sync outbox.
+            obsidian_queue.enqueue(plan.clip.id, now, commit=False)
         if sync_emit_clip_new is not None:
             # Publish to the sync outbox (gate B inside emit_clip_new skips secrets).
             # Local captures only; remote-applied clips bypass ingest so there is no echo.

@@ -29,11 +29,29 @@ private const val TOKEN_PREFS = "clipvault_sync_token"
 private const val TOKEN_KEY_ALIAS = "clipvault_sync_token_v1"
 private const val TOKEN_IV = "token_iv"
 private const val TOKEN_CT = "token_ct"
-internal const val MAX_SYNC_RESPONSE_BYTES = 4 * 1024 * 1024
+private const val PUSH_BLOCKED_SEQ = "push_blocked_seq"
+private const val PUSH_BLOCKED_REASON = "push_blocked_reason"
+internal const val MAX_SYNC_RESPONSE_BYTES = 7 * 1024 * 1024
 private val HOST_LABEL_RE = Regex("""^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$""")
 private val BRACKETED_IPV6_RE = Regex("""^\[[0-9A-Fa-f:.%]+]$""")
 
 internal class SyncAuthException : IOException("sync auth rejected")
+internal class SyncPushRequestTooLargeException : IOException("sync push request rejected as too large")
+
+internal enum class SyncPushBlockReason(val code: String, val safeMessage: String) {
+    EVENT_TOO_LARGE("event_too_large", "sync push event exceeds request budget"),
+    INVALID_PAYLOAD("invalid_payload", "sync push event payload is invalid"),
+    ACK_OUT_OF_RANGE("ack_out_of_range", "sync push acknowledgement exceeds sent prefix");
+
+    companion object {
+        fun fromCode(code: String?): SyncPushBlockReason? = values().firstOrNull { it.code == code }
+    }
+}
+
+internal data class SyncPushBlockedState(
+    val seq: Long,
+    val reason: SyncPushBlockReason,
+)
 
 internal fun isPermanentSyncAuthFailure(statusCode: Int): Boolean =
     statusCode == HttpURLConnection.HTTP_UNAUTHORIZED ||
@@ -106,7 +124,8 @@ private class SecureTokenStore(context: Context) {
 
     fun set(value: String?) {
         if (value.isNullOrEmpty()) {
-            sp.edit().remove(TOKEN_IV).remove(TOKEN_CT).apply()
+            val cleared = sp.edit().remove(TOKEN_IV).remove(TOKEN_CT).commit()
+            if (!cleared) throw IOException("token clear failed")
             return
         }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -149,17 +168,55 @@ class Settings(context: Context) {
     var port: Int      get() = sp.getInt("port", 8787);     set(v) { sp.edit().putInt("port", v).apply() }
     var token: String? get() = tokenStore.get();             set(v) { tokenStore.set(v); sp.edit().remove(LEGACY_TOKEN).apply() }
     var sinceSeq: Long get() = sp.getLong("since", 0);      set(v) { sp.edit().putLong("since", v).apply() }
+    internal val syncPushBlocked: SyncPushBlockedState?
+        get() {
+            val seq = sp.getLong(PUSH_BLOCKED_SEQ, 0L)
+            val reason = SyncPushBlockReason.fromCode(sp.getString(PUSH_BLOCKED_REASON, null))
+            return if (seq > 0L && reason != null) SyncPushBlockedState(seq, reason) else null
+        }
     val deviceId: String
         get() = sp.getString("device_id", null) ?: run {
             val id = "android-" + UUID.randomUUID().toString().take(8)
             sp.edit().putString("device_id", id).apply(); id
         }
 
+    internal fun markSyncPushBlocked(state: SyncPushBlockedState) {
+        require(state.seq > 0L) { "blocked sync sequence must be positive" }
+        val stored = sp.edit()
+            .putLong(PUSH_BLOCKED_SEQ, state.seq)
+            .putString(PUSH_BLOCKED_REASON, state.reason.code)
+            .commit()
+        if (!stored) throw IOException("sync blocked state write failed")
+    }
+
+    internal fun clearSyncPushBlocked() {
+        if (!sp.contains(PUSH_BLOCKED_SEQ) && !sp.contains(PUSH_BLOCKED_REASON)) return
+        val cleared = sp.edit()
+            .remove(PUSH_BLOCKED_SEQ)
+            .remove(PUSH_BLOCKED_REASON)
+            .commit()
+        if (!cleared) throw IOException("sync blocked state clear failed")
+    }
+
+    /** Install a freshly redeemed token without carrying an old peer's blocked
+     * acknowledgement state into the new pairing. Marker persistence must
+     * succeed before the token is installed. */
+    internal fun replaceToken(token: String) {
+        tokenStore.set(null)
+        installFreshToken(token)
+    }
+
+    private fun installFreshToken(token: String) {
+        clearSyncPushBlocked()
+        tokenStore.set(token)
+    }
+
     /** Commit a new host/token pairing without ever exposing a stale or fresh
      * token to the wrong host. Preferences and AndroidKeyStore are separate
      * stores, so the safest order is fail-closed: clear token -> synchronously
-     * write host -> write new token. A concurrent worker can then see old
-     * host+old token, new host+no token, or new host+new token, but never new
+     * write host -> clear old-peer blocked marker -> write new token. A
+     * concurrent worker can then see old host+old token, new host+no token, or
+     * new host+new token, but never new
      * host+old token or old host+new token. */
     fun replacePairing(host: String, token: String) {
         tokenStore.set(null)
@@ -168,7 +225,12 @@ class Settings(context: Context) {
             tokenStore.set(null)
             throw IOException("pairing state write failed")
         }
-        tokenStore.set(token)
+        // A blocked acknowledgement can belong to the previous peer. Clear the
+        // safe marker before installing the fresh token so the new pairing gets
+        // one re-evaluation; invalid/oversized local rows will block again.
+        // clearSyncPushBlocked() is synchronous and throws before token install
+        // if persistence fails, preserving the fail-closed ordering.
+        installFreshToken(token)
     }
 
     /** One-time v1.2.x -> v1.3 migration. Preserve pairing while deleting the
@@ -229,7 +291,7 @@ class SyncClient(private val s: Settings, private val hostOverride: String? = nu
     fun pair(code: String): Boolean {
         return try {
             val token = requestPairToken(code) ?: return false
-            s.token = token
+            s.replaceToken(token)
             true
         } catch (e: Exception) {
             android.util.Log.w("clipvault.sync", "pair failed: ${e.javaClass.simpleName}")
@@ -267,6 +329,10 @@ class SyncClient(private val s: Settings, private val hostOverride: String? = nu
         val (code, text) = req("POST", "/sync/push", body, auth = true)
         if (code == 200) return JSONObject(text).optLong("acked_upto", 0)
         if (isPermanentSyncAuthFailure(code)) throw SyncAuthException()
+        // A paired older desktop can still enforce the former 4 MiB cap. This
+        // request cannot succeed unchanged, so let the worker persist a safe
+        // blocked marker instead of retrying it every period.
+        if (code == 413) throw SyncPushRequestTooLargeException()
         return -1
     }
 

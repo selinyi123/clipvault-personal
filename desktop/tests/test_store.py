@@ -13,12 +13,13 @@ FIXED_NOW = "2026-06-12T08:30:00Z"
 FIXED_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
 EXPECTED_TABLES = {
-    "schema_meta", "clips", "memory_items", "sync_outbox", "sync_peers", "backup_queue",
+    "schema_meta", "clips", "memory_items", "sync_outbox", "sync_peers",
+    "backup_queue", "obsidian_queue", "obsidian_reconcile_state",
 }
 
 
 def test_a1_migration_from_zero(conn):
-    assert db.schema_version(conn) == 5  # 0001_init + 0002/0003 meta_ts + 0004 per-field clip_meta_ts + 0005 fts trigram
+    assert db.schema_version(conn) == 7
     names = {
         r[0]
         for r in conn.execute(
@@ -32,7 +33,58 @@ def test_a1_migration_from_zero(conn):
 
 
 def test_a1_migration_idempotent(conn):
-    assert db.migrate(conn) == 5  # second run is a no-op, returns current version
+    assert db.migrate(conn) == 7  # second run is a no-op, returns current version
+
+
+def test_a1_v5_to_v6_backfills_only_eligible_obsidian_rows(tmp_path):
+    """Exercise the real populated upgrade path, not only a fresh database."""
+    v5_migrations = tmp_path / "v5-migrations"
+    v5_migrations.mkdir()
+    for script in sorted(db.MIGRATIONS_DIR.glob("[0-9]*.sql")):
+        if int(script.name.split("_", 1)[0]) > 5:
+            continue
+        (v5_migrations / script.name).write_text(
+            script.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+    raw = db.connect(":memory:")
+    assert db.migrate(raw, v5_migrations) == 5
+    created = "2026-07-01T00:00:00Z"
+    rows = (
+        ("public-pending", "public", "hash-public", 0, 0, None),
+        ("secret-pending", "secret", "hash-secret", 1, 0, None),
+        ("deleted-public", "deleted", "hash-deleted", 0, 1, None),
+        ("already-written", "written", "hash-written", 0, 0, "vault/note.md"),
+    )
+    raw.executemany(
+        "INSERT INTO clips("
+        "id, content, content_hash, is_secret, deleted, obsidian_path, "
+        "source_device, created_at, last_seen_at"
+        ") VALUES (?,?,?,?,?,?,?,?,?)",
+        [
+            (clip_id, content, content_hash, is_secret, deleted, obsidian_path,
+             "desktop-test", created, created)
+            for clip_id, content, content_hash, is_secret, deleted, obsidian_path in rows
+        ],
+    )
+    raw.commit()
+
+    migration_0006 = next(db.MIGRATIONS_DIR.glob("0006_*.sql"))
+    (v5_migrations / migration_0006.name).write_text(
+        migration_0006.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    assert db.migrate(raw, v5_migrations) == 6
+    queued = raw.execute(
+        "SELECT clip_id, state, attempts, next_attempt_at "
+        "FROM obsidian_queue ORDER BY clip_id"
+    ).fetchall()
+    assert [tuple(row) for row in queued] == [
+        ("public-pending", "pending", 0, created),
+    ]
+    assert db.migrate(raw, v5_migrations) == 6
+    assert raw.execute("SELECT COUNT(*) FROM obsidian_queue").fetchone()[0] == 1
 
 
 def test_a1_failed_migration_rolls_back_script_and_schema_version(tmp_path):

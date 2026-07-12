@@ -155,26 +155,76 @@ def test_research_log_rounds_and_ids_are_unique():
 
     assert len(rounds) == len(set(rounds))
     assert len(research_ids) == len(set(research_ids))
-    assert "R69 | Android outbound sync push request-body budget" in research
+    assert "R69 | Bidirectional sync JSON byte budgets and durable push blocking" in research
 
 
 def test_android_sync_push_request_budget_stays_below_desktop_cap():
     worker = _read("android/app/src/main/kotlin/com/clipvault/app/sync/SyncWorker.kt")
+    normalize = _read("android/core/src/main/kotlin/com/clipvault/core/Normalize.kt")
     server = _read("desktop/clipvault/api/server.py")
 
-    android_budget = re.search(
-        r"MAX_SYNC_PUSH_REQUEST_BYTES\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024",
+    clip_cap = re.search(
+        r"DEFAULT_MAX_CLIP_BYTES\s*=\s*([\d_]+)",
+        normalize,
+    )
+    escape_multiplier = re.search(
+        r"MAX_JSON_ESCAPED_BYTES_PER_CLIP_BYTE\s*=\s*(\d+)",
+        worker,
+    )
+    envelope_kib = re.search(
+        r"MAX_SYNC_EVENT_ENVELOPE_BYTES\s*=\s*(\d+)\s*\*\s*1024",
         worker,
     )
     desktop_cap = re.search(
-        r"_MAX_SYNC_PUSH_BODY\s*=\s*(\d+)\s*\*\s*1_048_576",
+        r"_MAX_CONTENT_JSON_BODY\s*=\s*(\d+)\s*\*\s*1_048_576",
         server,
     )
 
-    assert android_budget, "Android sync push request budget not found"
+    assert clip_cap, "Android max clip byte limit not found"
+    assert escape_multiplier, "Android JSON escape multiplier not found"
+    assert envelope_kib, "Android sync event envelope allowance not found"
     assert desktop_cap, "desktop sync push body cap not found"
-    assert int(android_budget.group(1)) * 1024 * 1024 < int(desktop_cap.group(1)) * 1_048_576
+    android_budget = (
+        int(clip_cap.group(1).replace("_", "")) * int(escape_multiplier.group(1))
+        + int(envelope_kib.group(1)) * 1024
+    )
+    assert android_budget < int(desktop_cap.group(1)) * 1_048_576
+    assert 'if route == "/api/clips":\n                body = self._body(_MAX_CONTENT_JSON_BODY)' in server
+    assert "_MAX_SYNC_PUSH_BODY = _MAX_CONTENT_JSON_BODY" in server
     assert "buildSyncPushBatch" in worker
+    assert "maxSizedControlCharacterClipFitsTheProductionRequestBudget" in _read(
+        "android/app/src/test/kotlin/com/clipvault/app/sync/SyncPushBatchTest.kt"
+    )
+
+
+def test_sync_pull_response_caps_cover_worst_case_clip_and_stay_aligned():
+    android_sync = _read("android/app/src/main/kotlin/com/clipvault/app/sync/Sync.kt")
+    android_test = _read("android/app/src/test/kotlin/com/clipvault/app/sync/SyncClientBoundsTest.kt")
+    desktop_engine = _read("desktop/clipvault/sync/engine.py")
+    desktop_test = _read("desktop/tests/test_sync.py")
+
+    android_cap = re.search(
+        r"MAX_SYNC_RESPONSE_BYTES\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024",
+        android_sync,
+    )
+    desktop_cap = re.search(
+        r"SYNC_PULL_HTTP_RESPONSE_BYTES\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024",
+        desktop_engine,
+    )
+    envelope_kib = re.search(
+        r"SYNC_PULL_RESPONSE_ENVELOPE_BYTES\s*=\s*(\d+)\s*\*\s*1024",
+        desktop_engine,
+    )
+
+    assert android_cap, "Android sync response hard cap not found"
+    assert desktop_cap, "desktop sync response hard cap not found"
+    assert envelope_kib, "desktop sync response envelope reserve not found"
+    assert int(android_cap.group(1)) == int(desktop_cap.group(1))
+    assert int(envelope_kib.group(1)) >= 64
+    assert "SYNC_PULL_FETCH_LIMIT = 8" in desktop_engine
+    assert "fetch_limit = min(limit, SYNC_PULL_FETCH_LIMIT)" in desktop_engine
+    assert "maxSizedControlCharacterClipFitsProductionPullResponseLimit" in android_test
+    assert "test_h8_pull_accepts_max_clip_with_worst_case_json_escaping" in desktop_test
 
 
 def test_panel_candidate_tabs_helper_and_test_exist():
@@ -208,6 +258,8 @@ def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
     assert "windows-${base}" in workflow
     assert "android-${base}" in workflow
     assert "--draft" in workflow
+    assert "python -m pytest -q" in workflow
+    assert ":app:lintRelease" in workflow
     assert "validate-release-input:" in workflow
     assert "version must be a release tag like v1.6.0" in workflow
     validate_input = _workflow_job_block(workflow, "validate-release-input")
@@ -605,6 +657,20 @@ def test_ci_compiles_residual_android_instrumented_qa_sources():
     assert 'androidTestImplementation("androidx.test:runner:1.6.2")' in gradle
     assert "Owner/manual QA gate" in backlog
     assert "Issue #36" in backlog
+
+
+def test_ci_runs_android_lint_for_minsdk_compatibility():
+    workflow = _read(".github/workflows/ci.yml")
+
+    assert "./gradlew :app:lintDebug --no-daemon" in workflow
+
+
+def test_release_candidate_runs_regressions_before_packaging():
+    workflow = _read(".github/workflows/release-candidate.yml")
+
+    assert "python -m pytest -q" in workflow
+    assert ":app:lintDebug" in workflow
+    assert ":app:lintRelease" in workflow
 
 
 def test_residual_ime_android_test_scaffolds_stay_ignored_until_device_qa_runs():

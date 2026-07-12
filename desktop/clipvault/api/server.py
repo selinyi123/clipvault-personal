@@ -30,14 +30,17 @@ _MEMORY_ID_RE = re.compile(r"^/api/memory/([0-9A-Za-z]+)$")
 _MEMORY_USE_RE = re.compile(r"^/api/memory/([0-9A-Za-z]+)/use$")
 _PEER_ID_RE = re.compile(r"^/api/peers/([0-9A-Za-z_-]+)$")  # device ids contain hyphens
 _LOOPBACK = ("127.0.0.1", "::1")
-# Cap for plain JSON request bodies. Kept above config.max_clip_bytes (default
-# 1 MiB) so a maximum-size clip still fits once wrapped in JSON and escaped; the
-# real per-clip limit is enforced in the service layer (422), not here.
+# Cap for JSON bodies carrying clip content. A valid 1 MiB clip can require six
+# wire bytes per input byte when JSON escapes control characters (for example
+# NUL), plus its request/event envelope. Seven MiB covers that proven worst
+# case; the real per-clip limit is still enforced in the service layer (422).
+_MAX_CONTENT_JSON_BODY = 7 * 1_048_576
 _MAX_JSON_BODY = 2 * 1_048_576
 _MAX_PAIR_BODY = 4_096
-_MAX_SYNC_PUSH_BODY = 4 * 1_048_576
+_MAX_SYNC_PUSH_BODY = _MAX_CONTENT_JSON_BODY
 _MAX_REJECT_DRAIN = 64 * 1024
 _JSON_CONTENT_TYPES = ("application/json", "application/problem+json")
+_DEFAULT_SOCKET_READ_TIMEOUT_S = 10.0
 _CSP = (
     "default-src 'none'; "
     "script-src 'self'; "
@@ -56,9 +59,16 @@ def _remote_allowed(route: str) -> bool:
     return route == "/api/pair" or route.startswith("/api/sync/")
 
 
-def make_handler(api: Api):
+def make_handler(api: Api, read_timeout_s: float = _DEFAULT_SOCKET_READ_TIMEOUT_S):
     class Handler(BaseHTTPRequestHandler):
         server_version = f"ClipVault/{__version__}"
+
+        def setup(self) -> None:
+            super().setup()
+            # HTTPServer is intentionally single-threaded so its SQLite
+            # connection stays thread-confined. A per-connection timeout keeps
+            # one partial LAN request from monopolising that only serving thread.
+            self.connection.settimeout(read_timeout_s)
 
         def _is_loopback(self) -> bool:
             return self.client_address[0] in _LOOPBACK
@@ -156,6 +166,20 @@ def make_handler(api: Api):
                 return None
             try:
                 obj = json.loads(self.rfile.read(length).decode("utf-8"))
+            except TimeoutError:
+                self.close_connection = True
+                try:
+                    self._send_json(408, {
+                        "error": {
+                            "code": "request_timeout",
+                            "message": "request body timed out",
+                        }
+                    })
+                except OSError:
+                    # A peer that stopped reading may also make the timeout
+                    # response unwritable; closing the socket is sufficient.
+                    pass
+                return None
             except (ValueError, UnicodeDecodeError):
                 self._send_json(400, {"error": {"code": "bad_request", "message": "invalid json"}})
                 return None
@@ -237,7 +261,7 @@ def make_handler(api: Api):
             if not self._guard(route):
                 return
             if route == "/api/clips":
-                body = self._body()
+                body = self._body(_MAX_CONTENT_JSON_BODY)
                 if body is None:
                     return
                 self._send_json(*api.create_clip(body))
@@ -257,7 +281,9 @@ def make_handler(api: Api):
             if route == "/api/sync/push":
                 token = self._bearer()
                 if not api.auth_ok(token):
-                    self._drain(_MAX_SYNC_PUSH_BODY)
+                    # Authentication is decided from headers. Do not block the
+                    # single serving thread draining an untrusted body that will
+                    # be discarded; the connection is closed after the 401.
                     self.close_connection = True
                     self._send_json(401, {"error": {"code": "unauthorized", "message": "bad token"}})
                     return
@@ -317,11 +343,19 @@ def make_handler(api: Api):
     return Handler
 
 
-def build_server(api: Api, host: str = "127.0.0.1", port: int = 8787) -> HTTPServer:
+def build_server(
+    api: Api,
+    host: str = "127.0.0.1",
+    port: int = 8787,
+    *,
+    read_timeout_s: float = _DEFAULT_SOCKET_READ_TIMEOUT_S,
+) -> HTTPServer:
     # Binds the configured host so paired LAN devices can sync (SYNC-2). The
     # management API stays loopback-only via the per-route handler guard, so
     # exposing the socket does not expose the unauthenticated endpoints.
-    return HTTPServer((host, port), make_handler(api))
+    if read_timeout_s <= 0:
+        raise ValueError("read_timeout_s must be positive")
+    return HTTPServer((host, port), make_handler(api, read_timeout_s))
 
 
 def serve(config, stop: threading.Event, pairing=None) -> None:

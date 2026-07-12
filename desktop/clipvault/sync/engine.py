@@ -6,22 +6,40 @@ Gate B (secrets never leave) and gate A (re-scan on arrival) both enforced here.
 
 import json
 import logging
+import re
 import sqlite3
+from datetime import datetime, timezone
 
-from clipvault.core import secret_guard
-from clipvault.core.models import Clip
+from clipvault.core import normalize, secret_guard
+from clipvault.core.models import CONTENT_TYPES, MEMORY_KINDS, Clip
 from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.backup_queue_repo import BackupQueueRepo
+from clipvault.store.obsidian_queue_repo import ObsidianQueueRepo
 from clipvault.store.outbox_repo import OutboxRepo
 from clipvault.store.peers_repo import PeersRepo
+from clipvault.store.unit_of_work import unit_of_work
 
 log = logging.getLogger("clipvault.sync")
 
+_CLIP_ID_RE = re.compile(r"^[0-9A-Za-z]{1,128}$")
+_KNOWN_EVENT_KINDS = frozenset(
+    ("clip_new", "clip_meta", "memory_upsert", "memory_delete")
+)
+_MEMORY_SOURCES = frozenset(("manual", "derived", "obsidian_import", "github_import"))
+_MAX_MEMORY_LABEL_BYTES = 4 * 1024
+
 SYNC_PULL_EVENT_LIMIT = 100
-# Keep one pull page comfortably below mobile heap-risk territory while still
-# allowing at least one default max-size clip (config.max_clip_bytes = 1 MiB)
-# plus JSON envelope overhead. Large histories continue via has_more/next_seq.
-SYNC_PULL_RESPONSE_BYTES = 4 * 1024 * 1024
+# SQLite rows are decoded before wire budgeting. Fetch a small internal page so
+# several near-limit escaped payloads cannot be materialised at once; repeated
+# pull pages still preserve the public <=100-event protocol contract.
+SYNC_PULL_FETCH_LIMIT = 8
+# Android accepts at most 7 MiB for the complete pull response. Reserve 64 KiB
+# for the response envelope, commas, cursor fields, and bounded event metadata.
+# The remaining page/event budget still covers a valid 1 MiB clip whose every
+# input byte becomes a six-byte JSON control-character escape.
+SYNC_PULL_HTTP_RESPONSE_BYTES = 7 * 1024 * 1024
+SYNC_PULL_RESPONSE_ENVELOPE_BYTES = 64 * 1024
+SYNC_PULL_RESPONSE_BYTES = SYNC_PULL_HTTP_RESPONSE_BYTES - SYNC_PULL_RESPONSE_ENVELOPE_BYTES
 
 
 class SyncPullEventTooLarge(ValueError):
@@ -34,6 +52,179 @@ class SyncPullEventTooLarge(ValueError):
         super().__init__(
             f"sync event seq={seq} is {event_bytes} bytes, exceeds pull budget {max_bytes}"
         )
+
+
+class MalformedSyncEvent(ValueError):
+    """A seq-valid peer event that is unsafe or impossible to apply."""
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _valid_utc_timestamp(value) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return False
+    return True
+
+
+def _has_control_chars(value: str) -> bool:
+    return any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+
+
+def _valid_content_hash(value) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(ch in "0123456789abcdef" for ch in value)
+    )
+
+
+def _valid_memory_text(value) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and value == value.strip()
+        and len(value.encode("utf-8")) <= normalize.DEFAULT_MAX_CLIP_BYTES
+    )
+
+
+def _validate_clip_meta(data: dict) -> None:
+    content_hash = data.get("content_hash")
+    patch = data.get("patch")
+    ts = data.get("ts")
+    if not _valid_content_hash(content_hash):
+        raise MalformedSyncEvent("invalid clip metadata hash")
+    if not _valid_utc_timestamp(ts):
+        raise MalformedSyncEvent("invalid clip metadata timestamp")
+    if not isinstance(patch, dict) or not patch:
+        raise MalformedSyncEvent("invalid clip metadata patch")
+    if any(field not in ("pinned", "favorite", "deleted") for field in patch):
+        raise MalformedSyncEvent("invalid clip metadata field")
+    if any(not isinstance(value, bool) for value in patch.values()):
+        raise MalformedSyncEvent("invalid clip metadata value")
+
+
+def _validate_memory_upsert(data: dict) -> None:
+    kind = data.get("kind")
+    text = data.get("text")
+    label = data.get("label")
+    pinned = data.get("pinned", False)
+    use_count = data.get("use_count", 0)
+    source = data.get("source", "manual")
+    if not isinstance(kind, str) or kind not in MEMORY_KINDS:
+        raise MalformedSyncEvent("invalid memory kind")
+    if not _valid_memory_text(text):
+        raise MalformedSyncEvent("invalid memory text")
+    if label is not None and (
+        not isinstance(label, str)
+        or len(label.encode("utf-8")) > _MAX_MEMORY_LABEL_BYTES
+    ):
+        raise MalformedSyncEvent("invalid memory label")
+    if not isinstance(pinned, bool):
+        raise MalformedSyncEvent("invalid memory pinned flag")
+    if (
+        not isinstance(use_count, int)
+        or isinstance(use_count, bool)
+        or use_count < 0
+        or use_count > 2_147_483_647
+    ):
+        raise MalformedSyncEvent("invalid memory use count")
+    if (
+        not isinstance(source, str)
+        or source not in _MEMORY_SOURCES
+        or _has_control_chars(source)
+    ):
+        raise MalformedSyncEvent("invalid memory source")
+
+
+def _validate_memory_delete(data: dict) -> None:
+    kind = data.get("kind")
+    text = data.get("text")
+    if not isinstance(kind, str) or kind not in MEMORY_KINDS:
+        raise MalformedSyncEvent("invalid memory kind")
+    if not _valid_memory_text(text):
+        raise MalformedSyncEvent("invalid memory text")
+    if not _valid_utc_timestamp(data.get("ts")):
+        raise MalformedSyncEvent("invalid memory timestamp")
+
+
+def _validated_remote_clip(data: dict, *, max_bytes: int) -> Clip:
+    """Validate the wire contract before content reaches SQLite or Markdown."""
+
+    required = ("id", "content", "content_hash", "content_type", "created_at", "last_seen_at")
+    if any(key not in data for key in required):
+        raise MalformedSyncEvent("missing required clip field")
+
+    clip_id = data["id"]
+    content = data["content"]
+    content_hash = data["content_hash"]
+    content_type = data["content_type"]
+    if not isinstance(clip_id, str) or _CLIP_ID_RE.fullmatch(clip_id) is None:
+        raise MalformedSyncEvent("invalid clip id")
+    if not isinstance(content, str):
+        raise MalformedSyncEvent("invalid clip content type")
+    if normalize.normalize(content) != content or normalize.reject_reason(content, max_bytes):
+        raise MalformedSyncEvent("invalid normalized clip content")
+    if not _valid_content_hash(content_hash) or normalize.content_hash(content) != content_hash:
+        raise MalformedSyncEvent("invalid clip content hash")
+    if content_type not in CONTENT_TYPES:
+        raise MalformedSyncEvent("invalid clip content type")
+    if not _valid_utc_timestamp(data["created_at"]) or not _valid_utc_timestamp(data["last_seen_at"]):
+        raise MalformedSyncEvent("invalid clip timestamp")
+    if data["last_seen_at"] < data["created_at"]:
+        raise MalformedSyncEvent("invalid clip timestamp order")
+
+    for field in ("is_secret", "pinned", "favorite", "deleted"):
+        if field in data and not isinstance(data[field], bool):
+            raise MalformedSyncEvent(f"invalid {field} type")
+    times_seen = data.get("times_seen", 1)
+    if (
+        not isinstance(times_seen, int)
+        or isinstance(times_seen, bool)
+        or times_seen < 1
+        or times_seen > 2_147_483_647
+    ):
+        raise MalformedSyncEvent("invalid times_seen")
+    source_device = data.get("source_device", "peer")
+    source_app = data.get("source_app")
+    if (
+        not isinstance(source_device, str)
+        or not source_device
+        or len(source_device) > 256
+        or _has_control_chars(source_device)
+    ):
+        raise MalformedSyncEvent("invalid source_device")
+    if source_app is not None and (
+        not isinstance(source_app, str)
+        or len(source_app) > 1024
+        or _has_control_chars(source_app)
+    ):
+        raise MalformedSyncEvent("invalid source_app")
+
+    verdict = secret_guard.scan(content)  # gate A on arrival
+    is_secret = verdict.is_secret or data.get("is_secret", False)
+    return Clip(
+        id=clip_id,
+        content=content,
+        content_hash=content_hash,
+        content_type=content_type,
+        is_secret=is_secret,
+        secret_level=verdict.level if verdict.is_secret else ("suspect" if is_secret else None),
+        secret_reasons=verdict.reasons if verdict.is_secret else (["REMOTE-SECRET"] if is_secret else []),
+        source_device=source_device,
+        source_app=source_app,
+        created_at=data["created_at"],
+        last_seen_at=data["last_seen_at"],
+        times_seen=times_seen,
+        pinned=data.get("pinned", False),
+        favorite=data.get("favorite", False),
+        deleted=data.get("deleted", False),
+    )
 
 
 def clip_to_data(clip: Clip) -> dict:
@@ -147,30 +338,51 @@ def _apply_one(conn, ev: dict, service) -> None:
     from a version-skewed/buggy peer cannot crash the whole push batch and wedge
     sync — consistent with how unknown event kinds are already tolerated."""
     kind = ev.get("kind")
+    safe_kind = kind if isinstance(kind, str) and kind in _KNOWN_EVENT_KINDS else "unknown"
     data = ev.get("data")
     if not isinstance(data, dict):
-        log.error("malformed sync event (data not object) kind=%s", kind)
+        log.error("malformed sync event category=%s data_not_object", safe_kind)
         return
     try:
         if kind == "clip_new":
             _apply_clip_new(conn, data, service)
         elif kind == "clip_meta":
+            _validate_clip_meta(data)
             _apply_clip_meta(conn, data)
         elif kind == "memory_upsert":
+            _validate_memory_upsert(data)
             _apply_memory_upsert(conn, data)
         elif kind == "memory_delete":
+            _validate_memory_delete(data)
             _apply_memory_delete(conn, data)
         else:
-            log.error("unknown sync event kind=%s", kind)
-    except KeyError as exc:
-        log.error("malformed sync event kind=%s missing key %s", kind, exc)
+            log.error("unknown sync event kind")
+    except KeyError:
+        log.error("malformed sync event category=%s missing_required_field", safe_kind)
+    except MalformedSyncEvent as exc:
+        # Do not log payload values.  A seq-valid malformed event is acked as a
+        # no-op so it cannot wedge all later events from the peer.
+        log.error("malformed sync event category=%s reason=%s", safe_kind, exc)
     except sqlite3.IntegrityError as exc:
         # A peer can send a seq-valid but semantically invalid event, for
         # example a clip_new with a duplicate id and different content hash.
         # Treat it like the other malformed seq-valid events above: ack as a
         # no-op so one permanently bad item cannot wedge sync forever, but do
         # not hide transient database failures such as locks or IO errors.
-        log.error("malformed sync event kind=%s integrity error %s", kind, exc.__class__.__name__)
+        log.error(
+            "malformed sync event category=%s integrity error %s",
+            safe_kind,
+            exc.__class__.__name__,
+        )
+    except (TypeError, ValueError, AttributeError, OverflowError, sqlite3.ProgrammingError) as exc:
+        # Final fail-closed boundary for a shape the explicit validators missed.
+        # Never include exception messages: adapters may embed peer-controlled
+        # values in them.
+        log.error(
+            "malformed sync event category=%s error=%s",
+            safe_kind,
+            exc.__class__.__name__,
+        )
 
 
 def apply_push(conn, device_id: str, events: list[dict], service) -> int:
@@ -215,34 +427,35 @@ def apply_push(conn, device_id: str, events: list[dict], service) -> int:
 
 
 def _apply_clip_new(conn, data: dict, service) -> None:
+    clip = _validated_remote_clip(data, max_bytes=service.config.max_clip_bytes)
     clips = ClipsRepo(conn)
-    if clips.get_by_hash(data["content_hash"]) is not None:
-        return  # idempotent: already have this content
-    verdict = secret_guard.scan(data["content"])  # gate A on arrival
-    is_secret = verdict.is_secret or data.get("is_secret", False)
-    clip = Clip(
-        id=data["id"], content=data["content"], content_hash=data["content_hash"],
-        content_type=data["content_type"], is_secret=is_secret,
-        secret_level=verdict.level if is_secret else None,
-        secret_reasons=verdict.reasons if is_secret else [],
-        source_device=data.get("source_device", "peer"),
-        source_app=data.get("source_app"),
-        created_at=data["created_at"], last_seen_at=data["last_seen_at"],
-        times_seen=data.get("times_seen", 1),
-        pinned=data.get("pinned", False), favorite=data.get("favorite", False),
-        deleted=data.get("deleted", False),
-    )
-    clips.insert(clip)  # insert() keeps secrets out of FTS
-    if is_secret:
+    backup_queue = BackupQueueRepo(conn)
+    obsidian_queue = ObsidianQueueRepo(conn)
+    now = _utc_now()
+
+    # A new remote clip and its durable downstream intents are atomic.  Replay
+    # also repairs missing queue rows left by older versions without echoing the
+    # event into our local sync outbox.
+    with unit_of_work(conn):
+        existing = clips.get_by_hash(clip.content_hash)
+        if existing is None:
+            clips.insert(clip, commit=False)  # secrets stay out of FTS
+            target = clip
+        else:
+            target = existing
+        if not target.is_secret:
+            backup_queue.enqueue(target.id, now, commit=False)
+            if not target.deleted:
+                obsidian_queue.enqueue(target.id, now, commit=False)
+
+    if target.is_secret:
         log.warning("remote clip quarantined id=%s reasons=%s",
-                    clip.id, ",".join(clip.secret_reasons))
+                    target.id, ",".join(target.secret_reasons))
         return
-    # public: same downstream as a local capture, but NO outbox re-emit (no echo)
-    service._write_obsidian(clip)
-    try:
-        BackupQueueRepo(conn).enqueue(clip.id, clip.last_seen_at)
-    except Exception:
-        log.exception("backup enqueue for remote clip failed id=%s", clip.id)
+    if not target.deleted and not target.obsidian_path:
+        # External IO occurs after the atomic DB commit.  The queue remains
+        # durable if the process stops before or during this best-effort attempt.
+        service.write_obsidian_or_queue(target)
 
 
 def _apply_memory_upsert(conn, data: dict) -> None:
@@ -311,7 +524,8 @@ def _event_wire_size(event: dict) -> int:
 
 def build_pull(conn, since_seq: int, limit: int = SYNC_PULL_EVENT_LIMIT,
                max_bytes: int = SYNC_PULL_RESPONSE_BYTES) -> dict:
-    raw_events = OutboxRepo(conn).list_since(since_seq, limit)
+    fetch_limit = min(limit, SYNC_PULL_FETCH_LIMIT)
+    raw_events = OutboxRepo(conn).list_since(since_seq, fetch_limit)
     events = []
     next_seq = since_seq
     used_bytes = 0
@@ -343,7 +557,7 @@ def build_pull(conn, since_seq: int, limit: int = SYNC_PULL_EVENT_LIMIT,
     return {
         "events": events,
         "next_seq": next_seq,
-        "has_more": stopped_by_budget or len(raw_events) == limit,
+        "has_more": stopped_by_budget or len(raw_events) == fetch_limit,
     }
 
 
@@ -360,7 +574,7 @@ def pull_blocked_summary(conn, max_bytes: int = SYNC_PULL_RESPONSE_BYTES) -> dic
     blocked = []
     outbox = OutboxRepo(conn)
     for row in peer_rows:
-        for event in outbox.list_since(int(row["my_acked_seq"]), SYNC_PULL_EVENT_LIMIT):
+        for event in outbox.list_since(int(row["my_acked_seq"]), SYNC_PULL_FETCH_LIMIT):
             if event["kind"] in ("memory_upsert", "memory_delete") and _memory_data_is_secret(event["payload"]):
                 continue
             event_bytes = _event_wire_size(event)

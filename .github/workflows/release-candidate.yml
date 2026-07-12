@@ -38,7 +38,11 @@ jobs:
 
       - name: Install packaging dependencies
         working-directory: desktop
-        run: python -m pip install --upgrade pip pyinstaller
+        run: python -m pip install --upgrade pip pyinstaller pytest
+
+      - name: Run Desktop regression suite
+        working-directory: desktop
+        run: python -m pytest -q
 
       - name: Build portable executable
         working-directory: desktop
@@ -111,7 +115,7 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: Build Android candidates without release signing secrets
-        run: ./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease --no-daemon
+        run: ./gradlew :core:test :app:testDebugUnitTest :app:lintDebug :app:lintRelease :app:assembleDebug :app:assembleRelease --no-daemon
 
       - name: Stage Android artifacts and checksums
         shell: bash

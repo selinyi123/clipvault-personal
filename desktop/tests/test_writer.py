@@ -60,6 +60,36 @@ def test_a7_write_clip_idempotent(tmp_path):
     assert len(list(tmp_path.rglob("*.md"))) == 1
 
 
+def test_a7_write_clip_recovers_file_when_db_path_was_not_recorded(tmp_path, monkeypatch):
+    clip = _clip("crash-safe note", "text", "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+
+    first = writer.write_clip(clip, tmp_path, tz=timezone.utc)
+    assert clip.obsidian_path is None  # simulate crash before SQLite path update
+
+    def fail_iterdir(_path):
+        raise AssertionError("recovery must not enumerate the Vault directory")
+
+    monkeypatch.setattr(type(tmp_path), "iterdir", fail_iterdir)
+    second = writer.write_clip(clip, tmp_path, tz=timezone.utc)
+
+    assert second == first
+    monkeypatch.undo()
+    assert len(list(tmp_path.rglob("*.md"))) == 1
+
+
+def test_a7_write_clip_recovers_bounded_collision_suffix(tmp_path):
+    clip = _clip("collision recovery", "text", "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+    rel_path, _ = writer.render(clip, tz=timezone.utc)
+    writer.write(tmp_path, rel_path, "unrelated file\n")
+
+    first = writer.write_clip(clip, tmp_path, tz=timezone.utc)
+    assert first.stem.endswith("-1")
+    second = writer.write_clip(clip, tmp_path, tz=timezone.utc)
+
+    assert second == first
+    assert len(list(tmp_path.rglob("*.md"))) == 2
+
+
 def test_a7_collision_gets_suffix(tmp_path):
     first = writer.write(tmp_path, "00_Inbox/Clipboard/note.md", "one\n")
     second = writer.write(tmp_path, "00_Inbox/Clipboard/note.md", "two\n")

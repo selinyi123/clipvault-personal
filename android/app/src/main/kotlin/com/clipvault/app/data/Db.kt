@@ -41,6 +41,17 @@ data class OutboxEntity(
     val createdAt: String,
 )
 
+/** Payload-free outbox projection. Large JSON is read separately in bounded
+ * SQLite substr() chunks so API 26/27 CursorWindow never has to hold one full
+ * escaped payload cell. */
+data class OutboxMetadata(
+    val seq: Long,
+    val kind: String,
+    val createdAt: String,
+    val payloadChars: Long,
+    val payloadBytes: Long,
+)
+
 @Dao
 interface ClipDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -72,8 +83,21 @@ interface ClipDao {
 interface OutboxDao {
     @Insert fun append(e: OutboxEntity): Long
 
-    @Query("SELECT * FROM outbox ORDER BY seq LIMIT :limit")
-    fun batch(limit: Int): List<OutboxEntity>
+    @Query("SELECT seq FROM outbox ORDER BY seq LIMIT 1")
+    fun firstSeq(): Long?
+
+    @Query(
+        "SELECT seq, kind, createdAt, length(payload) AS payloadChars, " +
+            "length(CAST(payload AS BLOB)) AS payloadBytes " +
+            "FROM outbox ORDER BY seq LIMIT :limit",
+    )
+    fun batchMetadata(limit: Int): List<OutboxMetadata>
+
+    @Query("SELECT substr(payload, :offset, :charCount) FROM outbox WHERE seq = :seq")
+    fun payloadChunk(seq: Long, offset: Int, charCount: Int): String?
+
+    @Query("SELECT COUNT(*) FROM outbox")
+    fun count(): Int
 
     @Query("DELETE FROM outbox WHERE seq <= :upto")
     fun clearUpTo(upto: Long)

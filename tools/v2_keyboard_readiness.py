@@ -42,6 +42,7 @@ REQUIRED_ANDROID_TEST_FILES = (
     "android/app/src/test/kotlin/com/clipvault/app/ime/PanelImePrivacySourceTest.kt",
     "android/app/src/test/kotlin/com/clipvault/app/ime/PrivacyAwareFilterTest.kt",
     "android/app/src/test/kotlin/com/clipvault/app/ime/PanelCandidateTabsTest.kt",
+    "android/app/src/test/kotlin/com/clipvault/app/ime/ImeSwitchCompatSourceTest.kt",
 )
 
 
@@ -311,7 +312,7 @@ def check_keyboard_lab_source(root: Path) -> Gate:
         "one-shot shift state": "private var shifted = false",
         "symbol layer state": "private var symbols = false",
         "ClipVault toolbar button": 'key("📋 ClipVault"',
-        "switch-back button": "switchToPreviousInputMethod()",
+        "API-compatible switch-back button": "switchToPreviousInputMethodCompat()",
         "space key": 'key("空格"',
         "enter key handler": "private fun enter()",
         "backspace key handler": "private fun backspace()",
@@ -356,7 +357,7 @@ def check_panel_ime_source(root: Path) -> Gate:
     required = {
         "extends InputMethodService": "class ClipVaultPanelImeService : InputMethodService()",
         "tab helper": "PanelCandidateTabs.filter(",
-        "switch-back button": "switchToPreviousInputMethod()",
+        "API-compatible switch-back button": "switchToPreviousInputMethodCompat()",
         "explicit save path": "runtime.saveExplicit(",
         "candidate commit path": "currentInputConnection?.commitText(c.text, 1)",
         "clipboard manager read path": "getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager",
