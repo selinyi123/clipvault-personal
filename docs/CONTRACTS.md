@@ -412,10 +412,13 @@ AUTOINCREMENT`，不得改用可能在 `VACUUM` 后变化的 `clips.rowid`。pub
 secret release、delete、restore 与物理删除必须原子维护该双向映射；任何异常不得留下
 clip/map/FTS 的部分状态。
 
-长度至少 3 的 public 查询先判断是否超过 4096 个 FTS matches；高频词只对最终排序
-中的前 256 个完整候选做精确 FTS probe，已经取得完整 page 才可早返，否则必须执行 exact
-FTS-first fallback。相关多语句读取必须处于同一 SQLite snapshot。所有 probe 与
-fallback 仍显式过滤 `is_secret = 0 AND deleted = 0`，map 不能代替 Secret Guard。
+长度至少 3 的 public 查询先判断是否超过 4096 个 FTS matches；高频词再对最终排序
+中的前 256 个候选运行有界 literal-LIKE path hint，且每个候选最多检查正文前 4096 个
+字符。LIKE 只决定是否值得执行精确 FTS probe，不得提供结果行；前缀外命中或 Unicode
+case-fold 等差异造成的 false negative 只能转入 exact FTS-first fallback。精确 probe
+已取得完整 page 才可早返，否则同样执行 fallback。
+相关多语句读取必须处于同一 SQLite snapshot。所有 hint、probe 与 fallback 仍显式过滤
+`is_secret = 0 AND deleted = 0`，map 不能代替 Secret Guard。
 带 `type` / `before_id` 过滤器或 repo limit 大于 256 的查询不得进入 recent probe，
 因为其候选排序可能重新变成无界工作；这些路径直接执行 exact fallback。
 public 列表总排序为 `pinned DESC, last_seen_at DESC, id DESC`，repo-only FTS 搜索为

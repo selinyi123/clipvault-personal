@@ -25,6 +25,7 @@ _COLUMN_NAMES = tuple(_COLUMNS.split(", "))
 _FTS_MIN_LEN = 3
 _FTS_RECENT_PROBE_SIZE = 256
 _FTS_COMMON_MATCH_THRESHOLD = 4_096
+_FTS_HINT_CONTENT_CHARS = 4_096
 
 
 def _qualified_columns(alias: str) -> str:
@@ -360,6 +361,47 @@ class ClipsRepo:
             params,
         ).fetchall()
 
+    def _recent_probe_likely_full(
+        self,
+        query: str,
+        *,
+        limit: int,
+        probe_size: int,
+        api_order: bool,
+    ) -> bool:
+        """Cheap path-selection hint for the bounded recent FTS probe.
+
+        The LIKE result is never returned to callers: FTS remains the source of
+        search semantics, including Unicode case folding.  Applying LIKE only
+        after the ordered candidate LIMIT and to a fixed content prefix keeps
+        this hint bounded by both rows and inspected text.  Prefix misses safely
+        select the exact fallback.
+        """
+
+        if limit < 1 or probe_size < limit:
+            return False
+        where, params = self._public_filters(
+            "c", content_type=None, before_id=None
+        )
+        if api_order:
+            index_name = "idx_clips_public_list_recent"
+            order = "c.pinned DESC, c.last_seen_at DESC, c.id DESC"
+        else:
+            index_name = "idx_clips_public_search_recent"
+            order = "c.last_seen_at DESC, c.id DESC"
+        params.extend((probe_size, _like_term(query), limit - 1))
+        return self.conn.execute(
+            "SELECT 1 FROM ("
+            f"SELECT substr(c.content, 1, {_FTS_HINT_CONTENT_CHARS}) AS content "
+            f"FROM clips AS c INDEXED BY {index_name} "
+            f"WHERE {' AND '.join(where)} "
+            f"ORDER BY {order} LIMIT ?"
+            ") AS recent "
+            "WHERE recent.content LIKE ? ESCAPE '\\' "
+            "LIMIT 1 OFFSET ?",
+            params,
+        ).fetchone() is not None
+
     def _public_fts_rows(
         self,
         query: str,
@@ -401,7 +443,12 @@ class ClipsRepo:
                 "LIMIT 1 OFFSET ?",
                 (_fts_match(query), _FTS_COMMON_MATCH_THRESHOLD),
             ).fetchone()
-            if common is not None:
+            if common is not None and self._recent_probe_likely_full(
+                query,
+                limit=limit,
+                probe_size=probe_size,
+                api_order=api_order,
+            ):
                 recent = self._fts_recent_probe_rows(
                     query,
                     content_type=content_type,
@@ -422,7 +469,7 @@ class ClipsRepo:
 
     def search_fts(self, query: str, limit: int = 50) -> list[Clip]:
         q = query.strip()
-        if not q:
+        if not q or limit <= 0:
             return []
         if len(q) >= _FTS_MIN_LEN:
             rows = self._public_fts_rows(q, limit=limit, api_order=False)
@@ -455,6 +502,8 @@ class ClipsRepo:
                    before_id: str | None = None) -> list[Clip]:
         """List clips newest-first. secret=False excludes quarantined clips
         (API-1: secrets only surface when explicitly requested)."""
+        if limit <= 0:
+            return []
         where = ["deleted = 0"]
         params: list = []
         where.append("is_secret = 1" if secret else "is_secret = 0")

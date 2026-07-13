@@ -10,6 +10,7 @@ import pytest
 from clipvault.api import server as api_server
 from clipvault.core.models import Clip
 from clipvault.store import db
+from clipvault.store import clips_repo as clips_repo_module
 from clipvault.store.clips_repo import ClipsRepo, _fts_match
 from clipvault.store.unit_of_work import unit_of_work
 
@@ -537,6 +538,9 @@ def test_common_probe_and_exact_fallback_match_api_order_and_filters(conn):
     )
 
     class ProbeMustNotRun(ClipsRepo):
+        def _recent_probe_likely_full(self, *args, **kwargs):
+            raise AssertionError("filtered or oversized search entered recent hint")
+
         def _fts_recent_probe_rows(self, *args, **kwargs):
             raise AssertionError("filtered or oversized search entered recent probe")
 
@@ -548,6 +552,142 @@ def test_common_probe_and_exact_fallback_match_api_order_and_filters(conn):
         query="common-token", before_id="clip-250", limit=50
     )
     assert len(fallback_only.search_fts("common-token", limit=300)) == 300
+    assert fallback_only.list_clips(query="common-token", limit=0) == []
+    assert fallback_only.list_clips(query="common-token", limit=-1) == []
+    assert fallback_only.list_clips(limit=-1) == []
+    assert fallback_only.search_fts("common-token", limit=-1) == []
+
+
+def test_old_skew_hint_skips_probe_but_keeps_exact_page(conn, monkeypatch):
+    monkeypatch.setattr(clips_repo_module, "_FTS_COMMON_MATCH_THRESHOLD", 3)
+    monkeypatch.setattr(clips_repo_module, "_FTS_RECENT_PROBE_SIZE", 4)
+    repo = ClipsRepo(conn)
+    for index in range(5):
+        repo.insert(
+            _clip(
+                f"old-{index}",
+                f"old-skew-token match {index}",
+                last_seen_at=f"2026-07-12T00:00:0{index}Z",
+            ),
+            commit=False,
+        )
+    for index in range(4):
+        repo.insert(
+            _clip(
+                f"recent-{index}",
+                f"recent unrelated content {index}",
+                last_seen_at=f"2026-07-13T04:00:0{index}Z",
+            ),
+            commit=False,
+        )
+    repo.insert(
+        _clip(
+            "secret-recent",
+            "old-skew-token secret",
+            is_secret=True,
+            last_seen_at="2026-07-13T05:00:00Z",
+        ),
+        commit=False,
+    )
+    repo.insert(
+        _clip(
+            "deleted-recent",
+            "old-skew-token deleted",
+            deleted=True,
+            last_seen_at="2026-07-13T05:00:01Z",
+        ),
+        commit=False,
+    )
+    conn.commit()
+
+    class ProbeMustNotRun(ClipsRepo):
+        def _fts_recent_probe_rows(self, *args, **kwargs):
+            raise AssertionError("historical skew should skip the FTS recent probe")
+
+    actual = [
+        clip.id
+        for clip in ProbeMustNotRun(conn).list_clips(
+            query="old-skew-token", limit=2
+        )
+    ]
+    assert actual == _oracle_ids(conn, "old-skew-token", limit=2)
+    assert set(actual).isdisjoint({"secret-recent", "deleted-recent"})
+
+
+@pytest.mark.parametrize(
+    ("query", "decoy", "literal"),
+    [
+        ("pct%token", "pct-ANY-token", "contains pct%token literally"),
+        ("under_token", "underXtoken", "contains under_token literally"),
+        (r"slash\token", "slashtoken", r"contains slash\token literally"),
+    ],
+)
+def test_recent_hint_escapes_like_metacharacters(conn, query, decoy, literal):
+    repo = ClipsRepo(conn)
+    repo.insert(
+        _clip("decoy", decoy, last_seen_at="2026-07-13T05:00:00Z")
+    )
+    assert not repo._recent_probe_likely_full(
+        query, limit=1, probe_size=1, api_order=True
+    )
+
+    repo.insert(
+        _clip("literal", literal, last_seen_at="2026-07-13T05:00:01Z")
+    )
+    assert repo._recent_probe_likely_full(
+        query, limit=1, probe_size=1, api_order=True
+    )
+
+
+def test_recent_hint_supports_repo_order_at_probe_size_boundary(conn):
+    repo = ClipsRepo(conn)
+    for index in range(256):
+        repo.insert(
+            _clip(
+                f"boundary-{index:03d}",
+                f"boundary-token {index:03d}",
+                last_seen_at=f"2026-07-13T03:{index % 60:02d}:00Z",
+            ),
+            commit=False,
+        )
+    conn.commit()
+
+    assert repo._recent_probe_likely_full(
+        "boundary-token", limit=256, probe_size=256, api_order=False
+    )
+    assert not repo._recent_probe_likely_full(
+        "boundary-token", limit=257, probe_size=256, api_order=False
+    )
+
+
+def test_false_path_hint_keeps_exact_unicode_fts_semantics(conn, monkeypatch):
+    monkeypatch.setattr(clips_repo_module, "_FTS_COMMON_MATCH_THRESHOLD", 0)
+    monkeypatch.setattr(clips_repo_module, "_FTS_RECENT_PROBE_SIZE", 1)
+    ClipsRepo(conn).insert(_clip("unicode", "contains äpf token"))
+
+    class FalseHintRepo(ClipsRepo):
+        def _recent_probe_likely_full(self, *args, **kwargs):
+            return False
+
+    repo = FalseHintRepo(conn)
+    assert [clip.id for clip in repo.list_clips(query="ÄPF", limit=1)] == [
+        "unicode"
+    ]
+
+
+def test_hint_prefix_miss_keeps_exact_fts_results(conn, monkeypatch):
+    monkeypatch.setattr(clips_repo_module, "_FTS_COMMON_MATCH_THRESHOLD", 0)
+    monkeypatch.setattr(clips_repo_module, "_FTS_RECENT_PROBE_SIZE", 1)
+    prefix = "x" * clips_repo_module._FTS_HINT_CONTENT_CHARS
+    repo = ClipsRepo(conn)
+    repo.insert(_clip("tail", f"{prefix} tail-only-token"))
+
+    assert not repo._recent_probe_likely_full(
+        "tail-only-token", limit=1, probe_size=1, api_order=True
+    )
+    assert [clip.id for clip in repo.list_clips(query="tail-only-token", limit=1)] == [
+        "tail"
+    ]
 
 
 def test_public_search_defends_against_polluted_secret_and_deleted_fts(conn):

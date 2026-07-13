@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 import re
@@ -75,6 +76,53 @@ def test_synthetic_suggestion_population_is_sparse_but_has_ten_results():
     eligible = sum(row[13] >= 3 or bool(row[15]) for row in rows)
 
     assert 10 <= eligible < 50
+
+
+def test_old_skew_seed_is_common_old_only_and_hash_consistent():
+    matching = 0
+    for index in range(10_000):
+        clip, fts = benchmark._clip_seed_row(
+            index,
+            seen="2026-07-13T00:00:00Z",
+            created="2026-07-01T00:00:00Z",
+        )
+        assert clip[2] == hashlib.sha256(clip[1].encode("utf-8")).hexdigest()
+        assert fts == (clip[0], clip[1])
+        matching += benchmark._OLD_SKEW_TOKEN in clip[1]
+
+    newest_day = [
+        index
+        for index in range(10_000)
+        if index % benchmark._SEED_RECENCY_DAYS == 0
+    ]
+    assert len(newest_day) >= 256
+    assert all(not benchmark._is_old_skew_seed(index) for index in newest_day)
+    assert matching == 4_998
+    assert matching > 4_096
+
+
+def test_old_skew_seed_keeps_recent_probe_window_empty():
+    conn = benchmark.db.connect(":memory:")
+    try:
+        benchmark.db.migrate(conn)
+        benchmark._seed_dataset(conn, 10_000)
+        recent_matches = conn.execute(
+            "SELECT COUNT(*) FROM ("
+            "SELECT content FROM clips "
+            "WHERE is_secret=0 AND deleted=0 "
+            "ORDER BY pinned DESC,last_seen_at DESC,id DESC LIMIT 256"
+            ") AS recent WHERE instr(content, ?) > 0",
+            (benchmark._OLD_SKEW_TOKEN,),
+        ).fetchone()[0]
+        total_matches = conn.execute(
+            "SELECT COUNT(*) FROM clips WHERE instr(content, ?) > 0",
+            (benchmark._OLD_SKEW_TOKEN,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert recent_matches == 0
+    assert total_matches == 4_998
 
 
 @pytest.mark.parametrize(

@@ -47,6 +47,7 @@ def test_10k_setup_is_excluded_and_database_is_ephemeral(report):
         ("api_search_cjk_1_char", "median_ms"),
         ("api_search_cjk_2_char", "median_ms"),
         ("api_search_cjk_3_char_common", "median_ms"),
+        ("api_search_trigram_old_skew", "median_ms"),
         ("api_search_trigram_medium", "median_ms"),
         ("api_search_trigram_rare", "median_ms"),
         ("api_search_trigram_none", "median_ms"),
