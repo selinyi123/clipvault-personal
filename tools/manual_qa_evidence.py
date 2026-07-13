@@ -13,11 +13,14 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
+import types
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
+ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_VERSION = "v1.6.0"
 DEFAULT_ISSUE = 36
 SCHEMA_VERSION = 2
@@ -28,8 +31,12 @@ WINDOWS_PATH_IN_TEXT_RE = re.compile(r"(?<![A-Za-z])[A-Za-z]:[\\/]")
 UNC_BACKSLASH_PATH_IN_TEXT_RE = re.compile(r"\\\\[^\\\s]")
 FORWARD_UNC_PATH_IN_TEXT_RE = re.compile(r"(?:^|[\s=\[{(,;])//[^/\s]")
 POSIX_PRIVATE_PATH_IN_TEXT_RE = re.compile(
-    r"(?<![A-Za-z0-9])/(?:home|Users|tmp|var|mnt|private|opt)/",
+    r"(?<![A-Za-z0-9])/(?:home|Users|root|etc|srv|run|data|workspace|Volumes|"
+    r"tmp|var|mnt|private|opt)/",
     re.IGNORECASE,
+)
+HTTPS_REFERENCE_RE = re.compile(
+    r"^https://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+$"
 )
 VALID_STATUSES = {"pass", "fail", "blocked"}
 VALID_DEVICE_TYPES = {"emulator", "physical"}
@@ -40,6 +47,47 @@ CURSORWINDOW_TEST_NAME = (
 )
 CURSORWINDOW_MIN_PAYLOAD_BYTES = 4 * 1024 * 1024
 MAX_SYNC_PUSH_REQUEST_BYTES = 6 * 1024 * 1024 + 64 * 1024
+MAX_JSON_INPUT_BYTES = 4 * 1024 * 1024
+GITHUB_RUN_URL_RE = re.compile(
+    r"^https://github\.com/selinyi123/clipvault-personal/actions/runs/(?P<run_id>[1-9][0-9]*)$"
+)
+DRAFT_RELEASE_URL_RE = re.compile(
+    r"^https://github\.com/selinyi123/clipvault-personal/releases/tag/"
+    r"(?:v1\.6\.0|untagged-[A-Za-z0-9._-]+)$"
+)
+
+_release_artifact_evidence_module: Any | None = None
+
+
+def _release_artifact_evidence():
+    """Load tracked source directly, without consulting ignored bytecode caches."""
+
+    global _release_artifact_evidence_module
+    if _release_artifact_evidence_module is not None:
+        return _release_artifact_evidence_module
+    candidate = ROOT / "tools" / "release_artifact_evidence.py"
+    if candidate.is_symlink():
+        raise RuntimeError(f"trusted source must not be a symlink: {candidate}")
+    path = candidate.resolve(strict=True)
+    if not path.is_file():
+        raise RuntimeError(f"trusted source must be a regular file: {path}")
+    name = "release_artifact_evidence_for_manual_qa"
+    module = types.ModuleType(name)
+    module.__file__ = str(path)
+    module.__package__ = ""
+    module.__cached__ = None
+    previous = sys.modules.get(name)
+    sys.modules[name] = module
+    try:
+        code = compile(path.read_bytes(), str(path), "exec", dont_inherit=True)
+        exec(code, module.__dict__)
+    finally:
+        if previous is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
+    _release_artifact_evidence_module = module
+    return module
 
 
 @dataclass(frozen=True)
@@ -103,19 +151,23 @@ REQUIRED_SECTIONS: tuple[QaSection, ...] = (
 @dataclass(frozen=True)
 class ValidationResult:
     ok: bool
+    structurally_complete: bool
     release_ready: bool
     errors: tuple[str, ...]
     warnings: tuple[str, ...]
     item_counts: dict[str, int]
+    final_draft_binding_assurance: str
 
     def as_dict(self) -> dict[str, object]:
         return {
             "ok": self.ok,
+            "structurally_complete": self.structurally_complete,
             "release_ready": self.release_ready,
             "errors": list(self.errors),
             "warnings": list(self.warnings),
             "item_counts": dict(self.item_counts),
             "evidence_assurance": "owner_attested_structural_validation",
+            "final_draft_binding_assurance": self.final_draft_binding_assurance,
             "scope_note": scope_note(),
         }
 
@@ -127,7 +179,11 @@ def scope_note() -> str:
         "environment/secrets evidence, or Owner-approved v1.6.0 GitHub Release "
         "publication. References, digests, counters, and observations are "
         "Owner-attested inputs: this structural validator does not fetch or "
-        "independently parse the referenced device/JUnit evidence."
+        "independently parse the referenced device/JUnit evidence. Strict "
+        "final-draft binding mode locally recomputes the artifact report binding "
+        "and cross-checks the exact run, draft Release, and signed APK, but the "
+        "report remains a non-self-authenticating snapshot that requires live "
+        "release-gate revalidation."
     )
 
 
@@ -182,6 +238,26 @@ def build_template(version: str = DEFAULT_VERSION) -> dict[str, object]:
         "schema_version": SCHEMA_VERSION,
         "version": version,
         "target_commit": "REPLACE_WITH_40_HEX_MAIN_COMMIT",
+        "release_artifact_binding": {
+            "artifact_evidence_type": "clipvault.issue36.final_draft_artifacts",
+            "artifact_binding_sha256": "REPLACE_WITH_FINAL_DRAFT_ARTIFACT_BINDING_SHA256",
+            "target_commit": "REPLACE_WITH_40_HEX_MAIN_COMMIT",
+            "workflow_run": {
+                "id": "REPLACE_WITH_DRAFT_TRUE_RUN_ID",
+                "attempt": "REPLACE_WITH_RUN_ATTEMPT",
+                "url": "REPLACE_WITH_DRAFT_TRUE_RUN_URL",
+            },
+            "draft_release": {
+                "id": "REPLACE_WITH_DRAFT_RELEASE_ID",
+                "url": "REPLACE_WITH_DRAFT_RELEASE_URL",
+                "tag_name": version,
+            },
+            "android_signed_apk": {
+                "name": _signed_apk_name(version),
+                "sha256": "REPLACE_WITH_SIGNED_APK_SHA256",
+            },
+            "evidence_ref": "REPLACE_WITH_PATH_FREE_FINAL_DRAFT_EVIDENCE_REFERENCE",
+        },
         "final_signed_android_run_id": "signed-release-physical",
         "tester": "REPLACE_WITH_TESTER_NAME",
         "tested_at": "REPLACE_WITH_ISO_8601_TIMESTAMP",
@@ -375,6 +451,292 @@ def _require_int(data: object, path: str, errors: list[str], *, minimum: int = 0
         errors.append(f"{path} must be at least {minimum}")
         return None
     return data
+
+
+def _require_canonical_sha256(data: object, path: str, errors: list[str]) -> str:
+    value = _require_sha256(data, path, errors)
+    if isinstance(data, str) and data != value:
+        errors.append(f"{path} must not contain surrounding whitespace")
+    if value and not _is_placeholder(value) and value != value.lower():
+        errors.append(f"{path} must use canonical lowercase hexadecimal")
+    return value.lower()
+
+
+def _validate_release_artifact_binding(
+    data: dict[str, object],
+    *,
+    expected_version: str,
+    target_commit: str,
+    runs: dict[str, dict[str, object]],
+    final_run_id: str,
+    final_draft_artifact_evidence: object | None,
+    require_final_draft_binding: bool,
+    errors: list[str],
+) -> dict[str, object] | None:
+    initial_error_count = len(errors)
+    external_projection: dict[str, object] | None = None
+    if final_draft_artifact_evidence is not None:
+        try:
+            external_projection = (
+                _release_artifact_evidence().build_final_draft_manual_qa_binding_projection(
+                    final_draft_artifact_evidence
+                )
+            )
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            errors.append(f"final_draft_artifact_evidence is invalid: {exc}")
+
+    raw_binding = data.get("release_artifact_binding")
+    required = require_final_draft_binding or final_draft_artifact_evidence is not None
+    if raw_binding is None:
+        if required:
+            errors.append(
+                "release_artifact_binding is required in strict final-draft binding mode"
+            )
+        return None
+    if not _is_mapping(raw_binding):
+        errors.append("release_artifact_binding must be an object")
+        return None
+
+    expected_binding_keys = {
+        "artifact_evidence_type",
+        "artifact_binding_sha256",
+        "target_commit",
+        "workflow_run",
+        "draft_release",
+        "android_signed_apk",
+        "evidence_ref",
+    }
+    if set(raw_binding) != expected_binding_keys:
+        errors.append("release_artifact_binding must use the canonical schema-v2 shape")
+
+    raw_target_commit = data.get("target_commit")
+    if (
+        isinstance(raw_target_commit, str)
+        and raw_target_commit != target_commit
+    ):
+        errors.append(
+            "target_commit must not contain surrounding whitespace when "
+            "release_artifact_binding is present"
+        )
+    if target_commit and COMMIT_RE.fullmatch(target_commit) and target_commit != target_commit.lower():
+        errors.append(
+            "target_commit must use canonical lowercase hexadecimal when "
+            "release_artifact_binding is present"
+        )
+
+    path = "release_artifact_binding"
+    artifact_type = _require_non_empty_string(
+        raw_binding.get("artifact_evidence_type"),
+        f"{path}.artifact_evidence_type",
+        errors,
+    )
+    if isinstance(raw_binding.get("artifact_evidence_type"), str) and (
+        raw_binding.get("artifact_evidence_type") != artifact_type
+    ):
+        errors.append(f"{path}.artifact_evidence_type must not contain surrounding whitespace")
+    if (
+        artifact_type
+        and not _is_placeholder(artifact_type)
+        and artifact_type != "clipvault.issue36.final_draft_artifacts"
+    ):
+        errors.append(
+            f"{path}.artifact_evidence_type must be "
+            "clipvault.issue36.final_draft_artifacts"
+        )
+    artifact_binding = _require_canonical_sha256(
+        raw_binding.get("artifact_binding_sha256"),
+        f"{path}.artifact_binding_sha256",
+        errors,
+    )
+    binding_commit = _require_non_empty_string(
+        raw_binding.get("target_commit"), f"{path}.target_commit", errors
+    )
+    if isinstance(raw_binding.get("target_commit"), str) and (
+        raw_binding.get("target_commit") != binding_commit
+    ):
+        errors.append(f"{path}.target_commit must not contain surrounding whitespace")
+    if binding_commit and not _is_placeholder(binding_commit):
+        if not COMMIT_RE.fullmatch(binding_commit):
+            errors.append(f"{path}.target_commit must be a full hexadecimal Git SHA")
+        elif binding_commit != binding_commit.lower():
+            errors.append(f"{path}.target_commit must use canonical lowercase hexadecimal")
+        elif target_commit and binding_commit.lower() != target_commit.lower():
+            errors.append(f"{path}.target_commit must match target_commit")
+
+    raw_workflow = raw_binding.get("workflow_run")
+    if not _is_mapping(raw_workflow):
+        errors.append(f"{path}.workflow_run must be an object")
+        raw_workflow = {}
+    elif set(raw_workflow) != {"id", "attempt", "url"}:
+        errors.append(f"{path}.workflow_run must use the canonical shape")
+    workflow_id = _require_int(
+        raw_workflow.get("id"), f"{path}.workflow_run.id", errors, minimum=1
+    )
+    workflow_attempt = _require_int(
+        raw_workflow.get("attempt"),
+        f"{path}.workflow_run.attempt",
+        errors,
+        minimum=1,
+    )
+    workflow_url = _require_public_reference(
+        raw_workflow.get("url"), f"{path}.workflow_run.url", errors
+    )
+    if isinstance(raw_workflow.get("url"), str) and raw_workflow.get("url") != workflow_url:
+        errors.append(f"{path}.workflow_run.url must not contain surrounding whitespace")
+    if workflow_url and not _is_placeholder(workflow_url):
+        run_match = GITHUB_RUN_URL_RE.fullmatch(workflow_url)
+        if run_match is None:
+            errors.append(f"{path}.workflow_run.url must be the exact ClipVault Actions run URL")
+        elif workflow_id is not None and int(run_match.group("run_id")) != workflow_id:
+            errors.append(f"{path}.workflow_run.url must match workflow_run.id")
+
+    raw_release = raw_binding.get("draft_release")
+    if not _is_mapping(raw_release):
+        errors.append(f"{path}.draft_release must be an object")
+        raw_release = {}
+    elif set(raw_release) != {"id", "url", "tag_name"}:
+        errors.append(f"{path}.draft_release must use the canonical shape")
+    release_id = _require_int(
+        raw_release.get("id"), f"{path}.draft_release.id", errors, minimum=1
+    )
+    release_url = _require_public_reference(
+        raw_release.get("url"), f"{path}.draft_release.url", errors
+    )
+    if isinstance(raw_release.get("url"), str) and raw_release.get("url") != release_url:
+        errors.append(f"{path}.draft_release.url must not contain surrounding whitespace")
+    if (
+        release_url
+        and not _is_placeholder(release_url)
+        and DRAFT_RELEASE_URL_RE.fullmatch(release_url) is None
+    ):
+        errors.append(f"{path}.draft_release.url must be the exact ClipVault draft Release URL")
+    release_tag = _require_non_empty_string(
+        raw_release.get("tag_name"), f"{path}.draft_release.tag_name", errors
+    )
+    if isinstance(raw_release.get("tag_name"), str) and (
+        raw_release.get("tag_name") != release_tag
+    ):
+        errors.append(f"{path}.draft_release.tag_name must not contain surrounding whitespace")
+    if release_tag and not _is_placeholder(release_tag) and release_tag != expected_version:
+        errors.append(f"{path}.draft_release.tag_name must be {expected_version}")
+
+    raw_apk = raw_binding.get("android_signed_apk")
+    if not _is_mapping(raw_apk):
+        errors.append(f"{path}.android_signed_apk must be an object")
+        raw_apk = {}
+    elif set(raw_apk) != {"name", "sha256"}:
+        errors.append(f"{path}.android_signed_apk must use the canonical shape")
+    apk_name = _require_non_empty_string(
+        raw_apk.get("name"), f"{path}.android_signed_apk.name", errors
+    )
+    if isinstance(raw_apk.get("name"), str) and raw_apk.get("name") != apk_name:
+        errors.append(f"{path}.android_signed_apk.name must not contain surrounding whitespace")
+    if apk_name and not _is_placeholder(apk_name) and apk_name != _signed_apk_name(
+        expected_version
+    ):
+        errors.append(
+            f"{path}.android_signed_apk.name must be {_signed_apk_name(expected_version)}"
+        )
+    apk_sha256 = _require_canonical_sha256(
+        raw_apk.get("sha256"), f"{path}.android_signed_apk.sha256", errors
+    )
+    evidence_ref = _require_public_reference(
+        raw_binding.get("evidence_ref"), f"{path}.evidence_ref", errors
+    )
+    if isinstance(raw_binding.get("evidence_ref"), str) and (
+        raw_binding.get("evidence_ref") != evidence_ref
+    ):
+        errors.append(f"{path}.evidence_ref must not contain surrounding whitespace")
+
+    final_run = runs.get(final_run_id)
+    if final_run is not None:
+        for field in ("apk_name", "apk_sha256", "artifact_evidence_ref"):
+            raw_value = final_run.get(field)
+            if isinstance(raw_value, str) and raw_value != _string(raw_value):
+                errors.append(
+                    f"final signed android run {field} must not contain surrounding whitespace"
+                )
+        if apk_name and _string(final_run.get("apk_name")) != apk_name:
+            errors.append(
+                "final signed android run apk_name must match release_artifact_binding"
+            )
+        if apk_sha256 and _string(final_run.get("apk_sha256")) != apk_sha256:
+            errors.append(
+                "final signed android run apk_sha256 must match release_artifact_binding"
+            )
+        if evidence_ref and _string(final_run.get("artifact_evidence_ref")) != evidence_ref:
+            errors.append(
+                "final signed android run artifact_evidence_ref must match "
+                "release_artifact_binding.evidence_ref"
+            )
+
+    normalized: dict[str, object] = {
+        "artifact_evidence_type": artifact_type,
+        "artifact_binding_sha256": artifact_binding,
+        "target_commit": binding_commit.lower(),
+        "workflow_run": {
+            "id": workflow_id,
+            "attempt": workflow_attempt,
+            "url": workflow_url,
+        },
+        "draft_release": {
+            "id": release_id,
+            "url": release_url,
+            "tag_name": release_tag,
+        },
+        "android_signed_apk": {
+            "name": apk_name,
+            "sha256": apk_sha256,
+        },
+        "evidence_ref": evidence_ref,
+    }
+    if external_projection is not None:
+        comparisons = (
+            ("artifact_evidence_type", artifact_type, external_projection["artifact_evidence_type"]),
+            ("artifact_binding_sha256", artifact_binding, external_projection["artifact_binding_sha256"]),
+            ("target_commit", binding_commit.lower(), external_projection["target_commit"]),
+            ("workflow_run.id", workflow_id, external_projection["workflow_run"]["id"]),
+            (
+                "workflow_run.attempt",
+                workflow_attempt,
+                external_projection["workflow_run"]["attempt"],
+            ),
+            ("workflow_run.url", workflow_url, external_projection["workflow_run"]["url"]),
+            ("draft_release.id", release_id, external_projection["draft_release"]["id"]),
+            ("draft_release.url", release_url, external_projection["draft_release"]["url"]),
+            (
+                "draft_release.tag_name",
+                release_tag,
+                external_projection["draft_release"]["tag_name"],
+            ),
+            (
+                "android_signed_apk.name",
+                apk_name,
+                external_projection["android_signed_apk"]["name"],
+            ),
+            (
+                "android_signed_apk.sha256",
+                apk_sha256,
+                external_projection["android_signed_apk"]["sha256"],
+            ),
+        )
+        for field, observed, expected in comparisons:
+            if observed != expected:
+                errors.append(
+                    f"{path}.{field} must match final_draft_artifact_evidence"
+                )
+    elif require_final_draft_binding:
+        errors.append(
+            "strict final-draft binding mode requires valid final_draft_artifact_evidence"
+        )
+    else:
+        errors.append(
+            "release_artifact_binding is not accepted without an externally supplied "
+            "final_draft_artifact_evidence snapshot"
+        )
+    if external_projection is None or len(errors) != initial_error_count:
+        return None
+    return normalized
 
 
 def _is_signed_release_run(
@@ -821,7 +1183,13 @@ def _validate_item(
     return status
 
 
-def validate_evidence(data: object, *, expected_version: str = DEFAULT_VERSION) -> ValidationResult:
+def validate_evidence(
+    data: object,
+    *,
+    expected_version: str = DEFAULT_VERSION,
+    final_draft_artifact_evidence: object | None = None,
+    require_final_draft_binding: bool = False,
+) -> ValidationResult:
     errors: list[str] = []
     warnings: list[str] = []
     counts = {status: 0 for status in sorted(VALID_STATUSES)}
@@ -831,6 +1199,26 @@ def validate_evidence(data: object, *, expected_version: str = DEFAULT_VERSION) 
 
     runs = _validate_metadata(data, expected_version, errors)
     final_run_id = _string(data.get("final_signed_android_run_id")) if _is_mapping(data) else ""
+    target_commit = _string(data.get("target_commit")) if _is_mapping(data) else ""
+    binding_present = _is_mapping(data) and data.get("release_artifact_binding") is not None
+    binding_projection = None
+    if _is_mapping(data):
+        binding_projection = _validate_release_artifact_binding(
+            data,
+            expected_version=expected_version,
+            target_commit=target_commit,
+            runs=runs,
+            final_run_id=final_run_id,
+            final_draft_artifact_evidence=final_draft_artifact_evidence,
+            require_final_draft_binding=require_final_draft_binding,
+            errors=errors,
+        )
+    if binding_projection is not None:
+        binding_assurance = "verified_external_snapshot"
+    elif binding_present or final_draft_artifact_evidence is not None:
+        binding_assurance = "unverified_or_invalid"
+    else:
+        binding_assurance = "not_present_legacy_compatibility"
     compatibility = data.get("android_compatibility_qa") if _is_mapping(data) else None
     if not _is_mapping(compatibility):
         errors.append("android_compatibility_qa must be an object")
@@ -880,14 +1268,26 @@ def validate_evidence(data: object, *, expected_version: str = DEFAULT_VERSION) 
     if observed_items != expected_items:
         errors.append(f"expected {expected_items} QA items, found {observed_items}")
 
+    if binding_assurance == "not_present_legacy_compatibility":
+        warnings.append(
+            "release_artifact_binding is absent; schema-v2 compatibility validation "
+            "does not qualify as final Issue #36 release-gate evidence"
+        )
+
     ok = not errors
-    release_ready = ok and counts["pass"] == expected_items
+    structurally_complete = ok and counts["pass"] == expected_items
+    release_ready = (
+        structurally_complete
+        and binding_assurance == "verified_external_snapshot"
+    )
     return ValidationResult(
         ok=ok,
+        structurally_complete=structurally_complete,
         release_ready=release_ready,
         errors=tuple(errors),
         warnings=tuple(warnings),
         item_counts=counts,
+        final_draft_binding_assurance=binding_assurance,
     )
 
 
@@ -897,6 +1297,22 @@ def _escape_table(value: object) -> str:
     text = " / ".join(part.strip() for part in text.split("\n") if part.strip())
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return text.replace("|", "\\|") or "-"
+
+
+def _escape_public_reference(value: object) -> str:
+    text = _string(value)
+    if _contains_private_local_path(text):
+        return "[redacted local evidence path]"
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = " / ".join(part.strip() for part in text.split("\n") if part.strip())
+    escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    if HTTPS_REFERENCE_RE.fullmatch(text):
+        return f"<{escaped}>"
+    markdown_table_metacharacters = frozenset("\\|`*_[]()!")
+    return "".join(
+        f"\\{character}" if character in markdown_table_metacharacters else character
+        for character in escaped
+    ) or "-"
 
 
 def _item(data: dict[str, object], section_key: str, item_key: str) -> dict[str, object]:
@@ -941,21 +1357,56 @@ def render_markdown(
         f"- Evidence schema: `{_escape_table(data.get('schema_version'))}`",
         f"- Version: `{_escape_table(data.get('version'))}`",
         f"- Target commit: `{_escape_table(data.get('target_commit'))}`",
+        "- final_draft_binding_assurance="
+        f"{_escape_table(result.final_draft_binding_assurance)}",
         f"- Final signed Android run: `{_escape_table(data.get('final_signed_android_run_id'))}`",
         f"- Tester: {_escape_table(data.get('tester'))}",
         f"- Tested at: {_escape_table(data.get('tested_at'))}",
-        f"- Desktop environment: {_escape_table(desktop.get('os'))}, app {_escape_table(desktop.get('app_version'))}, source commit `{_escape_table(desktop.get('source_commit'))}`, build source {_escape_table(desktop.get('build_source'))}",
+        f"- Desktop environment: {_escape_table(desktop.get('os'))}, app {_escape_table(desktop.get('app_version'))}, source commit `{_escape_table(desktop.get('source_commit'))}`, build source {_escape_public_reference(desktop.get('build_source'))}",
         "",
         "Item counts: "
         f"{result.item_counts.get('pass', 0)} pass, "
         f"{result.item_counts.get('fail', 0)} fail, "
         f"{result.item_counts.get('blocked', 0)} blocked.",
+    ]
+
+    binding = data.get("release_artifact_binding")
+    if isinstance(binding, dict):
+        workflow = binding.get("workflow_run")
+        workflow = workflow if isinstance(workflow, dict) else {}
+        release = binding.get("draft_release")
+        release = release if isinstance(release, dict) else {}
+        apk = binding.get("android_signed_apk")
+        apk = apk if isinstance(apk, dict) else {}
+        lines.extend([
+            "",
+            "### Final draft artifact binding",
+            "",
+            f"- Evidence type: `{_escape_table(binding.get('artifact_evidence_type'))}`",
+            f"- Artifact binding SHA-256: `{_escape_table(binding.get('artifact_binding_sha256'))}`",
+            f"- Target commit: `{_escape_table(binding.get('target_commit'))}`",
+            f"- Workflow run: `{_escape_table(workflow.get('id'))}` attempt "
+            f"`{_escape_table(workflow.get('attempt'))}` ({_escape_public_reference(workflow.get('url'))})",
+            f"- Draft Release: `{_escape_table(release.get('id'))}` tag "
+            f"`{_escape_table(release.get('tag_name'))}` ({_escape_public_reference(release.get('url'))})",
+            f"- Signed APK: {_escape_public_reference(apk.get('name'))} "
+            f"(`{_escape_table(apk.get('sha256'))}`)",
+            f"- Evidence reference: {_escape_public_reference(binding.get('evidence_ref'))}",
+            "- Binding verification: "
+            + (
+                "verified against the supplied final-draft snapshot (offline)"
+                if result.final_draft_binding_assurance == "verified_external_snapshot"
+                else "not verified; report remains blocked"
+            ),
+        ])
+
+    lines.extend([
         "",
         "### Android execution matrix",
         "",
         "| Run ID | Source commit | SDK | Device | Build | App | App APK | App APK SHA-256 | Test APK | Test APK SHA-256 | Artifact evidence | Tested at | Source |",
         "|---|---|---:|---|---|---|---|---|---|---|---|---|---|",
-    ]
+    ])
 
     for raw_run in android_runs:
         run = raw_run if isinstance(raw_run, dict) else {}
@@ -970,9 +1421,9 @@ def render_markdown(
             f"{_escape_table(run.get('app_version'))} | {_escape_table(run.get('apk_name'))} | "
             f"`{_escape_table(run.get('apk_sha256'))}` | {_escape_table(run.get('test_apk_name'))} | "
             f"`{_escape_table(run.get('test_apk_sha256'))}` | "
-            f"{_escape_table(run.get('artifact_evidence_ref'))} | "
+            f"{_escape_public_reference(run.get('artifact_evidence_ref'))} | "
             f"{_escape_table(run.get('tested_at'))} | "
-            f"{_escape_table(run.get('apk_source'))} |"
+            f"{_escape_public_reference(run.get('apk_source'))} |"
         )
 
     lines.extend([
@@ -981,8 +1432,8 @@ def render_markdown(
         "",
         f"- Status: `{_escape_table(cursorwindow.get('status'))}`",
         f"- Test: `{_escape_table(cursorwindow.get('test_name'))}`",
-        f"- Failure evidence: {_escape_table(cursorwindow.get('evidence'))}",
-        f"- Next step: {_escape_table(cursorwindow.get('next_step'))}",
+        f"- Failure evidence: {_escape_public_reference(cursorwindow.get('evidence'))}",
+        f"- Next step: {_escape_public_reference(cursorwindow.get('next_step'))}",
         "",
         "| Run ID | Executed | Failures | Errors | Skipped | Payload bytes | Wire bytes | SDK evidence | SDK SHA-256 | Result evidence | Result SHA-256 |",
         "|---|---:|---:|---:|---:|---:|---:|---|---|---|---|",
@@ -995,9 +1446,9 @@ def render_markdown(
             f"{_escape_table(row.get('failures'))} | {_escape_table(row.get('errors'))} | "
             f"{_escape_table(row.get('skipped'))} | "
             f"{_escape_table(row.get('payload_bytes'))} | {_escape_table(row.get('wire_bytes'))} | "
-            f"{_escape_table(row.get('sdk_evidence_ref'))} | "
+            f"{_escape_public_reference(row.get('sdk_evidence_ref'))} | "
             f"`{_escape_table(row.get('sdk_evidence_sha256'))}` | "
-            f"{_escape_table(row.get('result_ref'))} | "
+            f"{_escape_public_reference(row.get('result_ref'))} | "
             f"`{_escape_table(row.get('result_sha256'))}` |"
         )
     lines.append("")
@@ -1014,8 +1465,8 @@ def render_markdown(
             status = _escape_table(str(item_data.get("status", "")).lower())
             run_ids = item_data.get("run_ids")
             run_ids_text = ", ".join(str(value) for value in run_ids) if isinstance(run_ids, list) else ""
-            evidence = _escape_table(item_data.get("evidence"))
-            next_step = _escape_table(item_data.get("next_step"))
+            evidence = _escape_public_reference(item_data.get("evidence"))
+            next_step = _escape_public_reference(item_data.get("next_step"))
             lines.append(
                 f"| {expected.label} | {status} | {_escape_table(run_ids_text)} | "
                 f"{evidence} | {next_step} |"
@@ -1048,20 +1499,35 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, ob
     return result
 
 
+def _reject_nonfinite_json_constant(value: str) -> object:
+    raise ValueError(f"non-finite JSON number is not allowed: {value}")
+
+
 def load_json(path: Path) -> object:
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle, object_pairs_hook=_reject_duplicate_json_keys)
+    with path.open("rb") as handle:
+        raw = handle.read(MAX_JSON_INPUT_BYTES + 1)
+    if len(raw) > MAX_JSON_INPUT_BYTES:
+        raise ValueError(
+            f"JSON evidence exceeds the {MAX_JSON_INPUT_BYTES}-byte input limit"
+        )
+    return json.loads(
+        raw.decode("utf-8"),
+        object_pairs_hook=_reject_duplicate_json_keys,
+        parse_constant=_reject_nonfinite_json_constant,
+    )
 
 
 def _paths_identify_same_file(left: Path, right: Path) -> bool:
-    if left.resolve() == right.resolve():
-        return True
-    if not left.exists() or not right.exists():
-        return False
     try:
+        if left.resolve() == right.resolve():
+            return True
+        if not left.exists() or not right.exists():
+            return False
         return left.samefile(right)
-    except OSError:
-        return False
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(
+            f"cannot safely compare file identities: {left} and {right}"
+        ) from exc
 
 
 def _write_text_file(path: Path, text: str, *, force: bool = False) -> None:
@@ -1096,6 +1562,16 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--template", action="store_true", help="write a JSON evidence template to stdout")
     parser.add_argument("--write-template", type=Path, help="write a JSON evidence template to this path")
     parser.add_argument("--input", type=Path, help="validate and render this JSON evidence file")
+    parser.add_argument(
+        "--final-draft-artifact-evidence",
+        type=Path,
+        help="cross-check this exact final-draft artifact evidence JSON",
+    )
+    parser.add_argument(
+        "--require-final-draft-binding",
+        action="store_true",
+        help="fail unless manual QA is bound to the supplied final-draft evidence",
+    )
     parser.add_argument("--output", type=Path, help="write rendered Markdown to this path instead of stdout")
     parser.add_argument("--json", action="store_true", help="emit validation JSON instead of Markdown")
     parser.add_argument("--no-fail", action="store_true", help="return exit code 0 even when evidence is incomplete")
@@ -1111,8 +1587,30 @@ def main(argv: Iterable[str] | None = None) -> int:
         parser.error("--output cannot be combined with --json")
     if args.force and not (args.write_template or args.output):
         parser.error("--force requires --write-template or --output")
-    if args.input and args.output and _paths_identify_same_file(args.input, args.output):
-        parser.error("--input and --output must not identify the same file")
+    if bool(args.final_draft_artifact_evidence) != args.require_final_draft_binding:
+        parser.error(
+            "--final-draft-artifact-evidence and --require-final-draft-binding "
+            "must be used together"
+        )
+    if args.final_draft_artifact_evidence and not args.input:
+        parser.error("--final-draft-artifact-evidence requires --input")
+    try:
+        if args.input and args.output and _paths_identify_same_file(args.input, args.output):
+            parser.error("--input and --output must not identify the same file")
+        if args.final_draft_artifact_evidence and args.input and _paths_identify_same_file(
+            args.final_draft_artifact_evidence, args.input
+        ):
+            parser.error(
+                "--final-draft-artifact-evidence and --input must not identify the same file"
+            )
+        if args.final_draft_artifact_evidence and args.output and _paths_identify_same_file(
+            args.final_draft_artifact_evidence, args.output
+        ):
+            parser.error(
+                "--final-draft-artifact-evidence and --output must not identify the same file"
+            )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     template = build_template(args.version)
     if args.template:
@@ -1127,9 +1625,19 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     try:
         loaded = load_json(args.input)
-    except (OSError, ValueError) as exc:
+        artifact_evidence = (
+            load_json(args.final_draft_artifact_evidence)
+            if args.final_draft_artifact_evidence
+            else None
+        )
+    except (OSError, RecursionError, UnicodeError, ValueError) as exc:
         parser.error(str(exc))
-    result = validate_evidence(loaded, expected_version=args.version)
+    result = validate_evidence(
+        loaded,
+        expected_version=args.version,
+        final_draft_artifact_evidence=artifact_evidence,
+        require_final_draft_binding=args.require_final_draft_binding,
+    )
     if args.json:
         _emit_json(result.as_dict())
     else:
@@ -1146,7 +1654,9 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     if args.no_fail:
         return 0
-    return 0 if result.release_ready else 2
+    # Preserve the legacy validator's structural-success exit contract while
+    # keeping Issue #36 release eligibility explicit in `release_ready`.
+    return 0 if result.structurally_complete else 2
 
 
 if __name__ == "__main__":

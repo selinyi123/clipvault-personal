@@ -249,7 +249,11 @@
   CursorWindow regression runs and a physical final-signed-APK run, binds them
   to the target commit and artifact hashes/evidence, validates Android device
   QA, IME privacy QA, sync QA, and Windows clipboard privacy QA rows, and
-  renders a Markdown issue comment draft. It does not run device QA, post to
+  renders a Markdown issue comment draft. Its explicit strict mode also loads a
+  bounded, duplicate-key-safe final-draft artifact report, recomputes its
+  canonical binding, and requires the manual report to name the exact run
+  attempt, draft Release, and signed APK. This remains an offline snapshot
+  cross-check, not live GitHub proof. It does not run device QA, post to
   GitHub, edit checklist
   rows, sign artifacts, publish a Release, or close Issue #36, and the rendered
   report explicitly does not replace signed-artifact/final-release evidence.

@@ -623,9 +623,20 @@ Fill `manual-qa-v1.6.0.template.json`. Follow
 - Windows installer/portable and clipboard privacy QA using the exact draft assets.
 
 The schema-v2 validator machine-binds Android rows to the exact signed APK run.
-Windows observations are Owner-attested: cite `$digestReport`, the draft Release
-URL, and the exact EXE names/SHA-256 values in their evidence; the manual helper
-does not independently cross-check Windows artifact bytes.
+Populate `release_artifact_binding` from the final-draft report with this exact
+field mapping: `artifact_evidence_type <- evidence_type`,
+`artifact_binding_sha256 <- artifact_binding_sha256`,
+`target_commit <- target_commit`, `workflow_run.id/url/attempt <-` the same
+workflow fields, `draft_release.id/url/tag_name <-` the same draft fields, and
+`android_signed_apk.name/sha256 <- release_name/sha256` from the unique
+`artifacts` row whose role is `android_signed_apk`. Choose one path-free
+`evidence_ref` and repeat it in the final signed Android run. Do not type an
+alternate run, draft Release, APK name, or digest. Strict mode recomputes the
+artifact binding and separately cross-checks the snapshot URL. The numeric draft
+Release ID, not that URL, is part of the binding digest. Windows observations are Owner-attested.
+Cite `$digestReport`, the draft Release URL, and the exact EXE names/SHA-256
+values in their evidence; the manual helper does not independently
+cross-check the physical Windows observations.
 
 Render only through the fail-closed validator:
 
@@ -721,6 +732,18 @@ if (-not (Test-FullyQualifiedWindowsPath $pythonPath) -or
 }}
 $manualQaTool = Join-Path $repoRoot "tools/manual_qa_evidence.py"
 $packRoot = Join-Path $repoRoot ".field-test-artifacts/v1.6.0-owner-pack"
+$manualQaEvidence = Join-Path $packRoot "manual-qa-v1.6.0.template.json"
+$finalOutput = Join-Path $packRoot "manual-qa-issue-comment.md"
+$pendingOutput = Join-Path $packRoot ("manual-qa-issue-comment.pending-" + [Guid]::NewGuid().ToString("N") + ".md")
+$runId = "REPLACE_WITH_DRAFT_TRUE_RUN_ID"
+$artifactRoot = Join-Path $repoRoot ".field-test-artifacts/v1.6.0-draft-run-$runId"
+$finalDraftEvidence = Join-Path $artifactRoot "final-draft-artifact-evidence.json"
+$finalDraftEvidenceItem = Get-Item -LiteralPath $finalDraftEvidence -Force -ErrorAction Stop
+Assert-NoReparsePathComponent $finalDraftEvidenceItem "final-draft artifact evidence"
+if ($finalDraftEvidenceItem.PSIsContainer -or
+    (($finalDraftEvidenceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {{
+  throw "Final-draft artifact evidence must be a regular non-reparse file"
+}}
 $localCommit = (& $gitPath -C $repoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) {{ throw "local HEAD lookup failed" }}
 $status = @(& $gitPath -C $repoRoot -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all)
@@ -743,27 +766,79 @@ function Assert-TrackedSourceMatchesCommit([string]$relativePath) {{
     throw "Tracked release source differs from the frozen target: $relativePath"
   }}
 }}
+function Get-TrustedEvidenceSha256([string]$path, [string]$label) {{
+  $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+  Assert-NoReparsePathComponent $item $label
+  if ($item.PSIsContainer -or
+      (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {{
+    throw "$label must be a regular non-reparse file"
+  }}
+  return (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+}}
+$manualQaEvidenceSha256 = Get-TrustedEvidenceSha256 $manualQaEvidence "manual QA evidence"
+$finalDraftEvidenceSha256 = Get-TrustedEvidenceSha256 $finalDraftEvidence "final-draft artifact evidence"
 Assert-TrackedSourceMatchesCommit "tools/manual_qa_evidence.py"
+Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"
+Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
 & $pythonPath -I -S $manualQaTool `
-  --input "$packRoot/manual-qa-v1.6.0.template.json" `
+  --input "$manualQaEvidence" `
+  --final-draft-artifact-evidence "$finalDraftEvidence" `
+  --require-final-draft-binding `
   --no-fail
 if ($LASTEXITCODE -ne 0) {{ throw "manual QA preview failed" }}
-& $pythonPath -I -S $manualQaTool `
-  --input "$packRoot/manual-qa-v1.6.0.template.json" `
-  --output "$packRoot/manual-qa-issue-comment.md"
-if ($LASTEXITCODE -ne 0) {{ throw "manual QA validation failed or remains blocked" }}
-$finalLocalCommit = (& $gitPath -C $repoRoot rev-parse HEAD).Trim()
-if ($LASTEXITCODE -ne 0) {{ throw "final local HEAD lookup failed" }}
-$finalStatus = @(& $gitPath -C $repoRoot -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all)
-if ($LASTEXITCODE -ne 0) {{ throw "final git status failed" }}
-if ($finalLocalCommit -ne $targetCommit -or $finalStatus.Count -ne 0) {{
-  throw "Manual QA validator checkout changed during validation"
-}}
 Assert-TrackedSourceMatchesCommit "tools/manual_qa_evidence.py"
+Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"
+Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
+if ((Get-TrustedEvidenceSha256 $manualQaEvidence "manual QA evidence") -cne $manualQaEvidenceSha256 -or
+    (Get-TrustedEvidenceSha256 $finalDraftEvidence "final-draft artifact evidence") -cne $finalDraftEvidenceSha256) {{
+  throw "Manual QA or final-draft artifact evidence changed after preview"
+}}
+if (Test-Path -LiteralPath $finalOutput) {{
+  throw "Final manual QA output already exists; review or remove it before rerunning Step F"
+}}
+try {{
+  & $pythonPath -I -S $manualQaTool `
+    --input "$manualQaEvidence" `
+    --final-draft-artifact-evidence "$finalDraftEvidence" `
+    --require-final-draft-binding `
+    --output "$pendingOutput"
+  if ($LASTEXITCODE -ne 0) {{ throw "manual QA validation failed or remains blocked" }}
+  $finalLocalCommit = (& $gitPath -C $repoRoot rev-parse HEAD).Trim()
+  if ($LASTEXITCODE -ne 0) {{ throw "final local HEAD lookup failed" }}
+  $finalStatus = @(& $gitPath -C $repoRoot -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all)
+  if ($LASTEXITCODE -ne 0) {{ throw "final git status failed" }}
+  if ($finalLocalCommit -ne $targetCommit -or $finalStatus.Count -ne 0) {{
+    throw "Manual QA validator checkout changed during validation"
+  }}
+  Assert-TrackedSourceMatchesCommit "tools/manual_qa_evidence.py"
+  Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"
+  Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
+  if ((Get-TrustedEvidenceSha256 $manualQaEvidence "manual QA evidence") -cne $manualQaEvidenceSha256 -or
+      (Get-TrustedEvidenceSha256 $finalDraftEvidence "final-draft artifact evidence") -cne $finalDraftEvidenceSha256) {{
+    throw "Manual QA or final-draft artifact evidence changed during final render"
+  }}
+  $pendingItem = Get-Item -LiteralPath $pendingOutput -Force -ErrorAction Stop
+  Assert-NoReparsePathComponent $pendingItem "pending manual QA output"
+  if ($pendingItem.PSIsContainer -or
+      (($pendingItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {{
+    throw "Pending manual QA output must be a regular non-reparse file"
+  }}
+  if (Test-Path -LiteralPath $finalOutput) {{
+    throw "Final manual QA output appeared during validation"
+  }}
+  Move-Item -LiteralPath $pendingOutput -Destination $finalOutput -ErrorAction Stop
+}} finally {{
+  if (Test-Path -LiteralPath $pendingOutput) {{
+    Remove-Item -LiteralPath $pendingOutput -Force -ErrorAction SilentlyContinue
+  }}
+}}
 ```
 
-Only a validator-rendered `PASS (OWNER-ATTESTED)` report is eligible for review.
-It still attests Owner observations; it does not independently fetch evidence.
+Only a validator-rendered `PASS (OWNER-ATTESTED)` report whose header records
+`final_draft_binding_assurance=verified_external_snapshot` is eligible for review.
+The strict cross-check validates the exact local final-draft snapshot but does
+not make that snapshot self-authenticating; live verification remains mandatory.
+The report still attests Owner observations and does not independently prove them.
 
 ### Step G - consolidate Issue #36 evidence
 

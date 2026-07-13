@@ -132,6 +132,11 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "apksigner.bat" not in guide
     assert "final-draft-artifact-evidence.json" in guide
     assert "final-draft-artifact-comment.md" in guide
+    assert '--final-draft-artifact-evidence "$finalDraftEvidence"' in guide
+    assert guide.count("--require-final-draft-binding") == 2
+    assert "release_artifact_binding" in guide
+    assert "artifact_evidence_type <- evidence_type" in guide
+    assert "artifacts` row whose role is `android_signed_apk`" in guide
     assert "all eight per-file" in guide
     assert "-cnotmatch '^[0-9a-f]{64}$'" in guide
     assert "& $pythonPath -I -S $manualQaTool" in guide
@@ -153,16 +158,18 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert '"repos/selinyi123/clipvault-personal/branches/main"' in guide
     assert guide.count(
         'Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"'
-    ) == 8
+    ) == 11
     assert guide.count(
         'Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"'
-    ) == 8
+    ) == 11
     assert guide.count(
         'Assert-TrackedSourceMatchesCommit "tools/manual_qa_evidence.py"'
-    ) == 2
+    ) == 3
     assert "Manual QA validator must run from the exact clean frozen target" in guide
     assert "Manual QA validator checkout changed during validation" in guide
+    assert "Final-draft artifact evidence must be a regular non-reparse file" in guide
     assert "PASS (OWNER-ATTESTED)" in guide
+    assert "final_draft_binding_assurance=verified_external_snapshot" in guide
     assert "Do not manually flip" in guide
     assert "v1.6.0-draft-run-$runId" in guide
     assert "Refusing stale evidence directory" in guide
@@ -172,6 +179,48 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "Assert-SameSha" in guide
     assert "draft-release-SHA256SUMS.txt" in guide
     assert "Windows observations are Owner-attested" in guide
+
+    step_f = guide.split("### Step F - execute manual QA against exact bytes", 1)[1]
+    step_f = step_f.split("### Step G - consolidate Issue #36 evidence", 1)[0]
+    assert 'v1.6.0-draft-run-$runId' in step_f
+    assert step_f.count('--final-draft-artifact-evidence "$finalDraftEvidence"') == 2
+    assert step_f.count("--require-final-draft-binding") == 2
+    assert "release-artifacts-v1.6.0.template.json" not in step_f
+    assert "final-draft-artifact-comment.md" not in step_f
+    for relative_path in (
+        "tools/manual_qa_evidence.py",
+        "tools/release_artifact_evidence.py",
+        "scripts/verify_release_manifest.py",
+    ):
+        assert step_f.count(
+            f'Assert-TrackedSourceMatchesCommit "{relative_path}"'
+        ) == 3
+    first_source_check = step_f.index(
+        'Assert-TrackedSourceMatchesCommit "tools/manual_qa_evidence.py"'
+    )
+    preview = step_f.index("--no-fail")
+    middle_source_check = step_f.index(
+        'Assert-TrackedSourceMatchesCommit "tools/manual_qa_evidence.py"',
+        first_source_check + 1,
+    )
+    final_render = step_f.index('--output "$pendingOutput"')
+    last_source_check = step_f.rindex(
+        'Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"'
+    )
+    assert (
+        first_source_check
+        < preview
+        < middle_source_check
+        < final_render
+        < last_source_check
+    )
+    assert step_f.count("Get-TrustedEvidenceSha256 $manualQaEvidence") == 3
+    assert step_f.count("Get-TrustedEvidenceSha256 $finalDraftEvidence") == 3
+    assert "Manual QA or final-draft artifact evidence changed after preview" in step_f
+    assert "Manual QA or final-draft artifact evidence changed during final render" in step_f
+    assert 'Move-Item -LiteralPath $pendingOutput -Destination $finalOutput' in step_f
+    assert "Final manual QA output already exists" in step_f
+    assert "Remove-Item -LiteralPath $pendingOutput" in step_f
     assert "Refusing stale prepublish directory" in guide
     assert "Draft assets changed after QA" in guide
     assert "prepublish-live-artifact-evidence.json" in guide
@@ -339,6 +388,46 @@ def test_generated_step_h_parses_on_windows_powershell_5_1():
         )
 
         assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_generated_step_f_parses_on_windows_powershell_5_1():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell 5.1 is unavailable")
+    guide = owner_pack.owner_action_pack(
+        owner_pack.VERSION,
+        owner_pack.ISSUE_URL,
+        generated_at="2026-07-13T00:00:00Z",
+    )
+    section = guide[
+        guide.index("### Step F - execute manual QA against exact bytes"):
+        guide.index("### Step G - consolidate Issue #36 evidence")
+    ]
+    scripts = re.findall(
+        r"(?ms)^```powershell\r?\n(?P<script>.*?)^```\r?$",
+        section,
+    )
+    assert len(scripts) == 1
+    encoded = base64.b64encode(scripts[0].encode("utf-8")).decode("ascii")
+    parser_script = "\n".join([
+        "$ErrorActionPreference = 'Stop'",
+        f"$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}'))",
+        "$tokens = $null",
+        "$errors = $null",
+        "[void][Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)",
+        "if ($errors.Count -ne 0) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }",
+    ])
+
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", "-"],
+        input=parser_script,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_new_pack_contains_only_the_fixed_known_file_set(tmp_path):

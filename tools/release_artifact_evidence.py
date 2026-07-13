@@ -67,12 +67,11 @@ def _load_source_module(name: str, script: Path):
     try:
         code = compile(script.read_bytes(), str(script), "exec", dont_inherit=True)
         exec(code, module.__dict__)
-    except BaseException:
+    finally:
         if previous is None:
             sys.modules.pop(name, None)
         else:
             sys.modules[name] = previous
-        raise
     return module
 
 
@@ -987,6 +986,282 @@ def _compute_binding_sha256(report: dict[str, Any]) -> str:
         _binding_projection(report), sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def build_final_draft_manual_qa_binding_projection(
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate one canonical final-draft snapshot and extract its QA identity.
+
+    This is an offline integrity and consistency check. The snapshot remains
+    non-self-authenticating and must still be revalidated against live GitHub
+    state before publication.
+    """
+
+    data = _require_dict(report, label="final-draft artifact evidence")
+    if data.get("schema_version") != 1 or isinstance(data.get("schema_version"), bool):
+        raise ValueError("final-draft artifact evidence schema must be 1")
+    if data.get("evidence_type") != "clipvault.issue36.final_draft_artifacts":
+        raise ValueError("artifact evidence must be a final-draft Issue #36 report")
+    if data.get("artifact_gate_status") != "snapshot_verified_live_revalidation_required":
+        raise ValueError("final-draft artifact evidence status is invalid")
+    if (
+        data.get("repo") != DEFAULT_REPO
+        or data.get("issue") != ISSUE_NUMBER
+        or isinstance(data.get("issue"), bool)
+        or data.get("version") != DEFAULT_VERSION
+        or data.get("branch") != BRANCH
+    ):
+        raise ValueError("final-draft artifact evidence scope mismatch")
+
+    raw_target_commit = data.get("target_commit")
+    if not isinstance(raw_target_commit, str):
+        raise ValueError("target_commit must be a canonical lowercase Git SHA")
+    target_commit = validate_commit(raw_target_commit)
+    if raw_target_commit != target_commit:
+        raise ValueError("target_commit must be a canonical lowercase Git SHA")
+
+    workflow_run = _require_dict(data.get("workflow_run"), label="workflow_run")
+    expected_run_keys = {
+        "id",
+        "url",
+        "attempt",
+        "workflow",
+        "path",
+        "event",
+        "status",
+        "conclusion",
+        "head_branch",
+        "head_sha",
+        "display_title",
+    }
+    if set(workflow_run) != expected_run_keys:
+        raise ValueError("workflow_run must use the canonical final-draft shape")
+    run_id = _require_positive_int(workflow_run.get("id"), label="workflow_run.id")
+    run_attempt = _require_positive_int(
+        workflow_run.get("attempt"), label="workflow_run.attempt"
+    )
+    raw_run_url = workflow_run.get("url")
+    if not isinstance(raw_run_url, str):
+        raise ValueError("workflow_run.url must be a GitHub Actions run URL")
+    run_url = validate_run_url(raw_run_url, DEFAULT_REPO)
+    if raw_run_url != run_url or _run_id(run_url, DEFAULT_REPO) != run_id:
+        raise ValueError("workflow_run.url does not exactly match workflow_run.id")
+    expected_run = {
+        "workflow": WORKFLOW_NAME,
+        "path": WORKFLOW_PATH,
+        "event": "workflow_dispatch",
+        "status": "completed",
+        "conclusion": "success",
+        "head_branch": BRANCH,
+        "head_sha": target_commit,
+        "display_title": f"Release artifacts {DEFAULT_VERSION} from main draft=true",
+    }
+    for field, expected in expected_run.items():
+        if workflow_run.get(field) != expected:
+            raise ValueError(f"workflow_run.{field} mismatch")
+
+    bundles = data.get("workflow_artifacts")
+    if not isinstance(bundles, list) or len(bundles) != 2:
+        raise ValueError("final-draft evidence must contain exactly two workflow bundles")
+    expected_bundle_names = sorted({
+        "clipvault-windows-release-artifacts",
+        "clipvault-android-signed-release-artifacts",
+    })
+    observed_bundle_names: list[str] = []
+    observed_bundle_ids: set[int] = set()
+    for index, raw_bundle in enumerate(bundles):
+        bundle = _require_dict(raw_bundle, label=f"workflow_artifacts[{index}]")
+        if set(bundle) != {"id", "name", "size_bytes", "api_archive_sha256"}:
+            raise ValueError("workflow artifact bundle must use the canonical shape")
+        name = bundle.get("name")
+        if not isinstance(name, str):
+            raise ValueError("workflow artifact bundle names must be strings")
+        observed_bundle_names.append(name)
+        bundle_id = _require_positive_int(
+            bundle.get("id"), label=f"workflow_artifacts[{index}].id"
+        )
+        if bundle_id in observed_bundle_ids:
+            raise ValueError("workflow artifact bundle IDs must be unique")
+        observed_bundle_ids.add(bundle_id)
+        _require_positive_int(
+            bundle.get("size_bytes"), label=f"workflow_artifacts[{index}].size_bytes"
+        )
+        digest = bundle.get("api_archive_sha256")
+        if not isinstance(digest, str) or SHA256_RE.fullmatch(digest) is None:
+            raise ValueError(
+                f"workflow_artifacts[{index}].api_archive_sha256 must be lowercase SHA-256"
+            )
+    if observed_bundle_names != expected_bundle_names:
+        raise ValueError("workflow artifact bundle inventory/order mismatch")
+
+    draft_release = _require_dict(data.get("draft_release"), label="draft_release")
+    expected_release_keys = {
+        "id",
+        "url",
+        "tag_name",
+        "name",
+        "is_draft",
+        "is_prerelease",
+        "target_commitish",
+    }
+    if set(draft_release) != expected_release_keys:
+        raise ValueError("draft_release must use the canonical final-draft shape")
+    release_id = _require_positive_int(draft_release.get("id"), label="draft_release.id")
+    release_url = draft_release.get("url")
+    release_prefix = f"https://github.com/{DEFAULT_REPO}/releases/tag/"
+    valid_release_urls = {
+        f"{release_prefix}{DEFAULT_VERSION}",
+    }
+    if not isinstance(release_url, str) or (
+        release_url not in valid_release_urls
+        and re.fullmatch(
+            re.escape(release_prefix) + r"untagged-[A-Za-z0-9._-]+", release_url
+        )
+        is None
+    ):
+        raise ValueError("draft_release.url mismatch")
+    if (
+        draft_release.get("tag_name") != DEFAULT_VERSION
+        or draft_release.get("name") != f"ClipVault Personal {DEFAULT_VERSION}"
+        or draft_release.get("is_draft") is not True
+        or draft_release.get("is_prerelease") is not False
+        or draft_release.get("target_commitish") != target_commit
+    ):
+        raise ValueError("draft_release identity mismatch")
+
+    release_tag = _require_dict(data.get("release_tag"), label="release_tag")
+    if set(release_tag) != {"ref", "state", "commit_sha"}:
+        raise ValueError("release_tag must use the canonical final-draft shape")
+    if release_tag.get("ref") != f"refs/tags/{DEFAULT_VERSION}":
+        raise ValueError("release_tag ref mismatch")
+    tag_state = release_tag.get("state")
+    tag_commit = release_tag.get("commit_sha")
+    if tag_state == "absent":
+        if tag_commit is not None:
+            raise ValueError("absent release_tag must not claim a commit")
+    elif tag_state == "present":
+        if tag_commit != target_commit:
+            raise ValueError("present release_tag must resolve to target_commit")
+    else:
+        raise ValueError("release_tag state must be absent or present")
+
+    signer = _require_dict(data.get("android_signer"), label="android_signer")
+    expected_signer_keys = {
+        "expected_cert_sha256",
+        "observed_cert_sha256",
+        "signer_count",
+        "apksigner_verified",
+        "trust_anchor_source",
+        "release_environment",
+        "release_environment_variable",
+    }
+    if set(signer) != expected_signer_keys:
+        raise ValueError("android_signer must use the canonical final-draft shape")
+    expected_cert = signer.get("expected_cert_sha256")
+    observed_cert = signer.get("observed_cert_sha256")
+    if (
+        not isinstance(expected_cert, str)
+        or SHA256_RE.fullmatch(expected_cert) is None
+        or observed_cert != expected_cert
+    ):
+        raise ValueError("android_signer certificate identity mismatch")
+    if (
+        _require_positive_int(signer.get("signer_count"), label="android_signer.signer_count")
+        != 1
+        or signer.get("apksigner_verified") is not True
+        or signer.get("trust_anchor_source")
+        != "github_release_environment_variable_and_owner_input_match"
+        or signer.get("release_environment") != RELEASE_ENVIRONMENT
+        or signer.get("release_environment_variable") != RELEASE_CERT_VARIABLE
+    ):
+        raise ValueError("android_signer verification identity mismatch")
+
+    specs = {spec.role: spec for spec in _asset_specs(DEFAULT_VERSION)}
+    artifacts = data.get("artifacts")
+    if not isinstance(artifacts, list) or len(artifacts) != len(specs):
+        raise ValueError("final-draft evidence must contain the exact eight artifacts")
+    by_role: dict[str, dict[str, Any]] = {}
+    release_asset_ids: set[int] = set()
+    observed_release_names: list[str] = []
+    expected_artifact_keys = {
+        "role",
+        "workflow_bundle",
+        "workflow_name",
+        "release_name",
+        "size_bytes",
+        "sha256",
+        "attestation_verified",
+        "matching_invocation_count",
+        "release_asset_id",
+    }
+    for index, raw_artifact in enumerate(artifacts):
+        artifact = _require_dict(raw_artifact, label=f"artifacts[{index}]")
+        if set(artifact) != expected_artifact_keys:
+            raise ValueError(f"artifacts[{index}] must use the canonical final-draft shape")
+        role = artifact.get("role")
+        if not isinstance(role, str) or role not in specs or role in by_role:
+            raise ValueError("artifact roles must be the unique expected release roles")
+        spec = specs[role]
+        if (
+            artifact.get("workflow_bundle") != spec.workflow_bundle
+            or artifact.get("workflow_name") != spec.workflow_name
+            or artifact.get("release_name") != spec.release_name
+        ):
+            raise ValueError(f"artifact identity mismatch for role {role!r}")
+        observed_release_names.append(spec.release_name)
+        release_asset_id = _require_positive_int(
+            artifact.get("release_asset_id"), label=f"artifacts[{index}].release_asset_id"
+        )
+        if release_asset_id in release_asset_ids:
+            raise ValueError("release asset IDs must be unique")
+        release_asset_ids.add(release_asset_id)
+        _require_positive_int(
+            artifact.get("size_bytes"), label=f"artifacts[{index}].size_bytes"
+        )
+        digest = artifact.get("sha256")
+        if not isinstance(digest, str) or SHA256_RE.fullmatch(digest) is None:
+            raise ValueError(f"artifacts[{index}].sha256 must be lowercase SHA-256")
+        if artifact.get("attestation_verified") is not True:
+            raise ValueError(f"artifacts[{index}] must record verified attestation")
+        _require_positive_int(
+            artifact.get("matching_invocation_count"),
+            label=f"artifacts[{index}].matching_invocation_count",
+        )
+        by_role[role] = artifact
+    if observed_release_names != sorted(spec.release_name for spec in specs.values()):
+        raise ValueError("artifact inventory/order mismatch")
+
+    claimed_binding = data.get("artifact_binding_sha256")
+    if not isinstance(claimed_binding, str) or SHA256_RE.fullmatch(claimed_binding) is None:
+        raise ValueError("artifact_binding_sha256 must be lowercase SHA-256")
+    try:
+        recomputed_binding = _compute_binding_sha256(data)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("final-draft artifact binding projection is malformed") from exc
+    if claimed_binding != recomputed_binding:
+        raise ValueError("final-draft artifact binding does not match report contents")
+
+    signed_apk = by_role["android_signed_apk"]
+    return {
+        "artifact_evidence_type": data["evidence_type"],
+        "artifact_binding_sha256": claimed_binding,
+        "target_commit": target_commit,
+        "workflow_run": {
+            "id": run_id,
+            "attempt": run_attempt,
+            "url": run_url,
+        },
+        "draft_release": {
+            "id": release_id,
+            "url": release_url,
+            "tag_name": DEFAULT_VERSION,
+        },
+        "android_signed_apk": {
+            "name": signed_apk["release_name"],
+            "sha256": signed_apk["sha256"],
+        },
+    }
 
 
 def _owner_binding_candidate(

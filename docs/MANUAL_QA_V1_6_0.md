@@ -61,15 +61,25 @@ build alone:
 
 ## Structured evidence helper
 
-Use the local helper to prepare a complete Issue #36 manual-QA evidence comment:
+The local helper can create and preview a report while evidence is being filled.
+The commands below are drafting conveniences only; they do not perform the
+frozen-source checks required for final Issue #36 evidence:
 
 ```powershell
 $qaEvidenceDir = ".\.field-test-artifacts\v1.6.0-manual-qa"
+$finalDraftEvidence = ".\.field-test-artifacts\v1.6.0-draft-run-REPLACE_WITH_DRAFT_TRUE_RUN_ID\final-draft-artifact-evidence.json"
 New-Item -ItemType Directory -Force -Path $qaEvidenceDir | Out-Null
 python tools/manual_qa_evidence.py --write-template "$qaEvidenceDir\manual-qa-v1.6.0.json"
-python tools/manual_qa_evidence.py --input "$qaEvidenceDir\manual-qa-v1.6.0.json" --no-fail
-python tools/manual_qa_evidence.py --input "$qaEvidenceDir\manual-qa-v1.6.0.json" --output "$qaEvidenceDir\manual-qa-issue-comment.md"
+python tools/manual_qa_evidence.py --input "$qaEvidenceDir\manual-qa-v1.6.0.json" --final-draft-artifact-evidence "$finalDraftEvidence" --require-final-draft-binding --no-fail
 ```
+
+For the final eligible render, copy the completed values into the generated
+Owner pack template and run **Step F** in
+`.field-test-artifacts/v1.6.0-owner-pack/OWNER_RELEASE_ACTION_PACK.md`. Step F pins trusted Python, the clean
+frozen commit, all dynamically loaded source blobs, and both evidence inputs;
+it renders to a pending file and promotes that file only after the post-checks
+succeed. A comment produced by a bare helper invocation is not final
+Issue #36 release-gate evidence.
 
 The helper is a formatter and validator only. It does not run Android device QA,
 inspect Windows clipboard behavior, post to GitHub, edit the Issue #36 checklist,
@@ -81,10 +91,24 @@ Both modes refuse to overwrite an existing file by default. Use `--force` only
 after confirming the destination is a tool-managed disposable copy; the helper
 always refuses symlink/directory outputs and never allows `--output` to replace
 its own `--input` evidence JSON.
+The two strict flags must be used together. They recompute the canonical binding
+of the exact `draft=true` artifact report and require the manual report's
+`release_artifact_binding`, final signed run, draft Release identity, and signed
+APK name/SHA-256 to match it. The artifact report is still a local snapshot;
+rerun the live verifier before publication.
+The Step F rendered Issue comment must show
+`final_draft_binding_assurance=verified_external_snapshot`; legacy compatibility
+output without that assurance is not final Issue #36 release-gate evidence.
 
 The generated report must include:
 
 - `schema_version=2`, `version=v1.6.0`, and the full 40-character target commit.
+- `release_artifact_binding` copied from the strict final-draft artifact report,
+  including its binding SHA-256, exact workflow run/attempt, draft Release ID and
+  snapshot URL, and signed APK name/SHA-256. The numeric Release ID is part of the
+  canonical digest; the URL is a separately validated snapshot reference and is
+  rechecked against live GitHub state before publication. Use a path-free short
+  evidence reference.
 - tester and timezone-qualified ISO-8601 timestamps.
 - separate Android execution rows for API 26, API 27, and the physical device
   used with the final signed release APK. Each row records the SDK, build
@@ -105,9 +129,12 @@ The generated report must include:
 This manual QA report does not replace signed artifact evidence, final Windows
 artifact evidence, signed Android APK evidence, release environment/secrets
 evidence, or Owner-approved `v1.6.0` GitHub Release publication.
-Its `PASS (OWNER-ATTESTED)` result means the required structure and reported
+Its strict-mode `PASS (OWNER-ATTESTED)` result means the required structure and reported
 values are complete; the helper does not fetch or independently parse the
 referenced SDK/JUnit files and cannot prove that physical observations occurred.
+Legacy schema-v2 compatibility mode may be structurally valid (`ok=true`) but
+always remains `BLOCKED`. Its historical exit status only reports structural
+completeness; never interpret that status as Issue #36 release eligibility.
 
 Older evidence without `schema_version=2` is intentionally blocked. Regenerate
 the template instead of copying a v1 report forward: the older shape cannot
