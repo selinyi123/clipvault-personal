@@ -771,7 +771,7 @@ It still attests Owner observations; it does not independently fetch evidence.
 its rows. Replace the draft with verified helper output and exact GitHub URLs only
 after every gate is bound to the same target commit and final asset digests.
 
-### Step H - publish the existing draft, then close
+### Step H - publish the existing draft, then verify published state
 
 After an Owner approval statement binds the target commit, draft Release URL,
 and final digest set, re-download the still-mutable draft into another fresh
@@ -1161,6 +1161,66 @@ foreach ($row in @($freshEvidence.artifacts)) {{
     throw "Published asset bytes differ from the Owner-approved binding: $($row.release_name)"
   }}
 }}
+
+# Re-run the repository verifier against the published Release. This reconstructs
+# the Owner-approved pre-publication binding from live state, verifies the exact
+# published Release/tag/asset identities and attestations, then emits a separate
+# publication-closure binding. Outputs stay outside all verified byte directories.
+$postpublishEvidence = "$artifactRoot/postpublish-live-artifact-evidence.json"
+$postpublishComment = "$artifactRoot/postpublish-live-artifact-comment.md"
+if ((Test-Path $postpublishEvidence) -or (Test-Path $postpublishComment)) {{
+  throw "Refusing stale post-publication evidence outputs"
+}}
+Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"
+Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
+& $pythonPath -I -S $evidenceTool `
+  --windows-dir "$actionsRoot/clipvault-windows-release-artifacts" `
+  --android-dir "$actionsRoot/clipvault-android-signed-release-artifacts" `
+  --published-release-dir "$postpublishRoot" `
+  --gh "$ghPath" `
+  --apksigner "$apksignerPath" `
+  --java "$javaPath" `
+  --version {version} `
+  --commit $targetCommit `
+  --run-url $run.url `
+  --expected-android-cert-sha256 $env:ANDROID_RELEASE_CERT_SHA256 `
+  --owner-approved-binding $ownerApprovedBinding `
+  --require-live-published-release `
+  --evidence-output $postpublishEvidence `
+  --comment-output $postpublishComment
+if ($LASTEXITCODE -ne 0) {{ throw "post-publication live evidence verification failed" }}
+if (-not (Test-Path -LiteralPath $postpublishEvidence -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $postpublishComment -PathType Leaf) -or
+    (Get-Item -LiteralPath $postpublishEvidence).Length -le 0 -or
+    (Get-Item -LiteralPath $postpublishComment).Length -le 0) {{
+  throw "post-publication evidence outputs are missing or empty"
+}}
+# This is an output-integrity sanity check only. The JSON is not a new approval
+# source and does not authorize Issue closure or any further Release mutation.
+$postpublishReport = Get-Content -LiteralPath $postpublishEvidence -Raw | ConvertFrom-Json
+if ($postpublishReport.evidence_type -cne "clipvault.issue36.published_release" -or
+    $postpublishReport.target_commit -cne $targetCommit -or
+    $postpublishReport.workflow_run.id -ne [long]$runId -or
+    $postpublishReport.workflow_run.url -cne $run.url -or
+    $postpublishReport.owner_approved_artifact_binding_sha256 -cne $ownerApprovedBinding -or
+    $postpublishReport.published_release.id -ne $releaseId -or
+    $postpublishReport.published_release.is_draft -ne $false -or
+    $postpublishReport.published_release.is_prerelease -ne $false -or
+    $postpublishReport.release_tag.ref -cne "refs/tags/{version}" -or
+    $postpublishReport.release_tag.commit_sha -cne $targetCommit -or
+    $postpublishReport.android_signer.expected_cert_sha256 -cne $env:ANDROID_RELEASE_CERT_SHA256 -or
+    $postpublishReport.publication_closure_binding_sha256 -cnotmatch '^[0-9a-f]{{64}}$') {{
+  throw "post-publication evidence is not bound to the approved release state"
+}}
+$finalPublishedLocalCommit = (& $gitPath -C $repoRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) {{ throw "final published-verifier HEAD lookup failed" }}
+$finalPublishedStatus = @(& $gitPath -C $repoRoot -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0) {{ throw "final published-verifier git status failed" }}
+if ($finalPublishedLocalCommit -ne $targetCommit -or $finalPublishedStatus.Count -ne 0) {{
+  throw "Published release verifier checkout changed during validation"
+}}
+Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"
+Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
 ```
 
 The exact-ID REST `PATCH` is an Owner publication action and must run only after
@@ -1169,8 +1229,87 @@ frozen and in an Owner-exclusive Release mutation window. GitHub does not make
 branch/tag movement, asset mutation, and draft publication one atomic operation,
 so the commands minimize that residual race and then recheck the same Release ID,
 resolved tag commit, metadata, inventory, sizes, and bytes after publication.
-Close Issue #36 only after readiness independently reports no blocker;
-publication alone is not closure authorization.
+The final verifier output supplies a path-free comment draft and a distinct
+publication-closure binding; both remain evidence inputs rather than closure
+authorization. Issue #36 remains open until readiness independently reports no
+blocker and the Owner confirms every remaining manual gate.
+
+If the exact-ID `PATCH` returned success but any later command failed, treat the
+Release as already published. Do not rebuild, mutate the Release, or rerun the
+full Step H draft path. Keep Issue #36 open, preserve the Owner-approved binding,
+use a new post-publish download directory and new evidence/comment filenames,
+then rerun only the read-only `--require-live-published-release` invocation from
+the same frozen checkout. If the PowerShell session or trusted-path variables
+were lost, follow the post-publication recovery procedure in
+`docs/RELEASE_RUNBOOK_V1_6_0.md` before recording any closure evidence.
+
+### Step H recovery - read-only after a successful PATCH
+
+Use this block only in the same trusted PowerShell session after Step H reached
+the publication `PATCH`. It never mutates the Release. If that session was lost,
+first re-establish the exact frozen placeholders, trusted tool paths, environment
+certificate input, helper functions, and clean checkout checks from a fresh pack;
+do not execute the draft checks or `PATCH` again.
+
+```powershell
+$recoveryWorkingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\', '/')
+if (-not $recoveryWorkingDirectory.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase)) {{
+  throw "Run post-publication recovery from the repository root"
+}}
+$recoveryNonce = [DateTimeOffset]::UtcNow.ToString("yyyyMMddTHHmmssZ") + "-" + [Guid]::NewGuid().ToString("N")
+$recoveryRoot = ".field-test-artifacts/v1.6.0-postpublish-recovery-$runId-$recoveryNonce"
+$recoveryEvidence = "$artifactRoot/postpublish-live-artifact-evidence-$recoveryNonce.json"
+$recoveryComment = "$artifactRoot/postpublish-live-artifact-comment-$recoveryNonce.md"
+if ((Test-Path $recoveryRoot) -or (Test-Path $recoveryEvidence) -or
+    (Test-Path $recoveryComment)) {{
+  throw "Refusing stale post-publication recovery paths"
+}}
+$recoveryLocalCommit = (& $gitPath -C $repoRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) {{ throw "recovery local HEAD lookup failed" }}
+$recoveryStatus = @(& $gitPath -C $repoRoot -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0) {{ throw "recovery git status failed" }}
+if ($recoveryLocalCommit -ne $targetCommit -or $recoveryStatus.Count -ne 0) {{
+  throw "Post-publication recovery requires the exact clean frozen target"
+}}
+Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"
+Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
+New-Item -ItemType Directory -Path $recoveryRoot | Out-Null
+& $ghPath release download {version} `
+  --repo selinyi123/clipvault-personal `
+  --dir $recoveryRoot
+if ($LASTEXITCODE -ne 0) {{ throw "post-publication recovery download failed" }}
+& $pythonPath -I -S $evidenceTool `
+  --windows-dir "$actionsRoot/clipvault-windows-release-artifacts" `
+  --android-dir "$actionsRoot/clipvault-android-signed-release-artifacts" `
+  --published-release-dir "$recoveryRoot" `
+  --gh "$ghPath" `
+  --apksigner "$apksignerPath" `
+  --java "$javaPath" `
+  --version {version} `
+  --commit $targetCommit `
+  --run-url $run.url `
+  --expected-android-cert-sha256 $env:ANDROID_RELEASE_CERT_SHA256 `
+  --owner-approved-binding $ownerApprovedBinding `
+  --require-live-published-release `
+  --evidence-output $recoveryEvidence `
+  --comment-output $recoveryComment
+if ($LASTEXITCODE -ne 0) {{ throw "post-publication recovery verification failed" }}
+if (-not (Test-Path -LiteralPath $recoveryEvidence -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $recoveryComment -PathType Leaf) -or
+    (Get-Item -LiteralPath $recoveryEvidence).Length -le 0 -or
+    (Get-Item -LiteralPath $recoveryComment).Length -le 0) {{
+  throw "post-publication recovery outputs are missing or empty"
+}}
+$finalRecoveryCommit = (& $gitPath -C $repoRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) {{ throw "final recovery HEAD lookup failed" }}
+$finalRecoveryStatus = @(& $gitPath -C $repoRoot -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0) {{ throw "final recovery git status failed" }}
+if ($finalRecoveryCommit -ne $targetCommit -or $finalRecoveryStatus.Count -ne 0) {{
+  throw "Post-publication recovery checkout changed during validation"
+}}
+Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"
+Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
+```
 
 ## 3. Hard blockers
 

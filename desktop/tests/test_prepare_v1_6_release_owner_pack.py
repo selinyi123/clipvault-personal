@@ -153,10 +153,10 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert '"repos/selinyi123/clipvault-personal/branches/main"' in guide
     assert guide.count(
         'Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"'
-    ) == 4
+    ) == 8
     assert guide.count(
         'Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"'
-    ) == 4
+    ) == 8
     assert guide.count(
         'Assert-TrackedSourceMatchesCommit "tools/manual_qa_evidence.py"'
     ) == 2
@@ -202,6 +202,60 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "$published.draft" in guide
     assert "Published Release metadata mismatch" in guide
     assert "Published asset bytes differ from the Owner-approved binding" in guide
+    assert "Step H - publish the existing draft, then verify published state" in guide
+    assert '--published-release-dir "$postpublishRoot"' in guide
+    assert "--require-live-published-release" in guide
+    assert "postpublish-live-artifact-evidence.json" in guide
+    assert "postpublish-live-artifact-comment.md" in guide
+    assert "post-publication live evidence verification failed" in guide
+    assert (
+        "$postpublishReport.owner_approved_artifact_binding_sha256 -cne "
+        "$ownerApprovedBinding"
+    ) in guide
+    assert "$postpublishReport.published_release.id -ne $releaseId" in guide
+    assert "$postpublishReport.release_tag.commit_sha -cne $targetCommit" in guide
+    assert "$postpublishReport.publication_closure_binding_sha256" in guide
+    assert "Published release verifier checkout changed during validation" in guide
+    assert "publication-closure binding" in guide
+    assert "or rerun the full Step H draft path" in " ".join(guide.split())
+    patch_index = guide.index(
+        "api -X PATCH --hostname github.com $releaseEndpoint -F draft=false"
+    )
+    post_download_index = guide.index(
+        "& $ghPath release download v1.6.0",
+        patch_index,
+    )
+    published_verify_index = guide.index(
+        "--require-live-published-release",
+        post_download_index,
+    )
+    assert patch_index < post_download_index < published_verify_index
+    published_call_start = guide.rindex(
+        "& $pythonPath -I -S $evidenceTool",
+        patch_index,
+        published_verify_index,
+    )
+    published_call_end = guide.index(
+        "if ($LASTEXITCODE -ne 0)",
+        published_verify_index,
+    )
+    published_call = guide[published_call_start:published_call_end]
+    assert "--publication-projection-stdout" not in published_call
+    assert "--draft-release-dir" not in published_call
+    assert "--no-fail" not in published_call
+    assert '$postpublishEvidence = "$artifactRoot/' in guide
+    assert '$postpublishComment = "$artifactRoot/' in guide
+    assert '$postpublishEvidence = "$postpublishRoot/' not in guide
+    assert '$postpublishComment = "$postpublishRoot/' not in guide
+    recovery_start = guide.index("### Step H recovery - read-only after a successful PATCH")
+    recovery_end = guide.index("## 3. Hard blockers", recovery_start)
+    recovery = guide[recovery_start:recovery_end]
+    assert "-X PATCH" not in recovery
+    assert "v1.6.0-postpublish-recovery-$runId-$recoveryNonce" in recovery
+    assert "[Guid]::NewGuid()" in recovery
+    assert "Run post-publication recovery from the repository root" in recovery
+    assert "--require-live-published-release" in recovery
+    assert "Post-publication recovery checkout changed during validation" in recovery
     assert "Closure recommendation: `BLOCKED`" in draft
     assert guide.isascii()
     assert draft.isascii()
@@ -244,6 +298,47 @@ def test_generated_absolute_path_helper_runs_on_windows_powershell_5_1():
     )
 
     assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_generated_step_h_parses_on_windows_powershell_5_1():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell 5.1 is unavailable")
+    guide = owner_pack.owner_action_pack(
+        owner_pack.VERSION,
+        owner_pack.ISSUE_URL,
+        generated_at="2026-07-13T00:00:00Z",
+    )
+    section = guide[
+        guide.index("### Step H - publish the existing draft"):
+        guide.index("## 3. Hard blockers")
+    ]
+    scripts = re.findall(
+        r"(?ms)^```powershell\r?\n(?P<script>.*?)^```\r?$",
+        section,
+    )
+    assert len(scripts) == 2
+    for script in scripts:
+        encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+        parser_script = "\n".join([
+            "$ErrorActionPreference = 'Stop'",
+            f"$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}'))",
+            "$tokens = $null",
+            "$errors = $null",
+            "[void][Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)",
+            "if ($errors.Count -ne 0) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }",
+        ])
+
+        completed = subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", "-"],
+            input=parser_script,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_new_pack_contains_only_the_fixed_known_file_set(tmp_path):

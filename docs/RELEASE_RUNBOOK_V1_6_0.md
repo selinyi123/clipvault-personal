@@ -358,13 +358,36 @@ The strict verifier recomputes that binding and hands one minimal publication
 projection directly to PowerShell memory; Step H never trusts a binding field
 re-read from mutable disk JSON.
 It publishes by the verified numeric Release ID, not by a mutable tag lookup,
-then checks the same ID and re-downloads the published bytes. Run it only while
+then checks the same ID and re-downloads the published bytes. The generated
+block finally runs `release_artifact_evidence.py --require-live-published-release`
+against that download. This reconstructs the approved pre-publication binding
+from live state and emits a distinct publication-closure binding plus a path-free
+Issue comment draft. Run it only while
 `main` and `refs/tags/v1.6.0` are procedurally frozen. Use an Owner-exclusive Release mutation window;
 GitHub does not make branch/tag movement, draft asset
 mutation, and publication one atomic transaction. Step H therefore resolves the
 exact tag immediately before publication and again after publication, including
 annotated-tag chains.
 
-After Step H's post-publication checks, rerun `tools/release_readiness.py`.
-Issue #36 remains open unless every gate is verifiably complete; publication
-alone does not authorize closure.
+### Post-publication recovery
+
+If the numeric Release `PATCH` succeeded but a later API lookup, download, hash,
+or verifier command failed, assume `v1.6.0` is already public. Do not rebuild,
+edit the Release, delete evidence, or run the normal draft publication path
+again. Keep Issue #36 open and preserve the first failure output.
+
+Use a newly generated Owner pack and the dedicated **Step H recovery** block. In
+the original trusted PowerShell session it reuses the already validated values.
+If that session was lost, first re-establish the same frozen target/run/binding,
+trusted executable paths, signer input, repository-root check, helper functions,
+and clean tracked-source checks from the fresh pack; do not execute its draft
+checks or `PATCH`. The recovery block creates a unique download directory and
+unique JSON/comment names, performs only `GET`/download operations plus local
+verification, and runs `--require-live-published-release` against the fresh
+bytes. Repeated transient failures must use another unique recovery directory so
+the original evidence remains inspectable.
+
+After Step H's post-publication checks, review the generated comment and rerun
+`tools/release_readiness.py`. Issue #36 remains open unless every automated and
+Owner/manual gate is verifiably complete; neither publication nor the closure
+binding alone authorizes completion.
