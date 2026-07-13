@@ -15,7 +15,7 @@ class AppPrivacyBoundaryTest {
 
         val networkPatterns = listOf(
             Regex("""^\s*import\s+(android\.net|java\.net|javax\.net|okhttp3|retrofit2|io\.ktor)\."""),
-            Regex("""\b(java|javax)\.net\."""),
+            Regex("""\b(?:android\.net|java\.net|javax\.net|okhttp3|retrofit2|io\.ktor)\."""),
             Regex("""\b(HttpURLConnection|HttpsURLConnection|Socket|DatagramSocket|InetAddress)\b"""),
         )
         val allowedPrefix = Path.of("com", "clipvault", "app", "sync")
@@ -44,6 +44,103 @@ class AppPrivacyBoundaryTest {
         assertTrue(
             "Android network boundary violations:\n${violations.joinToString("\n")}",
             violations.isEmpty(),
+        )
+    }
+
+    @Test
+    fun syncPackageDoesNotReachImeOrInputContext() {
+        val syncSourceDir = mainSourceDir.resolve(Path.of("com", "clipvault", "app", "sync"))
+        assertTrue("Android sync source directory is missing: $syncSourceDir", Files.isDirectory(syncSourceDir))
+
+        val blocked = listOf(
+            Regex("""\bcom\.clipvault\.app\.ime(?:\.|\b)"""),
+            Regex("""\bandroid\.inputmethodservice(?:\.|\b)"""),
+            Regex("""\bandroid\.view\.inputmethod(?:\.|\b)"""),
+            Regex("""\b(InputMethodService|InputConnection|currentInputConnection)\b"""),
+            Regex("""\b(getTextBeforeCursor|getTextAfterCursor|getSelectedText|getExtractedText|getSurroundingText|getInitialTextBeforeCursor|getInitialSelectedText|getInitialTextAfterCursor|getCursorCapsMode|requestCursorUpdates|onUpdateSelection|onUpdateCursorAnchorInfo|onUpdateExtractedText)\b"""),
+        )
+        val violations = mutableListOf<String>()
+        val stream = Files.walk(syncSourceDir)
+        try {
+            stream
+                .filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".kt") }
+                .collect(Collectors.toList())
+                .forEach { path ->
+                    Files.readAllLines(path).forEachIndexed { index, line ->
+                        val trimmed = line.trim()
+                        if (trimmed.startsWith("//") || trimmed.startsWith("*")) return@forEachIndexed
+                        if (blocked.any { it.containsMatchIn(line) }) {
+                            violations += "${syncSourceDir.relativize(path)}:${index + 1}: " +
+                                "sync must not depend on IME or typed input context"
+                        }
+                    }
+                }
+        } finally {
+            stream.close()
+        }
+
+        assertTrue(
+            "Android sync-to-IME boundary violations:\n${violations.joinToString("\n")}",
+            violations.isEmpty(),
+        )
+    }
+
+    @Test
+    fun workManagerCodeStaysInsideSyncPackage() {
+        val allowedPrefix = Path.of("com", "clipvault", "app", "sync")
+        val blocked = listOf(
+            Regex("""^\s*import\s+androidx\.work\."""),
+            Regex("""\bandroidx\.work\."""),
+            Regex("""\b(WorkManager|WorkRequest|OneTimeWorkRequestBuilder|PeriodicWorkRequestBuilder|ExistingWorkPolicy)\b"""),
+        )
+        val violations = mutableListOf<String>()
+        val stream = Files.walk(mainSourceDir)
+        try {
+            stream
+                .filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".kt") }
+                .collect(Collectors.toList())
+                .forEach { path ->
+                    val relative = mainSourceDir.relativize(path)
+                    if (relative.startsWith(allowedPrefix)) return@forEach
+                    Files.readAllLines(path).forEachIndexed { index, line ->
+                        val trimmed = line.trim()
+                        if (trimmed.startsWith("//") || trimmed.startsWith("*")) return@forEachIndexed
+                        if (blocked.any { it.containsMatchIn(line) }) {
+                            violations += "$relative:${index + 1}: WorkManager belongs in app/sync"
+                        }
+                    }
+                }
+        } finally {
+            stream.close()
+        }
+
+        assertTrue(
+            "Android WorkManager boundary violations:\n${violations.joinToString("\n")}",
+            violations.isEmpty(),
+        )
+    }
+
+    @Test
+    fun productionJavaSourcesCannotBypassKotlinBoundaryGates() {
+        val javaSourceDir = Path.of("src", "main", "java")
+        if (!Files.exists(javaSourceDir)) return
+
+        val stream = Files.walk(javaSourceDir)
+        val sources = try {
+            stream
+                .filter {
+                    Files.isRegularFile(it) &&
+                        (it.fileName.toString().endsWith(".java") ||
+                            it.fileName.toString().endsWith(".kt"))
+                }
+                .collect(Collectors.toList())
+        } finally {
+            stream.close()
+        }
+        assertTrue(
+            "Production Java sources require equivalent privacy-boundary scanning: " +
+                sources.joinToString { javaSourceDir.relativize(it).toString() },
+            sources.isEmpty(),
         )
     }
 
