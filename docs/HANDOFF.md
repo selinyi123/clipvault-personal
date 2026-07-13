@@ -253,16 +253,21 @@
   GitHub, edit checklist
   rows, sign artifacts, publish a Release, or close Issue #36, and the rendered
   report explicitly does not replace signed-artifact/final-release evidence.
-- `tools/release_artifact_evidence.py` is a local Issue #36 release-artifact
-  evidence helper for Owner-downloaded artifacts. It validates the Windows and
-  Android release artifact directories with `RELEASE_MANIFEST.json`,
-  `SHA256SUMS.txt`, required release artifact names, and Android
-  `ANDROID_APKSIGNER_VERIFY.txt` shape, then renders a Markdown issue comment
-  draft. It does not download artifacts, call GitHub, trigger workflows, sign
-  APKs, publish a Release, run manual QA, or close Issue #36; a green workflow
-  run still is not artifact-content proof until downloaded bytes are checked.
-  The green workflow run still is not artifact-content proof for the bytes an
-  Owner will cite or attach.
+- `tools/release_artifact_evidence.py` retains its compatible local structural
+  precheck and adds an explicit fail-closed `--require-live-final-draft` mode.
+  Strict mode reads GitHub state without mutating it, binds current `main` to the
+  exact successful `draft=true` run/attempt, verifies all eight downloaded files
+  with strong attestation identity flags and certificate `runInvocationURI`,
+  compares Actions bytes with authenticated draft Release API digests/local
+  bytes, cross-checks the live `release` environment certificate variable, and
+  independently verifies the draft APK with an explicit trusted
+  `apksigner.jar` plus Java against the Owner certificate. The generated Owner
+  flow also pins a clean exact-target checkout. Git, GitHub CLI, Python, Java,
+  and signer paths are explicit, absolute, non-batch, and outside the workspace.
+  It emits a path-free machine snapshot and an Issue comment with a canonical binding digest.
+  The snapshot is not self-authenticating; readiness must rerun
+  or independently live-cross-check it. It does not download
+  artifacts, trigger workflows, publish, run manual QA, or close Issue #36.
 - `test_webui_security.py` now runs `node --check` when Node is available so the
   packaged Web UI cannot regress to syntactically invalid JavaScript unnoticed.
 - `test_webui_security.py` now also guards the local Web UI against additional

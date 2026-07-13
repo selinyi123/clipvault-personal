@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import os
+import py_compile
+import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -24,6 +28,34 @@ def _read_bytes(output_dir: Path) -> dict[str, bytes]:
         name: (output_dir / name).read_bytes()
         for name in owner_pack.EXPECTED_OUTPUT_FILES
     }
+
+
+def test_local_module_loader_ignores_unchecked_hash_bytecode_cache(
+    tmp_path: Path,
+    monkeypatch,
+):
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir()
+    trusted_source = tools_dir / "trusted_helper.py"
+    trusted_source.write_text("VALUE = 'trusted-source'\n", encoding="utf-8")
+    cache_path = Path(importlib.util.cache_from_source(str(trusted_source)))
+    cache_path.parent.mkdir()
+    attacker_source = tmp_path / "attacker.py"
+    attacker_source.write_text("VALUE = 'ignored-bytecode'\n", encoding="utf-8")
+    py_compile.compile(
+        str(attacker_source),
+        cfile=str(cache_path),
+        doraise=True,
+        invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+    )
+    monkeypatch.setattr(owner_pack, "ROOT", tmp_path)
+
+    module = owner_pack._load_local_module(
+        "owner_pack_no_bytecode_test",
+        "tools/trusted_helper.py",
+    )
+
+    assert module.VALUE == "trusted-source"
 
 
 def test_manual_template_reuses_canonical_schema_v2_contract():
@@ -54,6 +86,14 @@ def test_artifact_worksheet_is_scoped_and_never_claims_validation():
     assert "BLOCKED_UNTIL_ANDROID_RELEASE_CERT_SHA256" in (
         worksheet["android"]["owner_certificate_identity"]
     )
+    assert "OWNER_APPROVED_64_HEX_BINDING" in (
+        worksheet["owner_approved_artifact_binding_sha256"]
+    )
+    assert "GH_EXE_PATH" in worksheet["gh_cli_path"]
+    assert "GIT_EXE_PATH" in worksheet["git_exe_path"]
+    assert "PYTHON_EXE_PATH" in worksheet["python_exe_path"]
+    assert "APKSIGNER_JAR" in worksheet["apksigner_jar_path"]
+    assert "JAVA_EXE_PATH" in worksheet["java_exe_path"]
     assert "does not prove" in worksheet["notes"]
 
 
@@ -71,31 +111,139 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "app-debug.apk" in guide
     assert "app-debug-androidTest.apk" in guide
     assert "ClipVault-Android-v1.6.0-release-signed.apk" in guide
-    assert "python tools/release_artifact_evidence.py" in guide
+    assert "& $pythonPath -I -S $evidenceTool" in guide
     assert "--expected-android-cert-sha256 $env:ANDROID_RELEASE_CERT_SHA256" in guide
+    assert "--require-live-final-draft" in guide
+    assert '--draft-release-dir "$releaseRoot"' in guide
+    assert "GH_CLI_PATH" in guide
+    assert "GIT_EXE_PATH" in guide
+    assert "PYTHON_EXE_PATH" in guide
+    assert "Resolve-TrustedExecutablePath" in guide
+    assert guide.count("rev-parse --show-toplevel") == 4
+    assert guide.count("Run every Owner release step from the repository root") == 4
+    assert "Join-Path $repoRoot \"tools/release_artifact_evidence.py\"" in guide
+    assert "& $ghPath run view" in guide
+    assert "& $ghPath release edit" not in guide
+    assert '--gh "$ghPath"' in guide
+    assert '--apksigner "$apksignerPath"' in guide
+    assert '--java "$javaPath"' in guide
+    assert guide.count('Assert-NoReparsePathComponent $apksignerItem') == 2
+    assert guide.count('Assert-NoReparsePathComponent $javaItem') == 2
+    assert "apksigner.bat" not in guide
+    assert "final-draft-artifact-evidence.json" in guide
+    assert "final-draft-artifact-comment.md" in guide
+    assert "all eight per-file" in guide
     assert "-cnotmatch '^[0-9a-f]{64}$'" in guide
-    assert "python tools/manual_qa_evidence.py" in guide
+    assert "& $pythonPath -I -S $manualQaTool" in guide
+    assert "manual QA validation failed or remains blocked" in guide
+    assert guide.count('$ErrorActionPreference = "Stop"') >= 4
+    assert guide.count("Set-StrictMode -Version Latest") == 4
+    assert guide.count("function Test-FullyQualifiedWindowsPath") == 4
+    assert "IsPathFullyQualified" not in guide
+    assert guide.count("function Reset-ReleaseGitEnvironment") == 4
+    assert guide.count('$env:GIT_NO_REPLACE_OBJECTS = "1"') == 4
+    assert guide.count("function Assert-NoReparsePathComponent") == 4
+    assert guide.count("$cursor = $cursor.Directory") == 4
+    assert guide.count("Assert-NoReparsePathComponent $gitItem") == 4
+    assert guide.count("function Assert-TrackedSourceMatchesCommit") == 3
+    assert guide.count("hash-object --no-filters --") == 3
+    assert guide.count("Remove-Item Env:GH_FORCE_TTY") == 3
+    assert guide.count('$env:GH_PROMPT_DISABLED = "1"') == 3
+    assert "fetch origin main" not in guide
+    assert '"repos/selinyi123/clipvault-personal/branches/main"' in guide
+    assert guide.count(
+        'Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"'
+    ) == 4
+    assert guide.count(
+        'Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"'
+    ) == 4
+    assert guide.count(
+        'Assert-TrackedSourceMatchesCommit "tools/manual_qa_evidence.py"'
+    ) == 2
+    assert "Manual QA validator must run from the exact clean frozen target" in guide
+    assert "Manual QA validator checkout changed during validation" in guide
     assert "PASS (OWNER-ATTESTED)" in guide
     assert "Do not manually flip" in guide
     assert "v1.6.0-draft-run-$runId" in guide
     assert "Refusing stale evidence directory" in guide
     assert "Assert-NativeSuccess" in guide
     assert "Release artifacts v1.6.0 from main draft=true" in guide
-    assert "gh release download v1.6.0" in guide
+    assert "& $ghPath release download v1.6.0" in guide
     assert "Assert-SameSha" in guide
     assert "draft-release-SHA256SUMS.txt" in guide
     assert "Windows observations are Owner-attested" in guide
     assert "Refusing stale prepublish directory" in guide
     assert "Draft assets changed after QA" in guide
+    assert "prepublish-live-artifact-evidence.json" in guide
+    assert "fresh pre-publication evidence verification failed" in guide
+    assert "REPLACE_WITH_OWNER_APPROVED_64_HEX_BINDING" in guide
+    assert "local evidence JSON is not the approval source" in guide
+    assert "$freshEvidence.artifact_binding_sha256 -cne $ownerApprovedBinding" in guide
+    assert "--owner-approved-binding $ownerApprovedBinding" in guide
+    assert "--publication-projection-stdout" in guide
+    assert "$freshProjectionJson = & $pythonPath" in guide
+    assert "$freshEvidence = $freshProjectionJson | ConvertFrom-Json" in guide
+    assert "Get-Content -LiteralPath $prepublishEvidence -Raw" not in guide
+    assert "& $ghPath api -X GET" in guide
+    assert "Current main moved after QA; do not publish" in guide
+    assert "Publication tools must run from the exact clean frozen target" in guide
+    assert "Release verifier checkout changed after QA; do not publish" in guide
     assert '$release.targetCommitish -ne $targetCommit' in guide
-    assert "gh release edit v1.6.0" in guide
+    assert 'api -X PATCH --hostname github.com $releaseEndpoint -F draft=false' in guide
+    assert '$releaseId = [long]$freshEvidence.draft_release.id' in guide
+    assert "Current main moved immediately before publication; do not publish" in guide
+    assert "function Resolve-ExactReleaseTagCommit" in guide
+    assert "Release tag changed after Owner approval; do not publish" in guide
+    assert "Published release tag does not resolve to the frozen target" in guide
+    assert "exact draft Release changed after fresh verification" in guide
+    assert "Assert-ReleaseAssetsMatchEvidence" in guide
+    assert "asset API identity/size/digest mismatch" in guide
     assert "v1.6.0-postpublish-$runId" in guide
-    assert "$published.isDraft" in guide
+    assert "$published.draft" in guide
     assert "Published Release metadata mismatch" in guide
-    assert "Published assets differ from the approved digest set" in guide
+    assert "Published asset bytes differ from the Owner-approved binding" in guide
     assert "Closure recommendation: `BLOCKED`" in draft
     assert guide.isascii()
     assert draft.isascii()
+
+
+def test_generated_absolute_path_helper_runs_on_windows_powershell_5_1():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell 5.1 is unavailable")
+    guide = owner_pack.owner_action_pack(
+        owner_pack.VERSION,
+        owner_pack.ISSUE_URL,
+        generated_at="2026-07-13T00:00:00Z",
+    )
+    match = re.search(
+        r"(?ms)^function Test-FullyQualifiedWindowsPath\(.*?^\}\r?$",
+        guide,
+    )
+    assert match is not None
+    script = "\n".join([
+        '$ErrorActionPreference = "Stop"',
+        "Set-StrictMode -Version Latest",
+        match.group(0),
+        "if (-not (Test-FullyQualifiedWindowsPath 'C:\\trusted\\tool.exe')) { throw 'drive path rejected' }",
+        "if (Test-FullyQualifiedWindowsPath '\\\\server\\share\\tool.exe') { throw 'UNC path accepted' }",
+        "if (Test-FullyQualifiedWindowsPath '\\\\?\\C:\\trusted\\tool.exe') { throw 'device path accepted' }",
+        "if (Test-FullyQualifiedWindowsPath '\\\\.\\C:\\trusted\\tool.exe') { throw 'device alias accepted' }",
+        "if (Test-FullyQualifiedWindowsPath 'C:relative.exe') { throw 'drive-relative path accepted' }",
+        "if (Test-FullyQualifiedWindowsPath '\\root-relative.exe') { throw 'root-relative path accepted' }",
+        "if (Test-FullyQualifiedWindowsPath '.\\relative.exe') { throw 'relative path accepted' }",
+    ])
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_new_pack_contains_only_the_fixed_known_file_set(tmp_path):

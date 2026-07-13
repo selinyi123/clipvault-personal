@@ -9,13 +9,13 @@ artifacts, publish v1.6.0, or close Issue #36.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import shutil
 import stat
 import sys
 import tempfile
+import types
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -42,13 +42,29 @@ EXPECTED_OUTPUT_FILES = (
 
 
 def _load_local_module(name: str, relative_path: str):
-    path = ROOT / relative_path
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"could not load {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    """Load trusted repository source without consulting ignored bytecode caches."""
+
+    candidate = ROOT / relative_path
+    if candidate.is_symlink():
+        raise RuntimeError(f"trusted source must not be a symlink: {candidate}")
+    path = candidate.resolve(strict=True)
+    if not path.is_file():
+        raise RuntimeError(f"trusted source must be a regular file: {path}")
+    module = types.ModuleType(name)
+    module.__file__ = str(path)
+    module.__package__ = ""
+    module.__cached__ = None
+    previous = sys.modules.get(name)
+    sys.modules[name] = module
+    try:
+        code = compile(path.read_bytes(), str(path), "exec", dont_inherit=True)
+        exec(code, module.__dict__)
+    except BaseException:
+        if previous is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
+        raise
     return module
 
 
@@ -90,6 +106,13 @@ def artifact_template(version: str) -> dict[str, Any]:
         "target_commit": "REPLACE_WITH_40_HEX_MAIN_COMMIT",
         "release_workflow_run_url": "REPLACE_WITH_EXACT_DRAFT_TRUE_RUN_URL",
         "draft_release_url": "REPLACE_WITH_DRAFT_RELEASE_URL",
+        "owner_approved_artifact_binding_sha256": "REPLACE_WITH_OWNER_APPROVED_64_HEX_BINDING",
+        "draft_release_directory": "REPLACE_WITH_DOWNLOADED_DRAFT_RELEASE_DIRECTORY",
+        "git_exe_path": "REPLACE_WITH_ABSOLUTE_TRUSTED_GIT_EXE_PATH_OUTSIDE_WORKSPACE",
+        "gh_cli_path": "REPLACE_WITH_ABSOLUTE_TRUSTED_GH_EXE_PATH_OUTSIDE_WORKSPACE",
+        "python_exe_path": "REPLACE_WITH_ABSOLUTE_TRUSTED_PYTHON_EXE_PATH_OUTSIDE_WORKSPACE",
+        "apksigner_jar_path": "REPLACE_WITH_ANDROID_SDK_BUILD_TOOLS_LIB_APKSIGNER_JAR",
+        "java_exe_path": "REPLACE_WITH_ABSOLUTE_TRUSTED_JAVA_EXE_PATH",
         "windows": {
             "directory": "REPLACE_WITH_DOWNLOADED_WINDOWS_ARTIFACT_DIRECTORY",
             "expected_assets": [
@@ -148,9 +171,112 @@ A generic `apksigner --print-certs` text file is not proof by itself.
 ### Step A - freeze one clean current-main target
 
 ```powershell
-git fetch origin main
-git status --short
-$targetCommit = git rev-parse origin/main
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+Remove-Item Env:GH_FORCE_TTY -ErrorAction SilentlyContinue
+$env:GH_PAGER = ""
+$env:PAGER = ""
+$env:GH_PROMPT_DISABLED = "1"
+$env:NO_COLOR = "1"
+function Reset-ReleaseGitEnvironment() {{
+  @(
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_NAMESPACE", "GIT_SHALLOW_FILE",
+    "GIT_QUARANTINE_PATH", "GIT_REPLACE_REF_BASE", "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL",
+    "GIT_EXEC_PATH", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS"
+  ) | ForEach-Object {{ Remove-Item "Env:$_" -ErrorAction SilentlyContinue }}
+  Get-ChildItem Env: | Where-Object {{
+    $_.Name -match '^GIT_CONFIG_(KEY|VALUE)_[0-9]+$'
+  }} | ForEach-Object {{ Remove-Item "Env:$($_.Name)" -ErrorAction SilentlyContinue }}
+  $env:GIT_NO_REPLACE_OBJECTS = "1"
+  $env:GIT_TERMINAL_PROMPT = "0"
+}}
+Reset-ReleaseGitEnvironment
+function Test-FullyQualifiedWindowsPath([string]$path) {{
+  if ([string]::IsNullOrWhiteSpace($path) -or -not [IO.Path]::IsPathRooted($path)) {{
+    return $false
+  }}
+  $root = [IO.Path]::GetPathRoot($path)
+  $driveRoot = ($root.Length -eq 3 -and $root[1] -eq ':' -and
+    ($root[2] -eq [char]92 -or $root[2] -eq [char]47))
+  if (-not $driveRoot) {{
+    return $false
+  }}
+  try {{
+    $drive = [IO.DriveInfo]::new($root.Substring(0, 1))
+    if ($drive.DriveType -ne [IO.DriveType]::Fixed) {{ return $false }}
+    [void][IO.Path]::GetFullPath($path)
+  }} catch {{ return $false }}
+  return $true
+}}
+$workingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\', '/')
+$separator = [IO.Path]::DirectorySeparatorChar
+function Assert-NoReparsePathComponent([IO.FileSystemInfo]$item, [string]$label) {{
+  $cursor = $item
+  while ($null -ne $cursor) {{
+    if (($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {{
+      throw "$label must not traverse a symlink, junction, or other reparse point"
+    }}
+    if ($cursor -is [IO.FileInfo]) {{
+      $cursor = $cursor.Directory
+    }} else {{
+      $cursor = $cursor.Parent
+    }}
+  }}
+}}
+if ([string]::IsNullOrWhiteSpace($env:GIT_EXE_PATH) -or
+    -not (Test-FullyQualifiedWindowsPath $env:GIT_EXE_PATH)) {{
+  throw "GIT_EXE_PATH must be an absolute trusted executable path"
+}}
+$gitItem = Get-Item -LiteralPath $env:GIT_EXE_PATH -Force -ErrorAction Stop
+Assert-NoReparsePathComponent $gitItem "GIT_EXE_PATH"
+$gitPath = $gitItem.FullName
+if (-not (Test-FullyQualifiedWindowsPath $gitPath) -or
+    $gitItem.PSIsContainer -or
+    (($gitItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+    [IO.Path]::GetExtension($gitPath).ToLowerInvariant() -ne ".exe") {{
+  throw "GIT_EXE_PATH must resolve to a trusted absolute non-reparse .exe"
+}}
+$repoRoot = (& $gitPath -C $workingDirectory rev-parse --show-toplevel).Trim()
+if ($LASTEXITCODE -ne 0) {{ throw "repository root lookup failed" }}
+$repoRoot = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\', '/')
+if (-not $workingDirectory.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase)) {{
+  throw "Run every Owner release step from the repository root"
+}}
+if ($gitPath.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    $gitPath.StartsWith("$repoRoot$separator", [StringComparison]::OrdinalIgnoreCase)) {{
+  throw "GIT_EXE_PATH must resolve outside the repository workspace"
+}}
+if ([string]::IsNullOrWhiteSpace($env:GH_CLI_PATH) -or
+    -not (Test-FullyQualifiedWindowsPath $env:GH_CLI_PATH)) {{
+  throw "GH_CLI_PATH must be an absolute trusted executable path"
+}}
+$ghItem = Get-Item -LiteralPath $env:GH_CLI_PATH -Force -ErrorAction Stop
+Assert-NoReparsePathComponent $ghItem "GH_CLI_PATH"
+$ghPath = $ghItem.FullName
+if ($ghItem.PSIsContainer -or
+    [IO.Path]::GetExtension($ghPath).ToLowerInvariant() -ne ".exe" -or
+    $ghPath.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    $ghPath.StartsWith("$repoRoot$separator", [StringComparison]::OrdinalIgnoreCase)) {{
+  throw "GH_CLI_PATH must be a trusted non-reparse .exe outside the workspace"
+}}
+$targetCommit = & $ghPath api -X GET `
+  --hostname github.com `
+  "repos/selinyi123/clipvault-personal/branches/main" `
+  --jq .commit.sha
+if ($LASTEXITCODE -ne 0) {{ throw "current main lookup failed" }}
+$targetCommit = $targetCommit.Trim()
+if ($targetCommit -cnotmatch '^[0-9a-f]{{40}}$') {{ throw "current main SHA is invalid" }}
+$status = @(& $gitPath -C $repoRoot -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0) {{ throw "git status failed" }}
+if ($status.Count -ne 0) {{ throw "Worktree must be clean, including untracked files" }}
+$localCommit = (& $gitPath -C $repoRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) {{ throw "local HEAD lookup failed" }}
+if ($localCommit -ne $targetCommit) {{
+  throw "Run the release tools only from the exact clean current-main commit"
+}}
 ```
 
 Stop if the worktree is not clean. Record current-main CI and release-candidate
@@ -210,15 +336,144 @@ stop after every failed native command:
 
 ```powershell
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+function Reset-ReleaseGitEnvironment() {{
+  @(
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_NAMESPACE", "GIT_SHALLOW_FILE",
+    "GIT_QUARANTINE_PATH", "GIT_REPLACE_REF_BASE", "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL",
+    "GIT_EXEC_PATH", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS"
+  ) | ForEach-Object {{ Remove-Item "Env:$_" -ErrorAction SilentlyContinue }}
+  Get-ChildItem Env: | Where-Object {{
+    $_.Name -match '^GIT_CONFIG_(KEY|VALUE)_[0-9]+$'
+  }} | ForEach-Object {{ Remove-Item "Env:$($_.Name)" -ErrorAction SilentlyContinue }}
+  $env:GIT_NO_REPLACE_OBJECTS = "1"
+  $env:GIT_TERMINAL_PROMPT = "0"
+}}
+Reset-ReleaseGitEnvironment
+function Test-FullyQualifiedWindowsPath([string]$path) {{
+  if ([string]::IsNullOrWhiteSpace($path) -or -not [IO.Path]::IsPathRooted($path)) {{
+    return $false
+  }}
+  $root = [IO.Path]::GetPathRoot($path)
+  $driveRoot = ($root.Length -eq 3 -and $root[1] -eq ':' -and
+    ($root[2] -eq [char]92 -or $root[2] -eq [char]47))
+  if (-not $driveRoot) {{
+    return $false
+  }}
+  try {{
+    $drive = [IO.DriveInfo]::new($root.Substring(0, 1))
+    if ($drive.DriveType -ne [IO.DriveType]::Fixed) {{ return $false }}
+    [void][IO.Path]::GetFullPath($path)
+  }} catch {{ return $false }}
+  return $true
+}}
+Remove-Item Env:GH_FORCE_TTY -ErrorAction SilentlyContinue
+$env:GH_PAGER = ""
+$env:PAGER = ""
+$env:GH_PROMPT_DISABLED = "1"
+$env:NO_COLOR = "1"
 function Assert-NativeSuccess([string]$label) {{
   if ($LASTEXITCODE -ne 0) {{ throw "$label failed with exit code $LASTEXITCODE" }}
 }}
+$workingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\', '/')
+$separator = [IO.Path]::DirectorySeparatorChar
+function Assert-NoReparsePathComponent([IO.FileSystemInfo]$item, [string]$label) {{
+  $cursor = $item
+  while ($null -ne $cursor) {{
+    if (($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {{
+      throw "$label must not traverse a symlink, junction, or other reparse point"
+    }}
+    if ($cursor -is [IO.FileInfo]) {{
+      $cursor = $cursor.Directory
+    }} else {{
+      $cursor = $cursor.Parent
+    }}
+  }}
+}}
+if ([string]::IsNullOrWhiteSpace($env:GIT_EXE_PATH) -or
+    -not (Test-FullyQualifiedWindowsPath $env:GIT_EXE_PATH)) {{
+  throw "GIT_EXE_PATH must be an absolute trusted executable path"
+}}
+$gitItem = Get-Item -LiteralPath $env:GIT_EXE_PATH -Force -ErrorAction Stop
+Assert-NoReparsePathComponent $gitItem "GIT_EXE_PATH"
+$gitPath = $gitItem.FullName
+if (-not (Test-FullyQualifiedWindowsPath $gitPath) -or
+    $gitItem.PSIsContainer -or
+    (($gitItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+    [IO.Path]::GetExtension($gitPath).ToLowerInvariant() -ne ".exe") {{
+  throw "GIT_EXE_PATH must resolve to a trusted absolute non-reparse .exe"
+}}
+$repoRoot = (& $gitPath -C $workingDirectory rev-parse --show-toplevel).Trim()
+Assert-NativeSuccess "repository root lookup"
+$repoRoot = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\', '/')
+if (-not $workingDirectory.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase)) {{
+  throw "Run every Owner release step from the repository root"
+}}
+if ($gitPath.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    $gitPath.StartsWith("$repoRoot$separator", [StringComparison]::OrdinalIgnoreCase)) {{
+  throw "GIT_EXE_PATH must resolve outside the repository workspace"
+}}
+function Resolve-TrustedExecutablePath([string]$environmentName) {{
+  $raw = [Environment]::GetEnvironmentVariable($environmentName)
+  if ([string]::IsNullOrWhiteSpace($raw)) {{
+    throw "Set $environmentName to an absolute trusted executable outside the repository workspace"
+  }}
+  if (-not (Test-FullyQualifiedWindowsPath $raw)) {{
+    throw "$environmentName must be an absolute trusted executable path"
+  }}
+  $item = Get-Item -LiteralPath $raw -Force -ErrorAction Stop
+  Assert-NoReparsePathComponent $item $environmentName
+  $resolved = $item.FullName
+  $extension = [IO.Path]::GetExtension($resolved).ToLowerInvariant()
+  if (-not (Test-FullyQualifiedWindowsPath $resolved) -or
+      $item.PSIsContainer -or
+      (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+      $extension -ne ".exe") {{
+    throw "$environmentName must resolve to a real absolute non-reparse .exe file"
+  }}
+  if ($resolved.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or
+      $resolved.StartsWith("$repoRoot$separator", [StringComparison]::OrdinalIgnoreCase)) {{
+    throw "$environmentName must not resolve inside the repository workspace"
+  }}
+  return $resolved
+}}
+$ghPath = Resolve-TrustedExecutablePath "GH_CLI_PATH"
+$pythonPath = Resolve-TrustedExecutablePath "PYTHON_EXE_PATH"
+$evidenceTool = Join-Path $repoRoot "tools/release_artifact_evidence.py"
 
+$targetCommit = "REPLACE_WITH_FROZEN_40_HEX_MAIN_COMMIT"
+$localCommit = (& $gitPath -C $repoRoot rev-parse HEAD).Trim()
+Assert-NativeSuccess "local HEAD lookup"
+$status = @(& $gitPath -C $repoRoot -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all)
+Assert-NativeSuccess "git status"
+if ($localCommit -ne $targetCommit -or $status.Count -ne 0) {{
+  throw "Artifact verifier must run from the exact clean frozen target"
+}}
+function Assert-TrackedSourceMatchesCommit([string]$relativePath) {{
+  $sourceItem = Get-Item -LiteralPath (Join-Path $repoRoot $relativePath) -Force -ErrorAction Stop
+  if ($sourceItem.PSIsContainer -or
+      (($sourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {{
+    throw "Tracked release source must be a regular non-reparse file: $relativePath"
+  }}
+  $objectSpec = $targetCommit + ":" + $relativePath
+  $expectedBlob = (& $gitPath -C $repoRoot rev-parse $objectSpec).Trim()
+  Assert-NativeSuccess "target blob lookup for $relativePath"
+  $actualBlob = (& $gitPath -C $repoRoot hash-object --no-filters -- $sourceItem.FullName).Trim()
+  Assert-NativeSuccess "worktree blob lookup for $relativePath"
+  if ($expectedBlob -cnotmatch '^[0-9a-f]{{40}}$' -or $actualBlob -cne $expectedBlob) {{
+    throw "Tracked release source differs from the frozen target: $relativePath"
+  }}
+}}
+Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"
+Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
 $runId = "REPLACE_WITH_DRAFT_TRUE_RUN_ID"
 $artifactRoot = ".field-test-artifacts/v1.6.0-draft-run-$runId"
 if (Test-Path $artifactRoot) {{ throw "Refusing stale evidence directory: $artifactRoot" }}
 
-$run = gh run view $runId `
+$run = & $ghPath run view $runId `
   --repo selinyi123/clipvault-personal `
   --json displayTitle,event,headBranch,headSha,conclusion,url | ConvertFrom-Json
 Assert-NativeSuccess "gh run view"
@@ -231,14 +486,14 @@ if ($run.displayTitle -ne "Release artifacts {version} from main draft=true" -or
 $actionsRoot = "$artifactRoot/actions"
 $releaseRoot = "$artifactRoot/draft-release"
 New-Item -ItemType Directory -Path $actionsRoot,$releaseRoot | Out-Null
-gh run download $runId `
+& $ghPath run download $runId `
   --repo selinyi123/clipvault-personal `
   --name clipvault-windows-release-artifacts `
   --name clipvault-android-signed-release-artifacts `
   --dir $actionsRoot
 Assert-NativeSuccess "gh run download"
 
-$release = gh release view {version} `
+$release = & $ghPath release view {version} `
   --repo selinyi123/clipvault-personal `
   --json tagName,name,isDraft,isPrerelease,targetCommitish,url,assets | ConvertFrom-Json
 Assert-NativeSuccess "gh release view"
@@ -265,7 +520,7 @@ if (@($release.assets | Where-Object size -LE 0).Count -ne 0) {{
   throw "Draft Release contains an empty asset"
 }}
 
-gh release download {version} `
+& $ghPath release download {version} `
   --repo selinyi123/clipvault-personal `
   --dir $releaseRoot
 Assert-NativeSuccess "gh release download"
@@ -292,23 +547,69 @@ Get-ChildItem $releaseRoot -File | Sort-Object Name | ForEach-Object {{
 if ($env:ANDROID_RELEASE_CERT_SHA256 -cnotmatch '^[0-9a-f]{{64}}$') {{
   throw "Set the independently confirmed 64-lowercase-hex ANDROID_RELEASE_CERT_SHA256 locally"
 }}
+if ([string]::IsNullOrWhiteSpace($env:APKSIGNER_JAR_PATH) -or
+    -not (Test-FullyQualifiedWindowsPath $env:APKSIGNER_JAR_PATH)) {{
+  throw "Set APKSIGNER_JAR_PATH to an absolute Android SDK lib/apksigner.jar path"
+}}
+$apksignerItem = Get-Item -LiteralPath $env:APKSIGNER_JAR_PATH -Force -ErrorAction Stop
+Assert-NoReparsePathComponent $apksignerItem "APKSIGNER_JAR_PATH"
+$apksignerPath = $apksignerItem.FullName
+if ($apksignerItem.PSIsContainer -or
+    [IO.Path]::GetExtension($apksignerPath).ToLowerInvariant() -ne ".jar" -or
+    $apksignerPath.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    $apksignerPath.StartsWith("$repoRoot$separator", [StringComparison]::OrdinalIgnoreCase)) {{
+  throw "APKSIGNER_JAR_PATH must be a trusted non-reparse .jar outside the workspace"
+}}
+if ([string]::IsNullOrWhiteSpace($env:JAVA_EXE_PATH) -or
+    -not (Test-FullyQualifiedWindowsPath $env:JAVA_EXE_PATH)) {{
+  throw "Set JAVA_EXE_PATH to an absolute trusted java.exe"
+}}
+$javaItem = Get-Item -LiteralPath $env:JAVA_EXE_PATH -Force -ErrorAction Stop
+Assert-NoReparsePathComponent $javaItem "JAVA_EXE_PATH"
+$javaPath = $javaItem.FullName
+if ($javaItem.PSIsContainer -or
+    [IO.Path]::GetExtension($javaPath).ToLowerInvariant() -ne ".exe" -or
+    $javaPath.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    $javaPath.StartsWith("$repoRoot$separator", [StringComparison]::OrdinalIgnoreCase)) {{
+  throw "JAVA_EXE_PATH must be a trusted non-reparse .exe outside the workspace"
+}}
 
-python tools/release_artifact_evidence.py `
+& $pythonPath -I -S $evidenceTool `
   --windows-dir "$actionsRoot/clipvault-windows-release-artifacts" `
   --android-dir "$actionsRoot/clipvault-android-signed-release-artifacts" `
+  --draft-release-dir "$releaseRoot" `
+  --gh "$ghPath" `
+  --apksigner "$apksignerPath" `
+  --java "$javaPath" `
   --version {version} `
   --commit $targetCommit `
   --run-url $run.url `
   --expected-android-cert-sha256 $env:ANDROID_RELEASE_CERT_SHA256 `
-  --output "$artifactRoot/artifact-structure-comment.md"
+  --require-live-final-draft `
+  --evidence-output "$artifactRoot/final-draft-artifact-evidence.json" `
+  --comment-output "$artifactRoot/final-draft-artifact-comment.md"
 Assert-NativeSuccess "release_artifact_evidence.py"
+$finalLocalCommit = (& $gitPath -C $repoRoot rev-parse HEAD).Trim()
+Assert-NativeSuccess "final local HEAD lookup"
+$finalStatus = @(& $gitPath -C $repoRoot -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all)
+Assert-NativeSuccess "final git status"
+if ($finalLocalCommit -ne $targetCommit -or $finalStatus.Count -ne 0) {{
+  throw "Artifact verifier checkout changed during evidence collection"
+}}
+Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"
+Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
 ```
 
 Use the APK and EXEs downloaded from `$releaseRoot` for final QA. The artifact
-helper binds captured signer evidence to the supplied Owner certificate, but it
-does not independently verify the run, attestations, or downloaded APK with real
-`apksigner`. Its output and the manual parity commands above remain Owner-attested
-prechecks; the artifact gate stays blocked.
+helper now fails unless it verifies current `main`, the exact successful
+`draft=true` run and attempt, both Actions bundles, all eight per-file
+attestations, the mutable draft Release metadata/API digests, exact Actions-to-
+draft bytes, and an independent real `apksigner` result against the Owner trust
+anchor. Its JSON is a non-self-authenticating machine snapshot: readiness must
+rerun the checks or independently cross-check the binding and live GitHub state.
+The helper checks the release-environment certificate variable at both ends of
+collection. It does not replace manual QA,
+Owner publication approval, final publication, or Issue #36 closure.
 
 ### Step F - execute manual QA against exact bytes
 
@@ -329,11 +630,136 @@ does not independently cross-check Windows artifact bytes.
 Render only through the fail-closed validator:
 
 ```powershell
-$packRoot = ".field-test-artifacts/v1.6.0-owner-pack"
-python tools/manual_qa_evidence.py --input "$packRoot/manual-qa-v1.6.0.template.json" --no-fail
-python tools/manual_qa_evidence.py `
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+function Reset-ReleaseGitEnvironment() {{
+  @(
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_NAMESPACE", "GIT_SHALLOW_FILE",
+    "GIT_QUARANTINE_PATH", "GIT_REPLACE_REF_BASE", "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL",
+    "GIT_EXEC_PATH", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS"
+  ) | ForEach-Object {{ Remove-Item "Env:$_" -ErrorAction SilentlyContinue }}
+  Get-ChildItem Env: | Where-Object {{
+    $_.Name -match '^GIT_CONFIG_(KEY|VALUE)_[0-9]+$'
+  }} | ForEach-Object {{ Remove-Item "Env:$($_.Name)" -ErrorAction SilentlyContinue }}
+  $env:GIT_NO_REPLACE_OBJECTS = "1"
+  $env:GIT_TERMINAL_PROMPT = "0"
+}}
+Reset-ReleaseGitEnvironment
+function Test-FullyQualifiedWindowsPath([string]$path) {{
+  if ([string]::IsNullOrWhiteSpace($path) -or -not [IO.Path]::IsPathRooted($path)) {{
+    return $false
+  }}
+  $root = [IO.Path]::GetPathRoot($path)
+  $driveRoot = ($root.Length -eq 3 -and $root[1] -eq ':' -and
+    ($root[2] -eq [char]92 -or $root[2] -eq [char]47))
+  if (-not $driveRoot) {{
+    return $false
+  }}
+  try {{
+    $drive = [IO.DriveInfo]::new($root.Substring(0, 1))
+    if ($drive.DriveType -ne [IO.DriveType]::Fixed) {{ return $false }}
+    [void][IO.Path]::GetFullPath($path)
+  }} catch {{ return $false }}
+  return $true
+}}
+$targetCommit = "REPLACE_WITH_FROZEN_40_HEX_MAIN_COMMIT"
+$workingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\', '/')
+$separator = [IO.Path]::DirectorySeparatorChar
+function Assert-NoReparsePathComponent([IO.FileSystemInfo]$item, [string]$label) {{
+  $cursor = $item
+  while ($null -ne $cursor) {{
+    if (($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {{
+      throw "$label must not traverse a symlink, junction, or other reparse point"
+    }}
+    if ($cursor -is [IO.FileInfo]) {{
+      $cursor = $cursor.Directory
+    }} else {{
+      $cursor = $cursor.Parent
+    }}
+  }}
+}}
+if ([string]::IsNullOrWhiteSpace($env:GIT_EXE_PATH) -or
+    -not (Test-FullyQualifiedWindowsPath $env:GIT_EXE_PATH)) {{
+  throw "GIT_EXE_PATH must be an absolute trusted executable path"
+}}
+$gitItem = Get-Item -LiteralPath $env:GIT_EXE_PATH -Force -ErrorAction Stop
+Assert-NoReparsePathComponent $gitItem "GIT_EXE_PATH"
+$gitPath = $gitItem.FullName
+if (-not (Test-FullyQualifiedWindowsPath $gitPath) -or
+    $gitItem.PSIsContainer -or
+    (($gitItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+    [IO.Path]::GetExtension($gitPath).ToLowerInvariant() -ne ".exe") {{
+  throw "GIT_EXE_PATH must resolve to a trusted absolute non-reparse .exe"
+}}
+$repoRoot = (& $gitPath -C $workingDirectory rev-parse --show-toplevel).Trim()
+if ($LASTEXITCODE -ne 0) {{ throw "repository root lookup failed" }}
+$repoRoot = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\', '/')
+if (-not $workingDirectory.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase)) {{
+  throw "Run every Owner release step from the repository root"
+}}
+if ($gitPath.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    $gitPath.StartsWith("$repoRoot$separator", [StringComparison]::OrdinalIgnoreCase)) {{
+  throw "GIT_EXE_PATH must resolve outside the repository workspace"
+}}
+if ([string]::IsNullOrWhiteSpace($env:PYTHON_EXE_PATH) -or
+    -not (Test-FullyQualifiedWindowsPath $env:PYTHON_EXE_PATH)) {{
+  throw "PYTHON_EXE_PATH must be an absolute trusted executable path"
+}}
+$pythonItem = Get-Item -LiteralPath $env:PYTHON_EXE_PATH -Force -ErrorAction Stop
+Assert-NoReparsePathComponent $pythonItem "PYTHON_EXE_PATH"
+$pythonPath = $pythonItem.FullName
+if (-not (Test-FullyQualifiedWindowsPath $pythonPath) -or
+    $pythonItem.PSIsContainer -or
+    (($pythonItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+    [IO.Path]::GetExtension($pythonPath).ToLowerInvariant() -ne ".exe" -or
+    $pythonPath.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    $pythonPath.StartsWith("$repoRoot$separator", [StringComparison]::OrdinalIgnoreCase)) {{
+  throw "PYTHON_EXE_PATH must resolve to a trusted absolute non-reparse .exe outside the workspace"
+}}
+$manualQaTool = Join-Path $repoRoot "tools/manual_qa_evidence.py"
+$packRoot = Join-Path $repoRoot ".field-test-artifacts/v1.6.0-owner-pack"
+$localCommit = (& $gitPath -C $repoRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) {{ throw "local HEAD lookup failed" }}
+$status = @(& $gitPath -C $repoRoot -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0) {{ throw "git status failed" }}
+if ($localCommit -ne $targetCommit -or $status.Count -ne 0) {{
+  throw "Manual QA validator must run from the exact clean frozen target"
+}}
+function Assert-TrackedSourceMatchesCommit([string]$relativePath) {{
+  $sourceItem = Get-Item -LiteralPath (Join-Path $repoRoot $relativePath) -Force -ErrorAction Stop
+  if ($sourceItem.PSIsContainer -or
+      (($sourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {{
+    throw "Tracked release source must be a regular non-reparse file: $relativePath"
+  }}
+  $objectSpec = $targetCommit + ":" + $relativePath
+  $expectedBlob = (& $gitPath -C $repoRoot rev-parse $objectSpec).Trim()
+  if ($LASTEXITCODE -ne 0) {{ throw "target blob lookup failed for $relativePath" }}
+  $actualBlob = (& $gitPath -C $repoRoot hash-object --no-filters -- $sourceItem.FullName).Trim()
+  if ($LASTEXITCODE -ne 0) {{ throw "worktree blob lookup failed for $relativePath" }}
+  if ($expectedBlob -cnotmatch '^[0-9a-f]{{40}}$' -or $actualBlob -cne $expectedBlob) {{
+    throw "Tracked release source differs from the frozen target: $relativePath"
+  }}
+}}
+Assert-TrackedSourceMatchesCommit "tools/manual_qa_evidence.py"
+& $pythonPath -I -S $manualQaTool `
+  --input "$packRoot/manual-qa-v1.6.0.template.json" `
+  --no-fail
+if ($LASTEXITCODE -ne 0) {{ throw "manual QA preview failed" }}
+& $pythonPath -I -S $manualQaTool `
   --input "$packRoot/manual-qa-v1.6.0.template.json" `
   --output "$packRoot/manual-qa-issue-comment.md"
+if ($LASTEXITCODE -ne 0) {{ throw "manual QA validation failed or remains blocked" }}
+$finalLocalCommit = (& $gitPath -C $repoRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) {{ throw "final local HEAD lookup failed" }}
+$finalStatus = @(& $gitPath -C $repoRoot -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0) {{ throw "final git status failed" }}
+if ($finalLocalCommit -ne $targetCommit -or $finalStatus.Count -ne 0) {{
+  throw "Manual QA validator checkout changed during validation"
+}}
+Assert-TrackedSourceMatchesCommit "tools/manual_qa_evidence.py"
 ```
 
 Only a validator-rendered `PASS (OWNER-ATTESTED)` report is eligible for review.
@@ -349,17 +775,178 @@ after every gate is bound to the same target commit and final asset digests.
 
 After an Owner approval statement binds the target commit, draft Release URL,
 and final digest set, re-download the still-mutable draft into another fresh
-directory and compare it with the recorded digest set:
+directory and compare it with the recorded digest set. Copy the 64-hex artifact
+binding from that already-posted Owner approval into `$ownerApprovedBinding`;
+the local evidence JSON is not the approval source:
 
 ```powershell
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+function Reset-ReleaseGitEnvironment() {{
+  @(
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_NAMESPACE", "GIT_SHALLOW_FILE",
+    "GIT_QUARANTINE_PATH", "GIT_REPLACE_REF_BASE", "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL",
+    "GIT_EXEC_PATH", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS"
+  ) | ForEach-Object {{ Remove-Item "Env:$_" -ErrorAction SilentlyContinue }}
+  Get-ChildItem Env: | Where-Object {{
+    $_.Name -match '^GIT_CONFIG_(KEY|VALUE)_[0-9]+$'
+  }} | ForEach-Object {{ Remove-Item "Env:$($_.Name)" -ErrorAction SilentlyContinue }}
+  $env:GIT_NO_REPLACE_OBJECTS = "1"
+  $env:GIT_TERMINAL_PROMPT = "0"
+}}
+Reset-ReleaseGitEnvironment
+function Test-FullyQualifiedWindowsPath([string]$path) {{
+  if ([string]::IsNullOrWhiteSpace($path) -or -not [IO.Path]::IsPathRooted($path)) {{
+    return $false
+  }}
+  $root = [IO.Path]::GetPathRoot($path)
+  $driveRoot = ($root.Length -eq 3 -and $root[1] -eq ':' -and
+    ($root[2] -eq [char]92 -or $root[2] -eq [char]47))
+  if (-not $driveRoot) {{
+    return $false
+  }}
+  try {{
+    $drive = [IO.DriveInfo]::new($root.Substring(0, 1))
+    if ($drive.DriveType -ne [IO.DriveType]::Fixed) {{ return $false }}
+    [void][IO.Path]::GetFullPath($path)
+  }} catch {{ return $false }}
+  return $true
+}}
+Remove-Item Env:GH_FORCE_TTY -ErrorAction SilentlyContinue
+$env:GH_PAGER = ""
+$env:PAGER = ""
+$env:GH_PROMPT_DISABLED = "1"
+$env:NO_COLOR = "1"
 $runId = "REPLACE_WITH_DRAFT_TRUE_RUN_ID"
 $targetCommit = "REPLACE_WITH_FROZEN_40_HEX_MAIN_COMMIT"
+$ownerApprovedBinding = "REPLACE_WITH_OWNER_APPROVED_64_HEX_BINDING"
+if ($ownerApprovedBinding -cnotmatch '^[0-9a-f]{{64}}$') {{
+  throw "Copy the exact 64-lowercase-hex binding from the Owner approval statement"
+}}
+$workingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\', '/')
+$separator = [IO.Path]::DirectorySeparatorChar
+function Assert-NoReparsePathComponent([IO.FileSystemInfo]$item, [string]$label) {{
+  $cursor = $item
+  while ($null -ne $cursor) {{
+    if (($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {{
+      throw "$label must not traverse a symlink, junction, or other reparse point"
+    }}
+    if ($cursor -is [IO.FileInfo]) {{
+      $cursor = $cursor.Directory
+    }} else {{
+      $cursor = $cursor.Parent
+    }}
+  }}
+}}
+if ([string]::IsNullOrWhiteSpace($env:GIT_EXE_PATH) -or
+    -not (Test-FullyQualifiedWindowsPath $env:GIT_EXE_PATH)) {{
+  throw "GIT_EXE_PATH must be an absolute trusted executable path"
+}}
+$gitItem = Get-Item -LiteralPath $env:GIT_EXE_PATH -Force -ErrorAction Stop
+Assert-NoReparsePathComponent $gitItem "GIT_EXE_PATH"
+$gitPath = $gitItem.FullName
+if (-not (Test-FullyQualifiedWindowsPath $gitPath) -or
+    $gitItem.PSIsContainer -or
+    (($gitItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+    [IO.Path]::GetExtension($gitPath).ToLowerInvariant() -ne ".exe") {{
+  throw "GIT_EXE_PATH must resolve to a trusted absolute non-reparse .exe"
+}}
+$repoRoot = (& $gitPath -C $workingDirectory rev-parse --show-toplevel).Trim()
+if ($LASTEXITCODE -ne 0) {{ throw "repository root lookup failed" }}
+$repoRoot = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\', '/')
+if (-not $workingDirectory.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase)) {{
+  throw "Run every Owner release step from the repository root"
+}}
+if ($gitPath.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    $gitPath.StartsWith("$repoRoot$separator", [StringComparison]::OrdinalIgnoreCase)) {{
+  throw "GIT_EXE_PATH must resolve outside the repository workspace"
+}}
+function Resolve-TrustedExecutablePath([string]$environmentName) {{
+  $raw = [Environment]::GetEnvironmentVariable($environmentName)
+  if ([string]::IsNullOrWhiteSpace($raw)) {{
+    throw "Set $environmentName to an absolute trusted executable outside the workspace"
+  }}
+  if (-not (Test-FullyQualifiedWindowsPath $raw)) {{
+    throw "$environmentName must be an absolute trusted executable path"
+  }}
+  $item = Get-Item -LiteralPath $raw -Force -ErrorAction Stop
+  Assert-NoReparsePathComponent $item $environmentName
+  $resolved = $item.FullName
+  if (-not (Test-FullyQualifiedWindowsPath $resolved) -or
+      $item.PSIsContainer -or
+      (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+      [IO.Path]::GetExtension($resolved).ToLowerInvariant() -ne ".exe" -or
+      $resolved.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or
+      $resolved.StartsWith("$repoRoot$separator", [StringComparison]::OrdinalIgnoreCase)) {{
+    throw "$environmentName must resolve to a trusted absolute non-reparse .exe outside the workspace"
+  }}
+  return $resolved
+}}
+$ghPath = Resolve-TrustedExecutablePath "GH_CLI_PATH"
+$pythonPath = Resolve-TrustedExecutablePath "PYTHON_EXE_PATH"
+$evidenceTool = Join-Path $repoRoot "tools/release_artifact_evidence.py"
+function Resolve-ExactReleaseTagCommit() {{
+  $records = & $ghPath api -X GET `
+    --hostname github.com `
+    "repos/selinyi123/clipvault-personal/git/matching-refs/tags/{version}" | ConvertFrom-Json
+  if ($LASTEXITCODE -ne 0) {{ throw "release tag ref lookup failed" }}
+  $matches = @($records | Where-Object {{ $_.ref -ceq "refs/tags/{version}" }})
+  if ($matches.Count -eq 0) {{ return $null }}
+  if ($matches.Count -ne 1) {{ throw "release tag lookup returned duplicate exact refs" }}
+  $tagObject = $matches[0].object
+  $seen = @{{}}
+  for ($depth = 0; $depth -lt 8; $depth++) {{
+    $objectType = [string]$tagObject.type
+    $objectSha = [string]$tagObject.sha
+    if ($objectSha -cnotmatch '^[0-9a-f]{{40}}$') {{
+      throw "release tag object has an invalid Git SHA"
+    }}
+    if ($objectType -ceq "commit") {{ return $objectSha }}
+    if ($objectType -cne "tag") {{ throw "release tag does not resolve to a commit" }}
+    if ($seen.ContainsKey($objectSha)) {{ throw "release tag contains an object cycle" }}
+    $seen[$objectSha] = $true
+    $tagRecord = & $ghPath api -X GET `
+      --hostname github.com `
+      "repos/selinyi123/clipvault-personal/git/tags/$objectSha" | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) {{ throw "annotated release tag lookup failed" }}
+    $tagObject = $tagRecord.object
+  }}
+  throw "release tag annotation chain is too deep"
+}}
+$localCommit = (& $gitPath -C $repoRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) {{ throw "local HEAD lookup failed" }}
+$status = @(& $gitPath -C $repoRoot -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0) {{ throw "git status failed" }}
+if ($localCommit -ne $targetCommit -or $status.Count -ne 0) {{
+  throw "Publication tools must run from the exact clean frozen target"
+}}
+function Assert-TrackedSourceMatchesCommit([string]$relativePath) {{
+  $sourceItem = Get-Item -LiteralPath (Join-Path $repoRoot $relativePath) -Force -ErrorAction Stop
+  if ($sourceItem.PSIsContainer -or
+      (($sourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {{
+    throw "Tracked release source must be a regular non-reparse file: $relativePath"
+  }}
+  $objectSpec = $targetCommit + ":" + $relativePath
+  $expectedBlob = (& $gitPath -C $repoRoot rev-parse $objectSpec).Trim()
+  if ($LASTEXITCODE -ne 0) {{ throw "target blob lookup failed for $relativePath" }}
+  $actualBlob = (& $gitPath -C $repoRoot hash-object --no-filters -- $sourceItem.FullName).Trim()
+  if ($LASTEXITCODE -ne 0) {{ throw "worktree blob lookup failed for $relativePath" }}
+  if ($expectedBlob -cnotmatch '^[0-9a-f]{{40}}$' -or $actualBlob -cne $expectedBlob) {{
+    throw "Tracked release source differs from the frozen target: $relativePath"
+  }}
+}}
+Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"
+Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
 $artifactRoot = ".field-test-artifacts/v1.6.0-draft-run-$runId"
+$actionsRoot = "$artifactRoot/actions"
 $digestReport = "$artifactRoot/draft-release-SHA256SUMS.txt"
 $prepublishRoot = ".field-test-artifacts/v1.6.0-prepublish-$runId"
 if (Test-Path $prepublishRoot) {{ throw "Refusing stale prepublish directory" }}
 New-Item -ItemType Directory -Path $prepublishRoot | Out-Null
-$release = gh release view {version} `
+$release = & $ghPath release view {version} `
   --repo selinyi123/clipvault-personal `
   --json tagName,name,isDraft,isPrerelease,targetCommitish,url,assets | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) {{ throw "gh release view failed" }}
@@ -369,7 +956,7 @@ if ($release.tagName -ne "{version}" -or
     $release.targetCommitish -ne $targetCommit) {{
   throw "Draft Release metadata changed after QA"
 }}
-gh release download {version} `
+& $ghPath release download {version} `
   --repo selinyi123/clipvault-personal `
   --dir $prepublishRoot
 if ($LASTEXITCODE -ne 0) {{ throw "gh release download failed" }}
@@ -380,50 +967,210 @@ if (@(Compare-Object @(Get-Content $digestReport) $prepublishDigests).Count -ne 
   throw "Draft assets changed after QA; discard approval and repeat verification"
 }}
 
-gh release edit {version} `
-  --repo selinyi123/clipvault-personal `
-  --draft=false
-if ($LASTEXITCODE -ne 0) {{ throw "GitHub Release publication failed" }}
-
-$published = gh release view {version} `
-  --repo selinyi123/clipvault-personal `
-  --json tagName,name,isDraft,isPrerelease,targetCommitish,url,assets | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0) {{ throw "post-publication gh release view failed" }}
-if ($published.tagName -ne "{version}" -or
-    $published.name -ne "ClipVault Personal {version}" -or
-    $published.isDraft -or $published.isPrerelease -or
-    $published.targetCommitish -ne $targetCommit) {{
-  throw "Published Release metadata mismatch"
+# The earlier evidence JSON is only a snapshot. Re-run the strict verifier against
+# the freshly downloaded draft immediately before the irreversible publication
+# action so current main, run identity, draft metadata/API digests, attestations,
+# bytes, and the Owner signer trust anchor are all checked again.
+if ($env:ANDROID_RELEASE_CERT_SHA256 -cnotmatch '^[0-9a-f]{{64}}$') {{
+  throw "Set the independently confirmed 64-lowercase-hex ANDROID_RELEASE_CERT_SHA256 locally"
 }}
+if ([string]::IsNullOrWhiteSpace($env:APKSIGNER_JAR_PATH) -or
+    -not (Test-FullyQualifiedWindowsPath $env:APKSIGNER_JAR_PATH)) {{
+  throw "Set APKSIGNER_JAR_PATH to an absolute Android SDK lib/apksigner.jar path"
+}}
+$apksignerItem = Get-Item -LiteralPath $env:APKSIGNER_JAR_PATH -Force -ErrorAction Stop
+Assert-NoReparsePathComponent $apksignerItem "APKSIGNER_JAR_PATH"
+$apksignerPath = $apksignerItem.FullName
+if ($apksignerItem.PSIsContainer -or
+    [IO.Path]::GetExtension($apksignerPath).ToLowerInvariant() -ne ".jar" -or
+    $apksignerPath.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    $apksignerPath.StartsWith("$repoRoot$separator", [StringComparison]::OrdinalIgnoreCase)) {{
+  throw "APKSIGNER_JAR_PATH must be a trusted non-reparse .jar outside the workspace"
+}}
+if ([string]::IsNullOrWhiteSpace($env:JAVA_EXE_PATH) -or
+    -not (Test-FullyQualifiedWindowsPath $env:JAVA_EXE_PATH)) {{
+  throw "Set JAVA_EXE_PATH to an absolute trusted java.exe"
+}}
+$javaItem = Get-Item -LiteralPath $env:JAVA_EXE_PATH -Force -ErrorAction Stop
+Assert-NoReparsePathComponent $javaItem "JAVA_EXE_PATH"
+$javaPath = $javaItem.FullName
+if ($javaItem.PSIsContainer -or
+    [IO.Path]::GetExtension($javaPath).ToLowerInvariant() -ne ".exe" -or
+    $javaPath.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    $javaPath.StartsWith("$repoRoot$separator", [StringComparison]::OrdinalIgnoreCase)) {{
+  throw "JAVA_EXE_PATH must be a trusted non-reparse .exe outside the workspace"
+}}
+$run = & $ghPath run view $runId `
+  --repo selinyi123/clipvault-personal `
+  --json displayTitle,event,headBranch,headSha,conclusion,url | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) {{ throw "pre-publication gh run view failed" }}
+if ($run.displayTitle -ne "Release artifacts {version} from main draft=true" -or
+    $run.event -ne "workflow_dispatch" -or $run.headBranch -ne "main" -or
+    $run.headSha -ne $targetCommit -or $run.conclusion -ne "success") {{
+  throw "Run identity changed after QA"
+}}
+$prepublishEvidence = "$artifactRoot/prepublish-live-artifact-evidence.json"
+$prepublishComment = "$artifactRoot/prepublish-live-artifact-comment.md"
+if ((Test-Path $prepublishEvidence) -or (Test-Path $prepublishComment)) {{
+  throw "Refusing stale pre-publication evidence outputs"
+}}
+$freshProjectionJson = & $pythonPath -I -S $evidenceTool `
+  --windows-dir "$actionsRoot/clipvault-windows-release-artifacts" `
+  --android-dir "$actionsRoot/clipvault-android-signed-release-artifacts" `
+  --draft-release-dir "$prepublishRoot" `
+  --gh "$ghPath" `
+  --apksigner "$apksignerPath" `
+  --java "$javaPath" `
+  --version {version} `
+  --commit $targetCommit `
+  --run-url $run.url `
+  --expected-android-cert-sha256 $env:ANDROID_RELEASE_CERT_SHA256 `
+  --require-live-final-draft `
+  --owner-approved-binding $ownerApprovedBinding `
+  --publication-projection-stdout `
+  --evidence-output $prepublishEvidence `
+  --comment-output $prepublishComment | Out-String
+if ($LASTEXITCODE -ne 0) {{ throw "fresh pre-publication evidence verification failed" }}
+if (-not (Test-Path -LiteralPath $prepublishEvidence -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $prepublishComment -PathType Leaf) -or
+    (Get-Item -LiteralPath $prepublishEvidence).Length -le 0 -or
+    (Get-Item -LiteralPath $prepublishComment).Length -le 0) {{
+  throw "fresh pre-publication evidence outputs are missing or empty"
+}}
+$freshEvidence = $freshProjectionJson | ConvertFrom-Json
+if ($freshEvidence.projection_status -ne "owner_approved_live_snapshot" -or
+    $freshEvidence.target_commit -ne $targetCommit -or
+    $freshEvidence.workflow_run.id -ne [long]$runId -or
+    $freshEvidence.workflow_run.url -ne $run.url -or
+    $freshEvidence.draft_release.is_draft -ne $true -or
+    $freshEvidence.release_tag.ref -cne "refs/tags/{version}" -or
+    @("absent", "present") -cnotcontains [string]$freshEvidence.release_tag.state -or
+    ($freshEvidence.release_tag.state -ceq "present" -and
+      $freshEvidence.release_tag.commit_sha -cne $targetCommit) -or
+    $freshEvidence.artifact_binding_sha256 -cne $ownerApprovedBinding -or
+    $freshEvidence.android_signer.expected_cert_sha256 -cne $env:ANDROID_RELEASE_CERT_SHA256) {{
+  throw "fresh evidence is not bound to the Owner-approved draft, run, bytes, and signer"
+}}
+
+$currentMain = & $ghPath api -X GET `
+  --hostname github.com `
+  "repos/selinyi123/clipvault-personal/branches/main" `
+  --jq .commit.sha
+if ($LASTEXITCODE -ne 0) {{ throw "current main lookup failed" }}
+if ($currentMain.Trim() -ne $targetCommit) {{
+  throw "Current main moved after QA; do not publish"
+}}
+$finalLocalCommit = (& $gitPath -C $repoRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) {{ throw "final local HEAD lookup failed" }}
+$finalStatus = @(& $gitPath -C $repoRoot -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0) {{ throw "final git status failed" }}
+if ($finalLocalCommit -ne $targetCommit -or $finalStatus.Count -ne 0) {{
+  throw "Release verifier checkout changed after QA; do not publish"
+}}
+Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"
+Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
+
+$releaseId = [long]$freshEvidence.draft_release.id
+$releaseEndpoint = "repos/selinyi123/clipvault-personal/releases/$releaseId"
 $approvedAssetNames = @(Get-Content $digestReport | ForEach-Object {{
   ($_ -split '\\s{{2,}}', 2)[1]
 }} | Sort-Object)
+function Assert-ReleaseAssetsMatchEvidence($releaseRecord, $evidenceRows, [string]$label) {{
+  if (@($releaseRecord.assets).Count -ne @($evidenceRows).Count) {{
+    throw "$label asset count mismatch"
+  }}
+  foreach ($row in @($evidenceRows)) {{
+    $matches = @($releaseRecord.assets | Where-Object name -CEQ $row.release_name)
+    $expectedDigest = "sha256:$($row.sha256)"
+    if ($matches.Count -ne 1 -or
+        [long]$matches[0].id -ne [long]$row.release_asset_id -or
+        [long]$matches[0].size -ne [long]$row.size_bytes -or
+        $matches[0].state -ne "uploaded" -or
+        $matches[0].digest -cne $expectedDigest) {{
+      throw "$label asset API identity/size/digest mismatch: $($row.release_name)"
+    }}
+  }}
+}}
+$liveDraft = & $ghPath api -X GET --hostname github.com $releaseEndpoint | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) {{ throw "exact draft Release lookup failed" }}
+$liveDraftAssetNames = @($liveDraft.assets | ForEach-Object name | Sort-Object)
+if ($liveDraft.id -ne $releaseId -or
+    $liveDraft.tag_name -ne "{version}" -or
+    $liveDraft.name -ne "ClipVault Personal {version}" -or
+    -not $liveDraft.draft -or $liveDraft.prerelease -or
+    $liveDraft.target_commitish -ne $targetCommit -or
+    @(Compare-Object $approvedAssetNames $liveDraftAssetNames).Count -ne 0 -or
+    @($liveDraft.assets | Where-Object size -LE 0).Count -ne 0) {{
+  throw "exact draft Release changed after fresh verification"
+}}
+Assert-ReleaseAssetsMatchEvidence $liveDraft $freshEvidence.artifacts "pre-publication"
+$immediateMain = & $ghPath api -X GET `
+  --hostname github.com `
+  "repos/selinyi123/clipvault-personal/branches/main" `
+  --jq .commit.sha
+if ($LASTEXITCODE -ne 0) {{ throw "immediate pre-publication main lookup failed" }}
+if ($immediateMain.Trim() -ne $targetCommit) {{
+  throw "Current main moved immediately before publication; do not publish"
+}}
+$immediateTagCommit = Resolve-ExactReleaseTagCommit
+if (($freshEvidence.release_tag.state -ceq "absent" -and $null -ne $immediateTagCommit) -or
+    ($freshEvidence.release_tag.state -ceq "present" -and
+      $immediateTagCommit -cne $targetCommit)) {{
+  throw "Release tag changed after Owner approval; do not publish"
+}}
+
+& $ghPath api -X PATCH --hostname github.com $releaseEndpoint -F draft=false | Out-Null
+if ($LASTEXITCODE -ne 0) {{ throw "GitHub Release publication failed" }}
+
+$published = & $ghPath api -X GET --hostname github.com $releaseEndpoint | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) {{ throw "post-publication exact Release lookup failed" }}
+if ($published.id -ne $releaseId -or
+    $published.tag_name -ne "{version}" -or
+    $published.name -ne "ClipVault Personal {version}" -or
+    $published.draft -or $published.prerelease -or
+    $published.target_commitish -ne $targetCommit) {{
+  throw "Published Release metadata mismatch"
+}}
+$publishedTagCommit = Resolve-ExactReleaseTagCommit
+if ($publishedTagCommit -cne $targetCommit) {{
+  throw "Published release tag does not resolve to the frozen target"
+}}
 $publishedAssetNames = @($published.assets | ForEach-Object name | Sort-Object)
 if (@(Compare-Object $approvedAssetNames $publishedAssetNames).Count -ne 0 -or
     @($published.assets | Where-Object size -LE 0).Count -ne 0) {{
   throw "Published Release asset inventory mismatch"
 }}
+Assert-ReleaseAssetsMatchEvidence $published $freshEvidence.artifacts "post-publication"
 
 $postpublishRoot = ".field-test-artifacts/v1.6.0-postpublish-$runId"
 if (Test-Path $postpublishRoot) {{ throw "Refusing stale post-publish directory" }}
 New-Item -ItemType Directory -Path $postpublishRoot | Out-Null
-gh release download {version} `
+& $ghPath release download {version} `
   --repo selinyi123/clipvault-personal `
   --dir $postpublishRoot
 if ($LASTEXITCODE -ne 0) {{ throw "post-publication gh release download failed" }}
-$publishedDigests = @(Get-ChildItem $postpublishRoot -File | Sort-Object Name | ForEach-Object {{
-  "{{0}}  {{1}}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(), $_.Name
-}})
-if (@(Compare-Object @(Get-Content $digestReport) $publishedDigests).Count -ne 0) {{
-  throw "Published assets differ from the approved digest set"
+$postFiles = @(Get-ChildItem $postpublishRoot -File)
+if ($postFiles.Count -ne @($freshEvidence.artifacts).Count) {{
+  throw "Published download asset count mismatch"
+}}
+foreach ($row in @($freshEvidence.artifacts)) {{
+  $path = Join-Path $postpublishRoot $row.release_name
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
+      (Get-Item -LiteralPath $path).Length -ne [long]$row.size_bytes -or
+      (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant() -cne $row.sha256) {{
+    throw "Published asset bytes differ from the Owner-approved binding: $($row.release_name)"
+  }}
 }}
 ```
 
-The `gh release edit` command is an Owner publication action and must run only
-after the bound approval described above. The commands then recheck the mutable
-Release metadata, inventory, sizes, and bytes after publication. Close Issue #36
-only after readiness independently reports no blocker; publication alone is not
-closure authorization.
+The exact-ID REST `PATCH` is an Owner publication action and must run only after
+the bound approval described above, while `main` and `refs/tags/{version}` are
+frozen and in an Owner-exclusive Release mutation window. GitHub does not make
+branch/tag movement, asset mutation, and draft publication one atomic operation,
+so the commands minimize that residual race and then recheck the same Release ID,
+resolved tag commit, metadata, inventory, sizes, and bytes after publication.
+Close Issue #36 only after readiness independently reports no blocker;
+publication alone is not closure authorization.
 
 ## 3. Hard blockers
 
