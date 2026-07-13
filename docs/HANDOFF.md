@@ -42,6 +42,7 @@
   duplicates inside the transaction, and commits the clip plus public outbox
   event atomically. API 26/27 IME switch-back falls back to the system picker;
   API 28+ keeps the direct previous-IME path.
+
 - Sync request and response budgets are symmetric with the 1 MiB normalized
   clip contract and worst-case JSON escaping. Oversized or corrupt Android
   outbox heads remain durable, enter a content-free local blocked state, skip
@@ -62,6 +63,29 @@
   logging, IME network work, a new dependency, a version bump, signed/final
   artifacts, manual QA evidence, a GitHub Release, or permission to close Issue
   #36. Owner-controlled device/signing/release evidence remains required.
+
+## Current development note - 2026-07-13 / R000 dedicated Obsidian worker
+
+- PR #98 merged as `d90419ca82fdd36ac61ab6b62729427dea449e33`.
+  Current-main [CI run 29216068489](https://github.com/selinyi123/clipvault-personal/actions/runs/29216068489)
+  and [release-candidate run 29216068493](https://github.com/selinyi123/clipvault-personal/actions/runs/29216068493)
+  both passed for that exact SHA, and Issue #36 records the unsigned candidate
+  artifact names. Every later stability merge still requires a fresh exact-SHA
+  evidence refresh before release.
+- Foreground clipboard capture, explicit release, and remote sync apply now stop
+  after atomically committing `obsidian_queue` intent. They issue only a
+  best-effort wake signal and never call the Vault writer on the watcher or API
+  thread.
+- `runtime/obsidian_worker.py` owns its SQLite connection and all Vault file IO.
+  It performs an immediate recovery sweep, reacts to wake signals, keeps a
+  periodic crash-recovery sweep, isolates per-round failures, and closes its
+  connection during shutdown. The durable queue, not the wake signal, remains
+  the source of truth.
+- The legacy synchronous `write_obsidian_or_queue()` entrypoint remains for
+  compatibility and direct maintenance tests. `--once` explicitly drains its
+  one queued write before exit; normal service operation is asynchronous.
+- This slice does not change schema, HTTP payloads, Secret Guard policy, version
+  metadata, Issue #36 state, or release authority.
 
 ## Current development note - 2026-07-04 / v1.6 release gate and v1.7 stability gates in progress
 

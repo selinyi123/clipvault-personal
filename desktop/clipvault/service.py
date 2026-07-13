@@ -7,6 +7,7 @@ id, hash prefix, length and type.
 import logging
 import sqlite3
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from clipvault.config import Config
@@ -33,11 +34,38 @@ def _utc_now() -> str:
 
 
 class ClipVaultService:
-    def __init__(self, conn: sqlite3.Connection, config: Config):
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        config: Config,
+        *,
+        obsidian_notify: Callable[[], None] | None = None,
+    ):
         self.conn = conn
         self.config = config
         self.clips = ClipsRepo(conn)
         self.obsidian_queue = ObsidianQueueRepo(conn)
+        self._obsidian_notify = obsidian_notify
+
+    def notify_obsidian_work(self) -> None:
+        """Best-effort wake after a durable Obsidian intent has committed."""
+
+        if self._obsidian_notify is None:
+            return
+        try:
+            self._obsidian_notify()
+        except Exception as exc:
+            # The queue is already durable. A notifier failure must not turn a
+            # successful capture/sync/release into a false failure.
+            log.error("obsidian worker notify failed err=%s", exc.__class__.__name__)
+
+    def dispatch_obsidian_work(self, clip) -> bool:
+        """Use the async runtime when configured, else preserve sync facade behavior."""
+
+        if self._obsidian_notify is None:
+            return self.write_obsidian_or_queue(clip)
+        self.notify_obsidian_work()
+        return False
 
     def handle_clipboard_text(self, text: str, source_app: str | None = None) -> pipeline.IngestOutcome:
         outcome = pipeline.ingest(
@@ -69,7 +97,7 @@ class ClipVaultService:
                 clip.id, clip.secret_level, ",".join(clip.secret_reasons),
             )
         if outcome.needs_obsidian:
-            self.write_obsidian_or_queue(clip)
+            self.dispatch_obsidian_work(clip)
         return outcome
 
     def _try_write_obsidian(self, clip) -> tuple[str | None, str | None]:
@@ -181,7 +209,7 @@ class ClipVaultService:
                 engine.emit_clip_new(self.conn, clip, now, commit=False)
         log.info("released id=%s (was quarantined)", clip.id)
         if not clip.deleted:
-            self.write_obsidian_or_queue(clip)
+            self.dispatch_obsidian_work(clip)
         return True
 
     def promote_clip(self, clip_id: str, kind: str | None = None):
@@ -250,3 +278,6 @@ class ClipVaultService:
 
     def obsidian_retry_stats(self) -> dict:
         return self.obsidian_queue.stats(_utc_now())
+
+    def has_ready_obsidian_work(self) -> bool:
+        return self.obsidian_queue.has_ready(_utc_now())

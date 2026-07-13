@@ -84,6 +84,25 @@ def test_duplicate_does_not_rewrite_obsidian(service, tmp_path):
     assert len(list((tmp_path / "vault").rglob("*.md"))) == 1
 
 
+def test_notifier_failure_does_not_rollback_durable_capture(conn, cfg):
+    def fail_notify():
+        raise RuntimeError("worker unavailable")
+
+    service = ClipVaultService(conn, cfg, obsidian_notify=fail_notify)
+    outcome = service.handle_clipboard_text("durable despite notifier failure")
+
+    assert outcome.status == "new"
+    assert service.clips.get(outcome.clip.id) is not None
+    assert conn.execute(
+        "SELECT 1 FROM backup_queue WHERE clip_id=?", (outcome.clip.id,)
+    ).fetchone() is not None
+    assert conn.execute(
+        "SELECT 1 FROM obsidian_queue WHERE clip_id=?", (outcome.clip.id,)
+    ).fetchone() is not None
+    assert conn.execute("SELECT COUNT(*) FROM sync_outbox").fetchone()[0] == 1
+    assert conn.in_transaction is False
+
+
 def test_release_rolls_back_public_state_when_outbox_emit_fails(service, conn, monkeypatch):
     from clipvault.store.outbox_repo import OutboxRepo
     from clipvault.sync import engine

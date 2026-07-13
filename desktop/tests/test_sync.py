@@ -746,13 +746,13 @@ def test_h10_nested_malformed_event_data_is_acked_without_db_or_log_leak(api, co
     assert marker not in caplog.text
 
 
-def test_remote_db_intent_survives_crash_before_external_write(api, conn, monkeypatch, tmp_path):
+def test_remote_db_intent_survives_crash_before_worker_dispatch(api, conn, monkeypatch, tmp_path):
     event = _clip_new_event(1, "remote crash recovery")
 
-    def crash_before_write(_clip):
+    def crash_before_dispatch(_clip):
         raise RuntimeError("simulated process stop")
 
-    monkeypatch.setattr(api.service, "write_obsidian_or_queue", crash_before_write)
+    monkeypatch.setattr(api.service, "dispatch_obsidian_work", crash_before_dispatch)
     with pytest.raises(RuntimeError, match="process stop"):
         sync_engine._apply_clip_new(conn, event["data"], api.service)
 

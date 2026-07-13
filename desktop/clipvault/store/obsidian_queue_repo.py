@@ -333,3 +333,15 @@ class ObsidianQueueRepo:
             "max_attempts": int(max_attempts),
             "next_attempt_at": row[0] if row else None,
         }
+
+    def has_ready(self, now: str) -> bool:
+        """Return whether one eligible item is ready, using the ready index."""
+
+        return self.conn.execute(
+            "SELECT 1 FROM obsidian_queue q "
+            "JOIN clips c ON c.id = q.clip_id "
+            "WHERE q.state = 'pending' AND q.next_attempt_at <= ? "
+            "AND c.is_secret = 0 AND c.deleted = 0 AND c.obsidian_path IS NULL "
+            "LIMIT 1",
+            (now,),
+        ).fetchone() is not None
