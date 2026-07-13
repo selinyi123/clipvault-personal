@@ -18,15 +18,34 @@
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-13 |
 
+## Current development note - 2026-07-13 / R000 API request lifecycle
+
+- The stdlib single-threaded API now applies one fixed monotonic deadline to
+  request ingress. Headers use the base timeout; one bounded Content-Length
+  derives a fixed body budget capped at 120 seconds under the default
+  configuration and never renewed by byte progress. The watchdog stops before
+  API/service work, so a slow business failure still receives the content-safe
+  `500` contract.
+- Service shutdown interrupts an in-progress bounded body drain before a
+  bodyless write route can execute its side effect. Invalid and oversized
+  bodies on those routes return bounded `400` / `413` errors. Unsupported
+  `Transfer-Encoding` framing is rejected before any write-route API call.
+- An unexpected route exception returns a fixed content-safe JSON `500`, closes
+  that connection, and leaves the server available for later requests. The
+  fallback server error hook suppresses stdlib tracebacks; logs retain only the
+  method, query-free route, and exception class.
+- The implementation keeps SQLite and API/service work on the existing serving
+  thread. It does not introduce `ThreadingHTTPServer`, new dependencies, schema
+  or wire-format changes, telemetry, Android/IME networking, version metadata,
+  release authority, or a change to Issue #36 state.
+
 ## Current development note - 2026-07-13 / R000 Personal Memory convergence
 
-- PR #117 merged as `f1ad807838284c32bf1d9705cd3f900a479f5712`.
-  Exact-main [CI run 29267816578](https://github.com/selinyi123/clipvault-personal/actions/runs/29267816578)
-  and [release-candidate run 29267816822](https://github.com/selinyi123/clipvault-personal/actions/runs/29267816822)
-  both passed. That merge made remote clip metadata effects atomic, repaired
-  Android explicit-false/undelete application, and protected local Owner
-  actions from timestamp-ceiling replay.
-- This follow-up makes each local Personal Memory create, delete, promote, or
+- PR #118 merged as `88a0a513ab62531a17ec95f0248e1eccdf6950dd`.
+  Exact-main [CI run 29269851545](https://github.com/selinyi123/clipvault-personal/actions/runs/29269851545)
+  and [release-candidate run 29269850723](https://github.com/selinyi123/clipvault-personal/actions/runs/29269850723)
+  both passed.
+- That merge makes each local Personal Memory create, delete, promote, or
   imported creation commit its fact row, per-item logical clock, and sync
   outbox event in one SQLite unit of work. Existing repo and emitter callers
   retain standalone `commit=True` behavior; composed paths use keyword-only

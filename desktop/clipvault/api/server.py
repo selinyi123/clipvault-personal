@@ -11,7 +11,11 @@ thread and is never crossed (S004 lesson).
 import json
 import logging
 import re
+import socket
+import sys
 import threading
+import time
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -41,6 +45,8 @@ _MAX_SYNC_PUSH_BODY = _MAX_CONTENT_JSON_BODY
 _MAX_REJECT_DRAIN = 64 * 1024
 _JSON_CONTENT_TYPES = ("application/json", "application/problem+json")
 _DEFAULT_SOCKET_READ_TIMEOUT_S = 10.0
+_MIN_BODY_READ_RATE_BYTES_S = 64 * 1024
+_MAX_BODY_READ_TIMEOUT_S = 120.0
 _CSP = (
     "default-src 'none'; "
     "script-src 'self'; "
@@ -54,12 +60,158 @@ _CSP = (
 )
 
 
+class _RequestDeadline:
+    """Interrupt slow ingress under one header and one fixed body deadline.
+
+    The watchdog touches only the socket and Events; API/service/SQLite work
+    remains confined to the single HTTP serving thread. A validated body length
+    may replace the header budget once; byte progress never extends either
+    deadline, so a peer cannot monopolise the thread by dripping bytes.
+    """
+
+    def __init__(
+        self,
+        connection: socket.socket,
+        timeout_s: float,
+        stop_event: threading.Event | None,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+        poll_s: float = 0.05,
+    ) -> None:
+        self.connection = connection
+        self.timeout_s = timeout_s
+        self.stop_event = stop_event
+        self.monotonic = monotonic
+        self.poll_s = poll_s
+        self._finished = threading.Event()
+        self._lock = threading.Lock()
+        self._reason: str | None = None
+        self._deadline = 0.0
+        self._body_started = False
+        self._thread: threading.Thread | None = None
+
+    @property
+    def reason(self) -> str | None:
+        with self._lock:
+            return self._reason
+
+    def _wait(self, timeout_s: float) -> bool:
+        """Wait for completion; a separate method keeps clock tests deterministic."""
+
+        return self._finished.wait(timeout_s)
+
+    def _abort(self, reason: str) -> None:
+        with self._lock:
+            if self._finished.is_set() or self._reason is not None:
+                return
+            self._reason = reason
+        self._shutdown_read()
+
+    def _shutdown_read(self) -> None:
+        try:
+            # Stop inbound reads while preserving the best-effort ability to
+            # return a small 408 response on the write side.
+            self.connection.shutdown(socket.SHUT_RD)
+        except OSError:
+            pass
+
+    def check(self) -> str | None:
+        """Return/trigger the current abort reason without extending time."""
+
+        reason = self.reason
+        if reason is not None or self._finished.is_set():
+            return reason
+        if self.stop_event is not None and self.stop_event.is_set():
+            self._abort("stopping")
+        elif self._deadline and self.monotonic() >= self._deadline:
+            self._abort("deadline")
+        return self.reason
+
+    def _run(self) -> None:
+        while not self._finished.is_set():
+            if self.check() is not None:
+                return
+            remaining = self._deadline - self.monotonic()
+            if self._wait(min(self.poll_s, remaining)):
+                return
+
+    def start(self) -> None:
+        self._deadline = self.monotonic() + self.timeout_s
+        self._thread = threading.Thread(
+            target=self._run,
+            name="clipvault-api-request-deadline",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def begin_body(self, length: int) -> str | None:
+        """Set one length-derived body deadline; byte progress cannot renew it."""
+
+        if length <= 0:
+            return self.check()
+        should_abort = False
+        with self._lock:
+            if self._finished.is_set() or self._reason is not None:
+                return self._reason
+            now = self.monotonic()
+            if self.stop_event is not None and self.stop_event.is_set():
+                self._reason = "stopping"
+                should_abort = True
+            elif self._deadline and now >= self._deadline:
+                self._reason = "deadline"
+                should_abort = True
+            elif not self._body_started:
+                self._body_started = True
+                proportional = self.timeout_s + (
+                    length / _MIN_BODY_READ_RATE_BYTES_S
+                )
+                body_timeout = max(
+                    self.timeout_s,
+                    min(_MAX_BODY_READ_TIMEOUT_S, proportional),
+                )
+                self._deadline = now + body_timeout
+            reason = self._reason
+        if should_abort:
+            self._shutdown_read()
+        return reason
+
+    def finish(self) -> None:
+        with self._lock:
+            self._finished.set()
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(self.poll_s * 2, 0.1))
+
+
+class _SafeHTTPServer(HTTPServer):
+    """Suppress stdlib traceback output for handler lifecycle failures."""
+
+    def handle_error(self, request, client_address) -> None:
+        exc_type = sys.exc_info()[0]
+        error_class = exc_type.__name__ if exc_type is not None else "Exception"
+        log.error("api connection failed error=%s", error_class)
+
+
 def _remote_allowed(route: str) -> bool:
     """Routes a paired LAN device may reach (auth enforced in the handler)."""
     return route == "/api/pair" or route.startswith("/api/sync/")
 
 
-def make_handler(api: Api, read_timeout_s: float = _DEFAULT_SOCKET_READ_TIMEOUT_S):
+def _safe_route(raw_target: str) -> str:
+    """Extract a query-free route without letting malformed input break logging."""
+
+    try:
+        return urlparse(raw_target).path or "unparsed"
+    except (TypeError, ValueError):
+        return "unparsed"
+
+
+def make_handler(
+    api: Api,
+    read_timeout_s: float = _DEFAULT_SOCKET_READ_TIMEOUT_S,
+    *,
+    stop_event: threading.Event | None = None,
+):
     class Handler(BaseHTTPRequestHandler):
         server_version = f"ClipVault/{__version__}"
 
@@ -69,6 +221,68 @@ def make_handler(api: Api, read_timeout_s: float = _DEFAULT_SOCKET_READ_TIMEOUT_
             # connection stays thread-confined. A per-connection timeout keeps
             # one partial LAN request from monopolising that only serving thread.
             self.connection.settimeout(read_timeout_s)
+            self._response_started = False
+            self._request_deadline: _RequestDeadline | None = None
+
+        def send_response(self, code: int, message: str | None = None) -> None:
+            self._response_started = True
+            super().send_response(code, message)
+
+        def handle_one_request(self) -> None:
+            deadline = _RequestDeadline(
+                self.connection, read_timeout_s, stop_event
+            )
+            self._request_deadline = deadline
+            self._response_started = False
+            deadline.start()
+            try:
+                super().handle_one_request()
+            except Exception as exc:
+                self._handle_unexpected_error(exc)
+            finally:
+                deadline.finish()
+                self._request_deadline = None
+
+        def _handle_unexpected_error(self, exc: Exception) -> None:
+            self.close_connection = True
+            deadline = self._request_deadline
+            if deadline is not None and deadline.check() is not None:
+                return
+            method = getattr(self, "command", "UNKNOWN")
+            path = getattr(self, "path", "")
+            route = _safe_route(path)
+            log.error(
+                "api request failed method=%s route=%s error=%s",
+                method,
+                route,
+                exc.__class__.__name__,
+            )
+            if self._response_started:
+                return
+            try:
+                self._send_json(500, {
+                    "error": {
+                        "code": "internal_error",
+                        "message": "internal server error",
+                    }
+                })
+            except OSError:
+                pass
+
+        def _finish_request_ingress(self) -> bool:
+            deadline = self._request_deadline
+            if deadline is None:
+                return True
+            reason = deadline.check()
+            if reason is None:
+                deadline.finish()
+                reason = deadline.reason
+            if reason is None:
+                return True
+            self.close_connection = True
+            if reason == "deadline":
+                self._send_request_timeout()
+            return False
 
         def _is_loopback(self) -> bool:
             return self.client_address[0] in _LOOPBACK
@@ -137,48 +351,169 @@ def make_handler(api: Api, read_timeout_s: float = _DEFAULT_SOCKET_READ_TIMEOUT_
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
 
-        def _body(self, max_bytes: int = _MAX_JSON_BODY) -> dict | None:
+        def _send_request_timeout(self) -> None:
+            self.close_connection = True
+            if self._response_started:
+                return
             try:
-                length = int(self.headers.get("Content-Length", 0) or 0)
-            except ValueError:
-                self._send_json(400, {"error": {"code": "bad_request", "message": "invalid Content-Length"}})
+                self._send_json(408, {
+                    "error": {
+                        "code": "request_timeout",
+                        "message": "request input timed out",
+                    }
+                })
+            except OSError:
+                pass
+
+        def _reject_transfer_encoding(self) -> bool:
+            """Reject framing this stdlib server does not decode.
+
+            Treating a chunked write as bodyless would let a route execute its
+            side effect while unread bytes remain on the connection.
+            """
+
+            get_all = getattr(self.headers, "get_all", None)
+            if get_all is None:
+                values = (
+                    [self.headers.get("Transfer-Encoding")]
+                    if "Transfer-Encoding" in self.headers
+                    else []
+                )
+            else:
+                values = get_all("Transfer-Encoding") or []
+            if not values:
+                return False
+            self.close_connection = True
+            self._send_json(400, {
+                "error": {
+                    "code": "bad_request",
+                    "message": "Transfer-Encoding is not supported",
+                }
+            })
+            return True
+
+        def _content_length(self) -> int | None:
+            """Return one valid body length or emit a bounded 400 response."""
+
+            get_all = getattr(self.headers, "get_all", None)
+            if get_all is None:
+                value = self.headers.get("Content-Length")
+                values = [] if value is None else [value]
+            else:
+                values = get_all("Content-Length") or []
+            if len(values) > 1:
+                self.close_connection = True
+                self._send_json(400, {
+                    "error": {
+                        "code": "bad_request",
+                        "message": "ambiguous Content-Length",
+                    }
+                })
                 return None
-            if length < 0:
-                self._send_json(400, {"error": {"code": "bad_request", "message": "invalid Content-Length"}})
+            if not values:
+                return 0
+            value = values[0]
+            raw_value = value.strip() if isinstance(value, str) else ""
+            if not re.fullmatch(r"[0-9]+", raw_value):
+                self.close_connection = True
+                self._send_json(400, {
+                    "error": {
+                        "code": "bad_request",
+                        "message": "invalid Content-Length",
+                    }
+                })
+                return None
+            try:
+                return int(raw_value)
+            except ValueError:
+                self.close_connection = True
+                self._send_json(400, {
+                    "error": {
+                        "code": "bad_request",
+                        "message": "invalid Content-Length",
+                    }
+                })
+                return None
+
+        def _read_request_bytes(self, length: int) -> bytes | None:
+            """Read an exact bounded body under the request's fixed deadline."""
+
+            deadline = self._request_deadline
+            if length <= 0:
+                return b"" if self._finish_request_ingress() else None
+            reason = deadline.begin_body(length) if deadline is not None else None
+            if reason is not None:
+                self.close_connection = True
+                if reason == "deadline":
+                    self._send_request_timeout()
+                return None
+            data = bytearray()
+            read_chunk = getattr(self.rfile, "read1", self.rfile.read)
+            while len(data) < length:
+                reason = deadline.check() if deadline is not None else None
+                if reason is not None:
+                    self.close_connection = True
+                    if reason == "deadline":
+                        self._send_request_timeout()
+                    return None
+                try:
+                    chunk = read_chunk(min(64 * 1024, length - len(data)))
+                except TimeoutError:
+                    self._send_request_timeout()
+                    return None
+                except OSError:
+                    reason = deadline.check() if deadline is not None else None
+                    self.close_connection = True
+                    if reason == "deadline":
+                        self._send_request_timeout()
+                    return None
+                if not chunk:
+                    reason = deadline.check() if deadline is not None else None
+                    self.close_connection = True
+                    if reason == "deadline":
+                        self._send_request_timeout()
+                    return None
+                data.extend(chunk)
+                reason = deadline.check() if deadline is not None else None
+                if reason is not None:
+                    self.close_connection = True
+                    if reason == "deadline":
+                        self._send_request_timeout()
+                    return None
+            return bytes(data) if self._finish_request_ingress() else None
+
+        def _body(self, max_bytes: int = _MAX_JSON_BODY) -> dict | None:
+            if self._reject_transfer_encoding():
+                return None
+            length = self._content_length()
+            if length is None:
                 return None
             if length > max_bytes:
                 # Drain small over-limit bodies so Windows clients can receive
                 # the 413 response cleanly; never drain unbounded junk.
                 if length <= _MAX_REJECT_DRAIN:
-                    try:
-                        self.rfile.read(length)
-                    except Exception:
-                        self.close_connection = True
+                    if self._read_request_bytes(length) is None:
+                        return None
                 self.close_connection = True
                 self._send_json(413, {"error": {"code": "payload_too_large", "message": "request body too large"}})
                 return None
             if not length:
+                if self._read_request_bytes(0) is None:
+                    return None
                 return {}
             content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
             if content_type not in _JSON_CONTENT_TYPES:
-                self._drain(max_bytes)
+                if not self._drain(max_bytes):
+                    return None
                 self._send_json(415, {"error": {"code": "unsupported_media_type", "message": "application/json required"}})
                 return None
             try:
-                obj = json.loads(self.rfile.read(length).decode("utf-8"))
+                raw = self._read_request_bytes(length)
+                if raw is None:
+                    return None
+                obj = json.loads(raw.decode("utf-8"))
             except TimeoutError:
-                self.close_connection = True
-                try:
-                    self._send_json(408, {
-                        "error": {
-                            "code": "request_timeout",
-                            "message": "request body timed out",
-                        }
-                    })
-                except OSError:
-                    # A peer that stopped reading may also make the timeout
-                    # response unwritable; closing the socket is sufficient.
-                    pass
+                self._send_request_timeout()
                 return None
             except (ValueError, UnicodeDecodeError):
                 self._send_json(400, {"error": {"code": "bad_request", "message": "invalid json"}})
@@ -188,23 +523,45 @@ def make_handler(api: Api, read_timeout_s: float = _DEFAULT_SOCKET_READ_TIMEOUT_
                 return None
             return obj
 
-        def _drain(self, max_bytes: int = _MAX_JSON_BODY) -> None:
+        def _drain(self, max_bytes: int = _MAX_JSON_BODY) -> bool:
             """Discard an unread request body so leftover bytes do not corrupt the
             next request on a kept-alive connection (bodyless routes ignore it)."""
-            try:
-                length = int(self.headers.get("Content-Length", 0) or 0)
-            except ValueError:
-                self.close_connection = True
-                return
-            if length <= 0:
-                return
+            if self._reject_transfer_encoding():
+                return False
+            length = self._content_length()
+            if length is None:
+                return False
+            if length == 0:
+                return self._read_request_bytes(0) is not None
             if length > max_bytes:
                 self.close_connection = True  # don't read unbounded junk
-                return
-            try:
-                self.rfile.read(length)
-            except Exception:
+                self._send_json(413, {
+                    "error": {
+                        "code": "payload_too_large",
+                        "message": "request body too large",
+                    }
+                })
+                return False
+            return self._read_request_bytes(length) is not None
+
+        def _accept_bodyless_request(self) -> bool:
+            """Validate that a GET has no alternate framing or request body."""
+
+            if self._reject_transfer_encoding():
+                return False
+            length = self._content_length()
+            if length is None:
+                return False
+            if length:
                 self.close_connection = True
+                self._send_json(400, {
+                    "error": {
+                        "code": "bad_request",
+                        "message": "request body is not allowed",
+                    }
+                })
+                return False
+            return self._finish_request_ingress()
 
         def _guard(self, route: str) -> bool:
             # Sync/pair are auth-gated in the handler. Everything else is
@@ -218,9 +575,13 @@ def make_handler(api: Api, read_timeout_s: float = _DEFAULT_SOCKET_READ_TIMEOUT_
             return False
 
         def log_message(self, fmt, *args):  # route through our logger, no content
-            log.info("%s %s", self.command, urlparse(self.path).path)
+            method = getattr(self, "command", "UNKNOWN")
+            path = getattr(self, "path", "")
+            log.info("%s %s", method, _safe_route(path))
 
         def do_GET(self):
+            if not self._accept_bodyless_request():
+                return
             parsed = urlparse(self.path)
             route = parsed.path
             if not self._guard(route):
@@ -294,7 +655,8 @@ def make_handler(api: Api, read_timeout_s: float = _DEFAULT_SOCKET_READ_TIMEOUT_
                 return
             m = _RELEASE_RE.match(route)
             if m:
-                self._drain()
+                if not self._drain():
+                    return
                 self._send_json(*api.release_clip(m.group(1)))
                 return
             m = _PROMOTE_RE.match(route)
@@ -306,7 +668,8 @@ def make_handler(api: Api, read_timeout_s: float = _DEFAULT_SOCKET_READ_TIMEOUT_
                 return
             m = _MEMORY_USE_RE.match(route)
             if m:
-                self._drain()
+                if not self._drain():
+                    return
                 self._send_json(*api.use_memory(m.group(1)))
                 return
             self._send_json(404, {"error": {"code": "not_found", "message": route}})
@@ -317,12 +680,14 @@ def make_handler(api: Api, read_timeout_s: float = _DEFAULT_SOCKET_READ_TIMEOUT_
                 return
             m = _MEMORY_ID_RE.match(route)
             if m:
-                self._drain()
+                if not self._drain():
+                    return
                 self._send_json(*api.delete_memory(m.group(1)))
                 return
             m = _PEER_ID_RE.match(route)
             if m:
-                self._drain()
+                if not self._drain():
+                    return
                 self._send_json(*api.unpair(m.group(1)))
                 return
             self._send_json(404, {"error": {"code": "not_found", "message": route}})
@@ -349,13 +714,17 @@ def build_server(
     port: int = 8787,
     *,
     read_timeout_s: float = _DEFAULT_SOCKET_READ_TIMEOUT_S,
+    stop_event: threading.Event | None = None,
 ) -> HTTPServer:
     # Binds the configured host so paired LAN devices can sync (SYNC-2). The
     # management API stays loopback-only via the per-route handler guard, so
     # exposing the socket does not expose the unauthenticated endpoints.
     if read_timeout_s <= 0:
         raise ValueError("read_timeout_s must be positive")
-    return HTTPServer((host, port), make_handler(api, read_timeout_s))
+    return _SafeHTTPServer(
+        (host, port),
+        make_handler(api, read_timeout_s, stop_event=stop_event),
+    )
 
 
 def _prepare_database(conn) -> None:
@@ -393,7 +762,9 @@ def serve(
             ClipVaultService(conn, config, obsidian_notify=obsidian_notify),
             pairing=pairing,
         )
-        httpd = build_server(api, config.host, config.port)
+        httpd = build_server(
+            api, config.host, config.port, stop_event=stop
+        )
         httpd.timeout = 0.5
         log.info("api listening on %s:%d", config.host, httpd.server_address[1])
         if on_ready is not None:

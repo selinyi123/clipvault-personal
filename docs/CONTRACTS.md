@@ -466,6 +466,19 @@ Base：`http://{host}:{port}/api`，仅本机与配对设备使用。除 `/pair`
 
 错误统一 `{error: {code, message}}`，HTTP 语义化状态码。
 
+- 单线程 `HTTPServer` 的请求输入阶段使用固定、不可续期的 monotonic deadline；请求行/请求头使用基础预算，
+  已验证且有上限的 `Content-Length` 只在 body 开始前换算一次固定预算（默认配置最长 120 秒、最低按
+  64 KiB/s 计算），持续小块发送不会续期。超时连接关闭，已进入 body 读取的请求尽力返回统一
+  `408 request_timeout`。输入完成即停止 watchdog；其后业务异常仍遵循安全 `500` 合同。
+- 路由实现抛出的未处理异常只返回固定 `500 internal_error`，并关闭该连接；日志仅记录 method、无 query 的 route
+  与异常类，不记录异常消息、正文或 traceback。后续连接仍可由同一 serving thread 处理。
+- bodyless 写路由在执行副作用前也必须完成有界 drain；非法或超限 `Content-Length` 分别返回 `400` / `413`，
+  stop 或 deadline 中断 drain 时不得执行副作用。服务不实现 chunked request 解码，因此所有写路由在进入 API
+  逻辑前拒绝任何 `Transfer-Encoding` 字段并关闭连接，不能把未读取的 chunked body 当成 bodyless 请求；重复
+  `Content-Length` 即使值相同也作为歧义 framing 返回 `400`；单值必须是非空 ASCII 十进制数字。
+- GET 路由不接受 request body；任何 `Transfer-Encoding`、歧义 `Content-Length` 或非零 body 长度都在
+  进入 API 前拒绝。该规则也覆盖 mint pairing code 与更新 sync last-seen 等隐藏写入。
+
 ## 11. Suggestion 评分（SUG-1）
 
 候选集：memory_items（deleted=0）∪ 最近 30 天非密钥非删除 clips（仅 favorite 或 times_seen≥3 的）。
