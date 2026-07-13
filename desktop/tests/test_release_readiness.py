@@ -72,6 +72,31 @@ def _variable_list_command():
     )
 
 
+def _release_view_command():
+    return (
+        "gh",
+        "release",
+        "view",
+        "v1.6.0",
+        "--repo",
+        "owner/repo",
+        "--json",
+        "tagName,name,isDraft,isPrerelease,publishedAt,url,targetCommitish",
+    )
+
+
+def _published_release(sha):
+    return {
+        "tagName": "v1.6.0",
+        "name": "ClipVault Personal v1.6.0",
+        "isDraft": False,
+        "isPrerelease": False,
+        "publishedAt": "2026-07-13T00:00:00Z",
+        "url": "https://github.com/owner/repo/releases/tag/v1.6.0",
+        "targetCommitish": sha,
+    }
+
+
 def _base_responses(*, sha="a" * 40, environments=None, issue_body="- [ ] missing\n"):
     success_run = [{
         "databaseId": 123,
@@ -99,16 +124,7 @@ def _base_responses(*, sha="a" * 40, environments=None, issue_body="- [ ] missin
             "api",
             "repos/owner/repo/environments",
         ): _success(_json({"total_count": len(environments or []), "environments": environments or []})),
-        (
-            "gh",
-            "release",
-            "view",
-            "v1.6.0",
-            "--repo",
-            "owner/repo",
-            "--json",
-            "tagName,name,isDraft,isPrerelease,publishedAt,url,targetCommitish",
-        ): _failure("release not found"),
+        _release_view_command(): _failure("release not found"),
         (
             "gh",
             "issue",
@@ -401,6 +417,289 @@ def test_release_artifact_run_blocks_when_displayed_dispatch_inputs_do_not_match
     assert "do not prove the expected v1.6.0 / main release run" in gate["detail"]
     assert "Release artifacts v1.6.0 from main draft=false" in gate["next_step"]
     assert gate["metadata"]["display_title"] == "Release artifacts v1.5.10 from main draft=false"
+
+
+def test_release_publication_requires_exact_identity_and_lightweight_tag_commit():
+    sha = "1" * 40
+    fake = FakeGh({
+        _release_view_command(): _success(_json(_published_release(sha))),
+        (
+            "gh",
+            "api",
+            "repos/owner/repo/git/matching-refs/tags/v1.6.0",
+        ): _success(_json([{
+            "ref": "refs/tags/v1.6.0",
+            "object": {"type": "commit", "sha": sha},
+        }])),
+    })
+
+    gate = release_readiness.check_release_publication(
+        fake,
+        "owner/repo",
+        "v1.6.0",
+        sha=sha,
+    )
+
+    assert gate.status == "pass"
+    assert gate.metadata["tag_commit"] == sha
+    assert gate.metadata["published_at"] == "2026-07-13T00:00:00Z"
+
+
+def test_release_publication_resolves_annotated_tag_chain():
+    sha = "2" * 40
+    first_tag = "3" * 40
+    second_tag = "4" * 40
+    fake = FakeGh({
+        _release_view_command(): _success(_json(_published_release(sha))),
+        (
+            "gh",
+            "api",
+            "repos/owner/repo/git/matching-refs/tags/v1.6.0",
+        ): _success(_json([{
+            "ref": "refs/tags/v1.6.0",
+            "object": {"type": "tag", "sha": first_tag},
+        }])),
+        (
+            "gh",
+            "api",
+            f"repos/owner/repo/git/tags/{first_tag}",
+        ): _success(_json({"object": {"type": "tag", "sha": second_tag}})),
+        (
+            "gh",
+            "api",
+            f"repos/owner/repo/git/tags/{second_tag}",
+        ): _success(_json({"object": {"type": "commit", "sha": sha}})),
+    })
+
+    gate = release_readiness.check_release_publication(
+        fake,
+        "owner/repo",
+        "v1.6.0",
+        sha=sha,
+    )
+
+    assert gate.status == "pass"
+    assert gate.metadata["tag_commit"] == sha
+
+
+@pytest.mark.parametrize(
+    "field,value,expected_text",
+    [
+        ("tagName", "v1.5.10", "tag"),
+        ("name", "ClipVault v1.6.0", "title"),
+        ("isPrerelease", True, "prerelease state"),
+        ("isPrerelease", 0, "prerelease state"),
+        ("isPrerelease", None, "prerelease state"),
+        ("targetCommitish", "6" * 40, "target commit"),
+        ("targetCommitish", "main", "target commit"),
+        ("isDraft", None, "draft state"),
+        ("isDraft", 0, "draft state"),
+        ("isDraft", 1, "draft state"),
+        ("isDraft", "false", "draft state"),
+    ],
+)
+def test_release_publication_blocks_identity_mismatch(field, value, expected_text):
+    sha = "5" * 40
+    release = _published_release(sha)
+    release[field] = value
+    fake = FakeGh({_release_view_command(): _success(_json(release))})
+
+    gate = release_readiness.check_release_publication(
+        fake,
+        "owner/repo",
+        "v1.6.0",
+        sha=sha,
+    )
+
+    assert gate.status == "blocked"
+    assert expected_text in gate.detail
+
+
+def test_release_publication_blocks_tag_resolving_to_other_commit():
+    sha = "7" * 40
+    other_sha = "8" * 40
+    fake = FakeGh({
+        _release_view_command(): _success(_json(_published_release(sha))),
+        (
+            "gh",
+            "api",
+            "repos/owner/repo/git/matching-refs/tags/v1.6.0",
+        ): _success(_json([{
+            "ref": "refs/tags/v1.6.0",
+            "object": {"type": "commit", "sha": other_sha},
+        }])),
+    })
+
+    gate = release_readiness.check_release_publication(
+        fake,
+        "owner/repo",
+        "v1.6.0",
+        sha=sha,
+    )
+
+    assert gate.status == "blocked"
+    assert other_sha in gate.detail
+    assert gate.metadata["expected_tag_commit"] == sha
+
+
+@pytest.mark.parametrize(
+    "records,expected_text",
+    [
+        ([{
+            "ref": "refs/tags/v1.6.0-rc1",
+            "object": {"type": "commit", "sha": "7" * 40},
+        }], "found 0"),
+        ([
+            {
+                "ref": "refs/tags/v1.6.0",
+                "object": {"type": "commit", "sha": "7" * 40},
+            },
+            {
+                "ref": "refs/tags/v1.6.0",
+                "object": {"type": "commit", "sha": "7" * 40},
+            },
+        ], "found 2"),
+    ],
+)
+def test_release_publication_blocks_missing_or_ambiguous_exact_tag(records, expected_text):
+    sha = "7" * 40
+    fake = FakeGh({
+        _release_view_command(): _success(_json(_published_release(sha))),
+        (
+            "gh",
+            "api",
+            "repos/owner/repo/git/matching-refs/tags/v1.6.0",
+        ): _success(_json(records)),
+    })
+
+    gate = release_readiness.check_release_publication(
+        fake,
+        "owner/repo",
+        "v1.6.0",
+        sha=sha,
+    )
+
+    assert gate.status == "blocked"
+    assert expected_text in gate.evidence
+
+
+def test_release_publication_blocks_annotated_tag_cycle():
+    sha = "b" * 40
+    tag_sha = "c" * 40
+    fake = FakeGh({
+        _release_view_command(): _success(_json(_published_release(sha))),
+        (
+            "gh",
+            "api",
+            "repos/owner/repo/git/matching-refs/tags/v1.6.0",
+        ): _success(_json([{
+            "ref": "refs/tags/v1.6.0",
+            "object": {"type": "tag", "sha": tag_sha},
+        }])),
+        (
+            "gh",
+            "api",
+            f"repos/owner/repo/git/tags/{tag_sha}",
+        ): _success(_json({"object": {"type": "tag", "sha": tag_sha}})),
+    })
+
+    gate = release_readiness.check_release_publication(
+        fake,
+        "owner/repo",
+        "v1.6.0",
+        sha=sha,
+    )
+
+    assert gate.status == "blocked"
+    assert "cycle" in gate.evidence
+
+
+def test_release_publication_blocks_non_draft_without_publication_timestamp():
+    sha = "9" * 40
+    release = _published_release(sha)
+    release["publishedAt"] = None
+    fake = FakeGh({_release_view_command(): _success(_json(release))})
+
+    gate = release_readiness.check_release_publication(
+        fake,
+        "owner/repo",
+        "v1.6.0",
+        sha=sha,
+    )
+
+    assert gate.status == "blocked"
+    assert "no publication timestamp" in gate.detail
+
+
+def test_release_publication_exact_draft_warns_without_tag_lookup():
+    sha = "a" * 40
+    release = _published_release(sha)
+    release["isDraft"] = True
+    release["publishedAt"] = None
+    fake = FakeGh({_release_view_command(): _success(_json(release))})
+
+    gate = release_readiness.check_release_publication(
+        fake,
+        "owner/repo",
+        "v1.6.0",
+        sha=sha,
+    )
+
+    assert gate.status == "warn"
+    assert "non-prerelease draft" in gate.detail
+
+
+def test_release_publication_blocks_before_lookup_when_main_sha_is_unknown():
+    fake = FakeGh({})
+
+    gate = release_readiness.check_release_publication(
+        fake,
+        "owner/repo",
+        "v1.6.0",
+        sha=None,
+    )
+
+    assert gate.status == "blocked"
+    assert fake.commands == []
+
+
+def test_release_publication_non_object_json_blocks_instead_of_crashing():
+    fake = FakeGh({_release_view_command(): _success(_json([]))})
+
+    gate = release_readiness.check_release_publication(
+        fake,
+        "owner/repo",
+        "v1.6.0",
+        sha="d" * 40,
+    )
+
+    assert gate.status == "blocked"
+    assert "JSON object" in gate.detail
+
+
+def test_build_report_passes_current_main_sha_to_publication_gate():
+    sha = "e" * 40
+    responses = _base_responses(sha=sha)
+    responses[_release_view_command()] = _success(_json(_published_release(sha)))
+    responses[(
+        "gh",
+        "api",
+        "repos/owner/repo/git/matching-refs/tags/v1.6.0",
+    )] = _success(_json([{
+        "ref": "refs/tags/v1.6.0",
+        "object": {"type": "commit", "sha": sha},
+    }]))
+
+    report = release_readiness.build_report(
+        runner=FakeGh(responses),
+        repo="owner/repo",
+        version="v1.6.0",
+        branch="main",
+    )
+
+    gate = {gate["name"]: gate for gate in report["gates"]}["GitHub Release publication"]
+    assert gate["status"] == "pass"
+    assert gate["metadata"]["target_commit"] == sha
 
 
 def test_workflow_success_must_match_current_main_sha():
