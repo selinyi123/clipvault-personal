@@ -25,17 +25,20 @@ import javax.crypto.spec.GCMParameterSpec
 
 private const val SYNC_PREFS = "clipvault_sync"
 private const val LEGACY_TOKEN = "token"
+private const val LEGACY_TOKEN_MIGRATED = "token_migrated_v1"
 private const val TOKEN_PREFS = "clipvault_sync_token"
 private const val TOKEN_KEY_ALIAS = "clipvault_sync_token_v1"
 private const val TOKEN_IV = "token_iv"
 private const val TOKEN_CT = "token_ct"
 private const val PUSH_BLOCKED_SEQ = "push_blocked_seq"
 private const val PUSH_BLOCKED_REASON = "push_blocked_reason"
+private const val SERVER_DEVICE = "server_device"
 internal const val MAX_SYNC_RESPONSE_BYTES = 7 * 1024 * 1024
 private val HOST_LABEL_RE = Regex("""^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$""")
 private val BRACKETED_IPV6_RE = Regex("""^\[[0-9A-Fa-f:.%]+]$""")
 
 internal class SyncAuthException : IOException("sync auth rejected")
+internal class SyncPairingChangedException : IOException("sync pairing changed")
 internal class SyncPushRequestTooLargeException : IOException("sync push request rejected as too large")
 
 internal enum class SyncPushBlockReason(val code: String, val safeMessage: String) {
@@ -157,10 +160,11 @@ private class SecureTokenStore(context: Context) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val ct = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
-        sp.edit()
+        val stored = sp.edit()
             .putString(TOKEN_IV, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
             .putString(TOKEN_CT, Base64.encodeToString(ct, Base64.NO_WRAP))
-            .apply()
+            .commit()
+        if (!stored) throw IOException("token write failed")
     }
 
     private fun key(): SecretKey {
@@ -187,12 +191,48 @@ class Settings(context: Context) {
     private val appCtx = context.applicationContext
     private val sp = appCtx.getSharedPreferences(SYNC_PREFS, Context.MODE_PRIVATE)
     private val tokenStore = SecureTokenStore(appCtx)
+    private val pairingGate = SyncPairingStateGate()
 
-    init { migrateLegacyToken() }
+    init {
+        // The first Settings instance performs the one-time migration before
+        // any request can exist. Later constructions must not advance the
+        // request revision merely by reading already-migrated storage.
+        pairingGate.read { migrateLegacyToken() }
+    }
 
-    var host: String?  get() = sp.getString("host", null);  set(v) { sp.edit().putString("host", v).apply() }
-    var port: Int      get() = sp.getInt("port", 8787);     set(v) { sp.edit().putInt("port", v).apply() }
-    var token: String? get() = tokenStore.get();             set(v) { tokenStore.set(v); sp.edit().remove(LEGACY_TOKEN).apply() }
+    var host: String?
+        get() = pairingGate.read { sp.getString("host", null) }
+        set(v) {
+            pairingGate.replaceEndpoint {
+                val endpointChanged =
+                    normalizeSyncHostOrNull(sp.getString("host", null)) != normalizeSyncHostOrNull(v)
+                clearStoredToken()
+                val editor = sp.edit().putString("host", v).remove(LEGACY_TOKEN)
+                if (endpointChanged) editor.putLong("since", 0L).remove(SERVER_DEVICE)
+                val stored = editor.commit()
+                if (!stored) throw IOException("sync host write failed")
+            }
+        }
+    var port: Int
+        get() = pairingGate.read { sp.getInt("port", 8787) }
+        set(v) {
+            pairingGate.replaceEndpoint {
+                val endpointChanged = sp.getInt("port", 8787) != v
+                clearStoredToken()
+                val editor = sp.edit().putInt("port", v).remove(LEGACY_TOKEN)
+                if (endpointChanged) editor.putLong("since", 0L).remove(SERVER_DEVICE)
+                val stored = editor.commit()
+                if (!stored) throw IOException("sync port write failed")
+            }
+        }
+    var token: String?
+        get() = pairingGate.read { tokenStore.get() }
+        set(v) {
+            pairingGate.replace {
+                clearStoredToken()
+                if (!v.isNullOrEmpty()) installFreshToken(v)
+            }
+        }
     var sinceSeq: Long get() = sp.getLong("since", 0);      set(v) { sp.edit().putLong("since", v).apply() }
     internal val syncPushBlocked: SyncPushBlockedState?
         get() {
@@ -228,27 +268,78 @@ class Settings(context: Context) {
      * acknowledgement state into the new pairing. Marker persistence must
      * succeed before the token is installed. */
     internal fun replaceToken(token: String) {
-        tokenStore.set(null)
-        installFreshToken(token)
+        pairingGate.replace {
+            clearStoredToken()
+            installFreshToken(token)
+        }
     }
+
+    internal fun replaceTokenIfCurrent(
+        expected: SyncRequestSnapshot,
+        token: String,
+        serverDevice: String?,
+    ): Boolean =
+        pairingGate.replacePairingIfCurrent(
+            expected = expected,
+            endpointChanged = false,
+            replace = {
+                clearStoredToken()
+                updateServerIdentityAndResetCursorIfChanged(serverDevice)
+                installFreshToken(token)
+            },
+        )
 
     private fun installFreshToken(token: String) {
         clearSyncPushBlocked()
         tokenStore.set(token)
     }
 
-    /** Commit a new host/token pairing without ever exposing a stale or fresh
-     * token to the wrong host. Preferences and AndroidKeyStore are separate
-     * stores, so the safest order is fail-closed: clear token -> synchronously
-     * write host -> clear old-peer blocked marker -> write new token. A
-     * concurrent worker can then see old host+old token, new host+no token, or
-     * new host+new token, but never new
-     * host+old token or old host+new token. */
+    /** Commit a new host/token pairing without exposing a token to the wrong
+     * host. The process-wide gate makes endpoint/token reads atomic across all
+     * Settings instances. Separate stores are still written fail-closed:
+     * clear token -> synchronously write endpoint -> write fresh token. */
     fun replacePairing(host: String, token: String) {
-        tokenStore.set(null)
-        val hostStored = sp.edit().putString("host", host).remove(LEGACY_TOKEN).commit()
-        if (!hostStored) {
-            tokenStore.set(null)
+        pairingGate.replaceEndpoint {
+            replacePairingStorage(host, sp.getInt("port", 8787), token)
+        }
+    }
+
+    internal fun replacePairingIfCurrent(
+        expected: SyncRequestSnapshot,
+        host: String,
+        token: String,
+        serverDevice: String?,
+    ): Boolean {
+        val normalizedHost = normalizeSyncHostOrNull(host) ?: return false
+        if (normalizedHost != expected.host) return false
+        return pairingGate.replacePairingIfCurrent(
+            expected = expected,
+            endpointChanged = true,
+            replace = { replacePairingStorage(normalizedHost, expected.port, token, serverDevice) },
+        )
+    }
+
+    private fun replacePairingStorage(
+        host: String,
+        port: Int,
+        token: String,
+        serverDevice: String? = null,
+    ) {
+        clearStoredToken()
+        val editor = sp.edit()
+            .putString("host", host)
+            .putInt("port", port)
+            // An explicit endpoint pairing starts a new server history. The
+            // current protocol has no durable database-generation ID, so even
+            // the same host/server_device must replay from zero after a desktop
+            // database rebuild; duplicate apply is safer than skipped events.
+            .putLong("since", 0L)
+            .remove(LEGACY_TOKEN)
+        if (serverDevice != null) editor.putString(SERVER_DEVICE, serverDevice)
+        else editor.remove(SERVER_DEVICE)
+        val endpointStored = editor.commit()
+        if (!endpointStored) {
+            clearStoredToken()
             throw IOException("pairing state write failed")
         }
         // A blocked acknowledgement can belong to the previous peer. Clear the
@@ -259,33 +350,156 @@ class Settings(context: Context) {
         installFreshToken(token)
     }
 
+    private fun updateServerIdentityAndResetCursorIfChanged(serverDevice: String?) {
+        if (serverDevice == null || sp.getString(SERVER_DEVICE, null) == serverDevice) return
+        val stored = sp.edit()
+            .putString(SERVER_DEVICE, serverDevice)
+            .putLong("since", 0L)
+            .commit()
+        if (!stored) throw IOException("sync server identity write failed")
+    }
+
+    internal fun requestSnapshot(hostOverride: String?, auth: Boolean): SyncRequestSnapshot =
+        pairingGate.snapshot { revision, endpointRevision ->
+            readRequestSnapshot(
+                hostOverride = hostOverride,
+                auth = auth,
+                revision = revision,
+                endpointRevision = endpointRevision,
+                pairingAttempt = null,
+            )
+        }
+
+    internal fun beginPairingSnapshot(hostOverride: String?): SyncRequestSnapshot =
+        pairingGate.beginPairingSnapshot { revision, endpointRevision, pairingAttempt ->
+            readRequestSnapshot(
+                hostOverride = hostOverride,
+                auth = false,
+                revision = revision,
+                endpointRevision = endpointRevision,
+                pairingAttempt = pairingAttempt,
+            )
+        }
+
+    private fun readRequestSnapshot(
+        hostOverride: String?,
+        auth: Boolean,
+        revision: Long,
+        endpointRevision: Long,
+        pairingAttempt: Long?,
+    ): SyncRequestSnapshot {
+        val storedHost = normalizeSyncHostOrNull(sp.getString("host", null))
+        val host = normalizeSyncHostOrNull(hostOverride ?: storedHost)
+            ?: throw IOException("invalid sync host")
+        if (auth && hostOverride != null && host != storedHost) {
+            throw IOException("authenticated sync host override rejected")
+        }
+        val bearerToken = if (auth) tokenStore.get() else null
+        if (auth && bearerToken.isNullOrEmpty()) throw SyncAuthException()
+        return SyncRequestSnapshot(
+            host = host,
+            port = sp.getInt("port", 8787),
+            bearerToken = bearerToken,
+            revision = revision,
+            endpointRevision = endpointRevision,
+            pairingAttempt = pairingAttempt,
+        )
+    }
+
+    internal fun clearTokenIfCurrent(expected: SyncRequestSnapshot): Boolean =
+        pairingGate.clearRejectedIfCurrent(
+            expected = expected,
+            currentStoreMatches = { currentEndpointMatches(expected) },
+            clear = { clearStoredToken() },
+        )
+
+    internal fun isCurrent(expected: SyncRequestSnapshot): Boolean =
+        pairingGate.isCurrent(expected) { currentEndpointMatches(expected) }
+
+    internal fun runIfCurrent(expected: SyncRequestSnapshot, block: () -> Unit): Boolean =
+        pairingGate.runIfCurrent(
+            expected = expected,
+            currentStoreMatches = { currentEndpointMatches(expected) },
+            block = block,
+        )
+
+    private fun currentEndpointMatches(expected: SyncRequestSnapshot): Boolean =
+        normalizeSyncHostOrNull(sp.getString("host", null)) == expected.host &&
+            sp.getInt("port", 8787) == expected.port
+
+    private fun clearStoredToken() {
+        val cleared = sp.edit()
+            .remove(LEGACY_TOKEN)
+            .putBoolean(LEGACY_TOKEN_MIGRATED, true)
+            .commit()
+        if (!cleared) throw IOException("legacy token cleanup failed")
+        // Only clear the secure token after the old plaintext location is
+        // durably retired. A crash before this line leaves the unchanged old
+        // host/token pairing; a crash after it can only leave no token.
+        tokenStore.set(null)
+    }
+
     /** One-time v1.2.x -> v1.3 migration. Preserve pairing while deleting the
      * old plaintext token from the legacy sync preference file. */
     private fun migrateLegacyToken() {
+        if (sp.getBoolean(LEGACY_TOKEN_MIGRATED, false)) {
+            if (sp.contains(LEGACY_TOKEN) && !sp.edit().remove(LEGACY_TOKEN).commit()) {
+                throw IOException("legacy token cleanup failed")
+            }
+            return
+        }
         val legacy = sp.getString(LEGACY_TOKEN, null)
         if (!legacy.isNullOrEmpty() && tokenStore.get().isNullOrEmpty()) {
             tokenStore.set(legacy)
         }
-        if (legacy != null) sp.edit().remove(LEGACY_TOKEN).apply()
+        val migrated = sp.edit()
+            .remove(LEGACY_TOKEN)
+            .putBoolean(LEGACY_TOKEN_MIGRATED, true)
+            .commit()
+        if (!migrated) throw IOException("token migration state write failed")
     }
 }
 
 /** Minimal HTTP sync client (SYNC-2). Uses HttpURLConnection — no extra deps. */
-class SyncClient(private val s: Settings, private val hostOverride: String? = null) {
-    private fun base(): String {
-        val host = normalizeSyncHostOrNull(hostOverride ?: s.host) ?: throw IOException("invalid sync host")
-        return "http://$host:${s.port}/api"
-    }
+class SyncClient private constructor(
+    private val s: Settings,
+    private val hostOverride: String?,
+    private val fixedSnapshot: SyncRequestSnapshot?,
+) {
+    constructor(s: Settings, hostOverride: String? = null) : this(s, hostOverride, null)
 
-    private fun req(method: String, path: String, body: String?, auth: Boolean): Pair<Int, String> {
+    internal constructor(s: Settings, snapshot: SyncRequestSnapshot) : this(s, null, snapshot)
+
+    private class SyncHttpResponse(
+        val code: Int,
+        val text: String,
+        val request: SyncRequestSnapshot,
+    )
+
+    private class PairingRedemption(
+        val token: String,
+        val serverDevice: String?,
+        val request: SyncRequestSnapshot,
+    )
+
+    private fun req(
+        method: String,
+        path: String,
+        body: String?,
+        auth: Boolean,
+        requestOverride: SyncRequestSnapshot? = null,
+    ): SyncHttpResponse {
         val bodyBytes = body?.toByteArray(Charsets.UTF_8)
-        val c = (URL(base() + path).openConnection() as HttpURLConnection).apply {
+        val snapshot = requestOverride ?: fixedSnapshot ?: s.requestSnapshot(hostOverride, auth)
+        if (auth && snapshot.bearerToken.isNullOrEmpty()) throw SyncAuthException()
+        if (fixedSnapshot != null && !s.isCurrent(snapshot)) throw SyncPairingChangedException()
+        val c = (URL(snapshot.baseUrl + path).openConnection() as HttpURLConnection).apply {
             // ClipVault sync endpoints never redirect. Keep bearer tokens scoped
             // to the paired host instead of following a 3xx to another URL.
             instanceFollowRedirects = false
             requestMethod = method
             connectTimeout = 8000; readTimeout = 12000
-            if (auth) s.token?.let { setRequestProperty("Authorization", "Bearer $it") }
+            if (auth) snapshot.bearerToken?.let { setRequestProperty("Authorization", "Bearer $it") }
             if (bodyBytes != null) {
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json")
@@ -295,6 +509,11 @@ class SyncClient(private val s: Settings, private val hostOverride: String? = nu
         try {
             if (bodyBytes != null) c.outputStream.use { it.write(bodyBytes) }
             val code = c.responseCode
+            if (auth && isPermanentSyncAuthFailure(code)) {
+                if (!s.clearTokenIfCurrent(snapshot)) throw SyncPairingChangedException()
+            } else if (auth && !s.isCurrent(snapshot)) {
+                throw SyncPairingChangedException()
+            }
             val stream = if (code in 200..299) c.inputStream else c.errorStream
             // For authenticated sync, 401/403 already tell us the local bearer
             // token is invalid for this paired desktop. Do not let an oversized
@@ -305,7 +524,7 @@ class SyncClient(private val s: Settings, private val hostOverride: String? = nu
             } else {
                 ""
             }
-            return code to text
+            return SyncHttpResponse(code, text, snapshot)
         } finally {
             c.disconnect()
         }
@@ -316,9 +535,8 @@ class SyncClient(private val s: Settings, private val hostOverride: String? = nu
      * "配对失败" message instead of crashing the app. */
     fun pair(code: String): Boolean {
         return try {
-            val token = requestPairToken(code) ?: return false
-            s.replaceToken(token)
-            true
+            val redemption = requestPairToken(code) ?: return false
+            s.replaceTokenIfCurrent(redemption.request, redemption.token, redemption.serverDevice)
         } catch (e: Exception) {
             android.util.Log.w("clipvault.sync", "pair failed: ${e.javaClass.simpleName}")
             false
@@ -332,27 +550,37 @@ class SyncClient(private val s: Settings, private val hostOverride: String? = nu
     fun pairWithHost(host: String, code: String): Boolean {
         return try {
             val h = normalizeSyncHostOrNull(host) ?: return false
-            val token = SyncClient(s, h).requestPairToken(code) ?: return false
-            s.replacePairing(h, token)
-            true
+            val redemption = SyncClient(s, h).requestPairToken(code) ?: return false
+            s.replacePairingIfCurrent(
+                redemption.request,
+                h,
+                redemption.token,
+                redemption.serverDevice,
+            )
         } catch (e: Exception) {
             android.util.Log.w("clipvault.sync", "pair failed: ${e.javaClass.simpleName}")
             false
         }
     }
 
-    private fun requestPairToken(code: String): String? {
+    private fun requestPairToken(code: String): PairingRedemption? {
         val body = JSONObject().put("code", code).put("device_id", s.deviceId)
             .put("device_name", android.os.Build.MODEL ?: "Android").toString()
-        val (code2, text) = req("POST", "/pair", body, auth = false)
-        if (code2 != 200) return null
-        val token = JSONObject(text).optString("token", "")
-        return token.ifEmpty { null }
+        val pairingSnapshot = s.beginPairingSnapshot(hostOverride)
+        val response = req("POST", "/pair", body, auth = false, requestOverride = pairingSnapshot)
+        if (response.code != 200) return null
+        val parsed = JSONObject(response.text)
+        val token = parsed.optString("token", "")
+        val serverDevice = parsed.optString("server_device", "").ifEmpty { null }
+        return token.takeIf { it.isNotEmpty() }
+            ?.let { PairingRedemption(it, serverDevice, response.request) }
     }
 
     fun push(events: JSONArray): Long {
         val body = JSONObject().put("events", events).toString()
-        val (code, text) = req("POST", "/sync/push", body, auth = true)
+        val response = req("POST", "/sync/push", body, auth = true)
+        val code = response.code
+        val text = response.text
         if (code == 200) return JSONObject(text).optLong("acked_upto", 0)
         if (isPermanentSyncAuthFailure(code)) throw SyncAuthException()
         // A paired older desktop can still enforce the former 4 MiB cap. This
@@ -363,7 +591,9 @@ class SyncClient(private val s: Settings, private val hostOverride: String? = nu
     }
 
     fun pull(since: Long): JSONObject? {
-        val (code, text) = req("GET", "/sync/pull?since_seq=$since", null, auth = true)
+        val response = req("GET", "/sync/pull?since_seq=$since", null, auth = true)
+        val code = response.code
+        val text = response.text
         if (code == 200) return JSONObject(text)
         if (isPermanentSyncAuthFailure(code)) throw SyncAuthException()
         return null

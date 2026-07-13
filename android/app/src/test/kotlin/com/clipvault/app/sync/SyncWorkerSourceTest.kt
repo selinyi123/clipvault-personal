@@ -8,8 +8,9 @@ import java.nio.file.Path
 
 class SyncWorkerSourceTest {
     @Test
-    fun workerStopsImmediateRetriesAndClearsTokenOnAuthFailure() {
+    fun workerStopsImmediateRetriesAfterClientConditionallyClearsRejectedToken() {
         val src = readSource("SyncWorker.kt")
+        val client = readSource("Sync.kt")
 
         val authCatch = src.indexOf("catch (e: SyncAuthException)")
         val genericCatch = src.indexOf("catch (e: Exception)")
@@ -18,10 +19,11 @@ class SyncWorkerSourceTest {
         assertTrue("auth failures must be handled before generic retry catch", authCatch < genericCatch)
 
         val authBlock = src.substring(authCatch, genericCatch)
-        assertTrue(authBlock.contains("s.token = null"))
+        assertFalse("a late old-peer rejection must not clear a fresh token", authBlock.contains("s.token = null"))
         assertTrue(authBlock.contains("Result.success()"))
         assertTrue(authBlock.contains("\"sync auth failed\""))
         assertFalse(authBlock.contains("e.message"))
+        assertTrue(client.contains("s.clearTokenIfCurrent(snapshot)"))
     }
 
     @Test
@@ -123,8 +125,7 @@ class SyncWorkerSourceTest {
         assertTrue(worker.contains("firstPendingSeq = { db.outbox().firstSeq() }"))
         assertFalse(worker.contains("firstPendingSeq = { db.outbox().batch(1)"))
         assertTrue(worker.contains("readBlocked = { s.syncPushBlocked }"))
-        assertTrue(worker.contains("clearBlocked = { s.clearSyncPushBlocked() }"))
-        assertTrue(worker.contains("pullPhase = { pullAll(db, s, client) }"))
+        assertTrue(worker.contains("pullPhase = { pullAll(db, s, client, cycleSnapshot) }"))
         assertFalse(worker.contains("Result.failure()"))
 
         val markerStart = sync.indexOf("internal fun markSyncPushBlocked")
@@ -144,28 +145,93 @@ class SyncWorkerSourceTest {
         val src = readSource("Sync.kt")
 
         val replaceTokenStart = src.indexOf("internal fun replaceToken(token: String)")
-        val installStart = src.indexOf("private fun installFreshToken(token: String)", replaceTokenStart)
+        val replaceTokenIfCurrentStart = src.indexOf("internal fun replaceTokenIfCurrent", replaceTokenStart)
+        val installStart = src.indexOf("private fun installFreshToken(token: String)", replaceTokenIfCurrentStart)
         val replacePairingStart = src.indexOf("fun replacePairing(host: String, token: String)", installStart)
         val migrateStart = src.indexOf("private fun migrateLegacyToken()", replacePairingStart)
         assertTrue(replaceTokenStart >= 0)
-        assertTrue(installStart > replaceTokenStart)
+        assertTrue(replaceTokenIfCurrentStart > replaceTokenStart)
+        assertTrue(installStart > replaceTokenIfCurrentStart)
         assertTrue(replacePairingStart > installStart)
         assertTrue(migrateStart > replacePairingStart)
 
-        val replaceToken = src.substring(replaceTokenStart, installStart)
+        val replaceToken = src.substring(replaceTokenStart, replaceTokenIfCurrentStart)
+        val replaceTokenIfCurrent = src.substring(replaceTokenIfCurrentStart, installStart)
         val install = src.substring(installStart, replacePairingStart)
         val replacePairing = src.substring(replacePairingStart, migrateStart)
-        assertTrue(replaceToken.indexOf("tokenStore.set(null)") < replaceToken.indexOf("installFreshToken(token)"))
+        assertTrue(replaceToken.contains("pairingGate.replace"))
+        assertTrue(replaceToken.indexOf("clearStoredToken()") < replaceToken.indexOf("installFreshToken(token)"))
+        assertTrue(replaceTokenIfCurrent.contains("pairingGate.replacePairingIfCurrent"))
         assertTrue(install.indexOf("clearSyncPushBlocked()") < install.indexOf("tokenStore.set(token)"))
-        assertTrue(replacePairing.indexOf("tokenStore.set(null)") < replacePairing.indexOf(".commit()"))
+        assertTrue(replacePairing.contains("pairingGate.replace"))
+        assertTrue(replacePairing.indexOf("clearStoredToken()") < replacePairing.indexOf(".commit()"))
         assertTrue(replacePairing.indexOf(".commit()") < replacePairing.indexOf("installFreshToken(token)"))
         assertTrue(replacePairing.contains("throw IOException(\"pairing state write failed\")"))
 
         val legacyPairStart = src.indexOf("fun pair(code: String): Boolean")
         val pairWithHostStart = src.indexOf("fun pairWithHost(host: String, code: String): Boolean", legacyPairStart)
         val legacyPair = src.substring(legacyPairStart, pairWithHostStart)
-        assertTrue(legacyPair.contains("s.replaceToken(token)"))
+        val hostPairEnd = src.indexOf("private fun requestPairToken", pairWithHostStart)
+        val hostPair = src.substring(pairWithHostStart, hostPairEnd)
+        assertTrue(legacyPair.contains("s.replaceTokenIfCurrent(redemption.request, redemption.token, redemption.serverDevice)"))
+        assertTrue(hostPair.contains("s.replacePairingIfCurrent("))
+        assertTrue(hostPair.contains("redemption.serverDevice"))
         assertFalse(legacyPair.contains("s.token = token"))
+    }
+
+    @Test
+    fun authenticatedRequestsUseOneSnapshotAndReleaseGateBeforeNetworkIo() {
+        val src = readSource("Sync.kt")
+        val reqStart = src.indexOf("private fun req(")
+        val pairStart = src.indexOf("fun pair(code: String): Boolean", reqStart)
+        assertTrue(reqStart >= 0)
+        assertTrue(pairStart > reqStart)
+        val req = src.substring(reqStart, pairStart)
+
+        val snapshot = req.indexOf("val snapshot = requestOverride ?: fixedSnapshot ?: s.requestSnapshot(hostOverride, auth)")
+        val openConnection = req.indexOf("URL(snapshot.baseUrl + path).openConnection()")
+        assertTrue(snapshot >= 0)
+        assertTrue(openConnection > snapshot)
+        assertTrue(req.contains("snapshot.bearerToken?.let"))
+        assertTrue(req.contains("if (!s.clearTokenIfCurrent(snapshot)) throw SyncPairingChangedException()"))
+        assertTrue(req.contains("if (auth && snapshot.bearerToken.isNullOrEmpty()) throw SyncAuthException()"))
+        assertFalse(req.contains("s.host"))
+        assertFalse(req.contains("s.port"))
+        assertFalse(req.contains("s.token"))
+
+        val snapshotStart = src.indexOf("internal fun requestSnapshot(hostOverride: String?, auth: Boolean)")
+        val clearStart = src.indexOf("internal fun clearTokenIfCurrent", snapshotStart)
+        val snapshotBody = src.substring(snapshotStart, clearStart)
+        assertTrue(snapshotBody.contains("auth && hostOverride != null && host != storedHost"))
+        assertTrue(snapshotBody.contains("authenticated sync host override rejected"))
+        assertTrue(snapshotBody.contains("if (auth && bearerToken.isNullOrEmpty()) throw SyncAuthException()"))
+        assertTrue(src.contains("val pairingSnapshot = s.beginPairingSnapshot(hostOverride)"))
+    }
+
+    @Test
+    fun workerPinsOnePairingAndGuardsEveryResponseSideEffect() {
+        val worker = readSource("SyncWorker.kt")
+
+        assertTrue(worker.contains("val cycleSnapshot = s.requestSnapshot(hostOverride = null, auth = true)"))
+        assertTrue(worker.contains("val client = SyncClient(s, cycleSnapshot)"))
+        assertTrue(worker.contains("runIfCurrentOrThrow(s, cycleSnapshot) { s.markSyncPushBlocked(state) }"))
+        assertTrue(worker.contains("runIfCurrentOrThrow(s, cycleSnapshot) { s.clearSyncPushBlocked() }"))
+        assertTrue(worker.contains("runIfCurrentOrThrow(s, cycleSnapshot) { outbox.clearUpTo(seq) }"))
+        assertTrue(worker.contains("pullAll(db, s, client, cycleSnapshot)"))
+        assertTrue(worker.contains("runIfCurrentOrThrow(s, cycleSnapshot)"))
+        assertTrue(worker.contains("SyncApply.applyEvents(db, events)"))
+        assertTrue(worker.contains("s.sinceSeq = nextSince"))
+        assertTrue(worker.contains("catch (e: SyncPairingChangedException)"))
+    }
+
+    @Test
+    fun processPairingGateIsGuardedBySingleProcessAndroidTopology() {
+        val manifest = readAppFile("src", "main", "AndroidManifest.xml")
+        val build = readAppFile("build.gradle.kts")
+
+        assertFalse(manifest.contains("android:process"))
+        assertFalse(manifest.contains("android:isolatedProcess"))
+        assertFalse(build.contains("work-multiprocess"))
     }
 
     @Test
@@ -182,6 +248,13 @@ class SyncWorkerSourceTest {
         assertTrue(nullBranch.contains("remove(TOKEN_IV).remove(TOKEN_CT).commit()"))
         assertTrue(nullBranch.contains("if (!cleared) throw IOException(\"token clear failed\")"))
         assertFalse(nullBranch.contains(".apply()"))
+
+        assertTrue(src.contains("private const val LEGACY_TOKEN_MIGRATED = \"token_migrated_v1\""))
+        val clearStoredStart = src.indexOf("private fun clearStoredToken()")
+        val migrateStart = src.indexOf("private fun migrateLegacyToken()", clearStoredStart)
+        val clearStored = src.substring(clearStoredStart, migrateStart)
+        assertTrue(clearStored.indexOf("putBoolean(LEGACY_TOKEN_MIGRATED, true)") < clearStored.indexOf("tokenStore.set(null)"))
+        assertTrue(clearStored.contains(".commit()"))
     }
 
     private fun readSource(fileName: String): String {
@@ -196,6 +269,12 @@ class SyncWorkerSourceTest {
             fileName,
         )
         assertTrue("source file is missing: $path", Files.isRegularFile(path))
+        return String(Files.readAllBytes(path), Charsets.UTF_8)
+    }
+
+    private fun readAppFile(first: String, vararg more: String): String {
+        val path = Path.of(first, *more)
+        assertTrue("app file is missing: $path", Files.isRegularFile(path))
         return String(Files.readAllBytes(path), Charsets.UTF_8)
     }
 }
