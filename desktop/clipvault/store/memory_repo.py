@@ -46,7 +46,9 @@ class MemoryRepo:
 
     def upsert(self, kind: str, text: str, *, label: str | None = None,
                source: str = "manual", pinned: bool = False,
-               use_count: int = 0, now: str | None = None) -> MemoryItem:
+               use_count: int = 0, now: str | None = None,
+               revive_deleted: bool = True,
+               commit: bool = True) -> MemoryItem:
         if kind not in KINDS:
             raise ValueError(f"invalid memory kind: {kind}")
         text = text.strip()
@@ -65,18 +67,21 @@ class MemoryRepo:
             # update label/pinned; use_count never goes backwards
             self.conn.execute(
                 "UPDATE memory_items SET label=COALESCE(?, label), pinned=?, "
-                "use_count=MAX(use_count, ?), deleted=0 WHERE id=?",
+                "use_count=MAX(use_count, ?), "
+                "deleted=CASE WHEN ? THEN 0 ELSE deleted END WHERE id=?",
                 (label, int(pinned or existing.pinned), max(use_count, existing.use_count),
-                 existing.id),
+                 int(revive_deleted), existing.id),
             )
-            self.conn.commit()
+            if commit:
+                self.conn.commit()
             return self.get(existing.id)
         item_id = ulid.new()
         self.conn.execute(
             f"INSERT INTO memory_items ({_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (item_id, kind, text, label, int(pinned), use_count, None, source, now, 0),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return self.get(item_id)
 
     def get(self, item_id: str) -> MemoryItem | None:
@@ -128,18 +133,20 @@ class MemoryRepo:
                 break
         return safe[:limit]
 
-    def bump_use(self, item_id: str, when: str) -> None:
+    def bump_use(self, item_id: str, when: str, *, commit: bool = True) -> None:
         self.conn.execute(
             "UPDATE memory_items SET use_count=use_count+1, last_used_at=? WHERE id=?",
             (when, item_id),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
-    def soft_delete(self, item_id: str) -> bool:
+    def soft_delete(self, item_id: str, *, commit: bool = True) -> bool:
         cur = self.conn.execute(
             "UPDATE memory_items SET deleted=1 WHERE id=?", (item_id,)
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return cur.rowcount > 0
 
 

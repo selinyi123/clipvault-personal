@@ -227,26 +227,77 @@ class Api:
     def create_memory(self, body: dict) -> tuple[int, dict]:
         kind = body.get("kind")
         text = body.get("text")
+        label = body.get("label")
+        pinned = body.get("pinned", False)
         if kind not in MEMORY_KINDS:
             return 400, {"error": {"code": "bad_kind", "message": f"kind in {MEMORY_KINDS}"}}
         if not isinstance(text, str) or not text.strip():
             return 400, {"error": {"code": "bad_request", "message": "text required"}}
+        if label is not None and not isinstance(label, str):
+            return 400, {"error": {
+                "code": "bad_request", "message": "label must be a string or null"
+            }}
+        if not isinstance(pinned, bool):
+            return 400, {"error": {
+                "code": "bad_request", "message": "pinned must be boolean"
+            }}
         try:
-            item = self.memory.upsert(kind, text, label=body.get("label"),
-                                      pinned=bool(body.get("pinned", False)))
+            sync_engine.validate_memory_upsert_payload({
+                "kind": kind,
+                "text": text.strip(),
+                "label": label,
+                "pinned": pinned,
+                "use_count": 0,
+                "source": "manual",
+            })
+        except ValueError:
+            return 400, {"error": {
+                "code": "bad_request",
+                "message": "memory fields exceed limits or are invalid",
+            }}
+        now = _now_iso()
+        try:
+            with unit_of_work(self.conn):
+                item = self.memory.upsert(
+                    kind,
+                    text,
+                    label=label,
+                    pinned=pinned,
+                    commit=False,
+                )
+                sync_engine.emit_memory_upsert(
+                    self.conn, item, now, commit=False
+                )
         except SecretMemoryError:
             return 422, {"error": {
                 "code": "secret_rejected",
                 "message": "Personal Memory rejected by Secret Guard",
             }}
-        sync_engine.emit_memory_upsert(self.conn, item, _now_iso())
+        except (ValueError, UnicodeError):
+            return 400, {"error": {
+                "code": "bad_request",
+                "message": "memory fields exceed limits or are invalid",
+            }}
         return 201, {"memory": _memory_dict(item)}
 
     def delete_memory(self, item_id: str) -> tuple[int, dict]:
-        item = self.memory.get(item_id)
-        if item is None or not self.memory.soft_delete(item_id):
-            return 404, {"error": {"code": "not_found", "message": item_id}}
-        sync_engine.emit_memory_delete(self.conn, item.kind, item.text, _now_iso(), _now_iso())
+        now = _now_iso()
+        with unit_of_work(self.conn):
+            item = self.memory.get(item_id)
+            if item is None or not self.memory.soft_delete(
+                item_id, commit=False
+            ):
+                return 404, {
+                    "error": {"code": "not_found", "message": item_id}
+                }
+            sync_engine.emit_memory_delete(
+                self.conn,
+                item.kind,
+                item.text,
+                now,
+                now,
+                commit=False,
+            )
         return 200, {"id": item_id, "deleted": True}
 
     def promote_clip(self, clip_id: str, body: dict | None = None) -> tuple[int, dict]:
@@ -256,7 +307,6 @@ class Api:
         item = self.service.promote_clip(clip_id, kind)
         if item is None:
             return 404, {"error": {"code": "not_found_or_secret", "message": clip_id}}
-        sync_engine.emit_memory_upsert(self.conn, item, _now_iso())
         return 201, {"memory": _memory_dict(item)}
 
     def clip_actions(self, clip_id: str) -> tuple[int, dict]:

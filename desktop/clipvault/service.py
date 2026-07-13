@@ -172,14 +172,27 @@ class ClipVaultService:
 
         An explicit kind (from a Context Action chip) overrides the default
         content_type mapping; an invalid kind raises ValueError via upsert."""
-        clip = self.clips.get(clip_id)
-        if clip is None or clip.is_secret:
-            return None
-        target = kind or _PROMOTE_KIND.get(clip.content_type, "phrase")
+        from clipvault.sync import engine
+
+        now = _utc_now()
         try:
-            return MemoryRepo(self.conn).upsert(
-                target, clip.content[:200], source="derived"
-            )
+            with unit_of_work(self.conn):
+                clip = self.clips.get(clip_id)
+                if clip is None or engine.clip_requires_local_quarantine(clip):
+                    return None
+                target = kind or _PROMOTE_KIND.get(
+                    clip.content_type, "phrase"
+                )
+                item = MemoryRepo(self.conn).upsert(
+                    target,
+                    clip.content[:200],
+                    source="derived",
+                    commit=False,
+                )
+                engine.emit_memory_upsert(
+                    self.conn, item, now, commit=False
+                )
+                return item
         except SecretMemoryError:
             # A legacy clip may predate a newer SG-1 rule and still carry
             # is_secret=0. Re-scan at the Memory boundary and fail closed.

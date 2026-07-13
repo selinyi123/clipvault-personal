@@ -42,6 +42,8 @@ _MEMORY_UPSERT_PAYLOAD_FIELDS = frozenset(
 _MEMORY_DELETE_PAYLOAD_FIELDS = frozenset(("kind", "text", "ts"))
 _MAX_META_TIMESTAMP = "9999-12-31T23:59:59Z"
 _MAX_META_LOCAL_FENCE = f"{_MAX_META_TIMESTAMP}#local"
+_MAX_MEMORY_TIMESTAMP = _MAX_META_TIMESTAMP
+_MAX_MEMORY_LOCAL_FENCE = f"{_MAX_MEMORY_TIMESTAMP}#local"
 
 SYNC_PULL_EVENT_LIMIT = 100
 # SQLite rows are decoded before wire budgeting. Fetch a small internal page so
@@ -158,6 +160,15 @@ def _validate_memory_upsert(data: dict) -> None:
         or _has_control_chars(source)
     ):
         raise MalformedSyncEvent("invalid memory source")
+
+
+def validate_memory_upsert_payload(data: dict) -> None:
+    """Validate a locally generated Memory payload without touching SQLite."""
+
+    try:
+        _validate_memory_upsert(data)
+    except (MalformedSyncEvent, UnicodeError) as exc:
+        raise ValueError("invalid memory upsert payload") from exc
 
 
 def _validate_memory_delete(data: dict) -> None:
@@ -356,7 +367,23 @@ def _memory_data_is_secret(data: dict) -> bool:
     return memory_contains_secret(text, data.get("label"))
 
 
-def emit_memory_upsert(conn, item, when: str) -> int | None:
+def _memory_key_is_secret(conn, kind: str, text: str) -> bool:
+    """Re-scan a Memory key plus any persisted label at every exit/apply gate."""
+
+    from clipvault.store.memory_repo import MemoryRepo, memory_contains_secret
+
+    existing = MemoryRepo(conn).by_kind_text(kind, text)
+    label = existing.label if existing is not None else None
+    return memory_contains_secret(text, label)
+
+
+def emit_memory_upsert(
+    conn,
+    item,
+    when: str,
+    *,
+    commit: bool = True,
+) -> int | None:
     """Publish public Personal Memory to peers.
 
     This is an independent SG-1 exit gate: callers cannot bypass it by handing
@@ -366,20 +393,52 @@ def emit_memory_upsert(conn, item, when: str) -> int | None:
         "kind": item.kind, "text": item.text, "label": item.label,
         "pinned": item.pinned, "use_count": item.use_count, "source": item.source,
     }
+    validate_memory_upsert_payload(data)
+    if not _valid_utc_timestamp(when):
+        raise ValueError("invalid memory upsert event timestamp")
     if _memory_data_is_secret(data):
         log.error("secret memory blocked at sync outbox boundary")
         return None
-    _set_mem_ts(conn, item.kind, item.text, when)
-    return OutboxRepo(conn).append("memory_upsert", data, when)
+    if commit:
+        with unit_of_work(conn):
+            return emit_memory_upsert(conn, item, when, commit=False)
+    _, stored_ts = _next_local_mem_ts(conn, item.kind, item.text, when)
+    _set_mem_ts(conn, item.kind, item.text, stored_ts, commit=False)
+    return OutboxRepo(conn).append(
+        "memory_upsert", data, when, commit=False
+    )
 
 
-def emit_memory_delete(conn, kind: str, text: str, ts: str, when: str) -> int | None:
-    if _memory_data_is_secret({"text": text}):
+def emit_memory_delete(
+    conn,
+    kind: str,
+    text: str,
+    ts: str,
+    when: str,
+    *,
+    commit: bool = True,
+) -> int | None:
+    try:
+        _validate_memory_delete({"kind": kind, "text": text, "ts": ts})
+    except MalformedSyncEvent as exc:
+        raise ValueError(str(exc)) from exc
+    if not _valid_utc_timestamp(when):
+        raise ValueError("invalid memory delete event timestamp")
+    if _memory_key_is_secret(conn, kind, text):
         log.error("secret memory delete blocked at sync outbox boundary")
         return None
-    _set_mem_ts(conn, kind, text, ts)
+    if commit:
+        with unit_of_work(conn):
+            return emit_memory_delete(
+                conn, kind, text, ts, when, commit=False
+            )
+    wire_ts, stored_ts = _next_local_mem_ts(conn, kind, text, ts)
+    _set_mem_ts(conn, kind, text, stored_ts, commit=False)
     return OutboxRepo(conn).append(
-        "memory_delete", {"kind": kind, "text": text, "ts": ts}, when
+        "memory_delete",
+        {"kind": kind, "text": text, "ts": wire_ts},
+        when,
+        commit=False,
     )
 
 
@@ -456,14 +515,51 @@ def _get_mem_ts(conn, kind: str, text: str) -> str:
     return row[0] if row else ""
 
 
-def _set_mem_ts(conn, kind: str, text: str, ts: str) -> None:
+def _next_local_mem_ts(
+    conn,
+    kind: str,
+    text: str,
+    candidate_ts: str,
+) -> tuple[str, str]:
+    """Return wire and persisted clocks for a local Memory mutation.
+
+    Memory delete uses last-writer-wins timestamps, so every explicit local
+    create, update, or delete must sort after the previously recorded clock
+    even when the wall clock repeats or moves backwards. At the fixed-format
+    ceiling, a Desktop-only suffix fences replayed plain-maximum deletes while
+    the wire timestamp remains valid for ordered Android consumers.
+    """
+
+    current = _get_mem_ts(conn, kind, text)
+    if not current or candidate_ts > current:
+        return candidate_ts, candidate_ts
+    if current.startswith(_MAX_MEMORY_TIMESTAMP):
+        return _MAX_MEMORY_TIMESTAMP, _MAX_MEMORY_LOCAL_FENCE
+    parsed = datetime.strptime(current, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc
+    )
+    advanced = (parsed + timedelta(seconds=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    return advanced, advanced
+
+
+def _set_mem_ts(
+    conn,
+    kind: str,
+    text: str,
+    ts: str,
+    *,
+    commit: bool = True,
+) -> None:
     conn.execute(
         "INSERT INTO memory_meta_ts(kind, text, ts) VALUES (?,?,?) "
         "ON CONFLICT(kind, text) DO UPDATE SET ts=excluded.ts "
         "WHERE excluded.ts >= memory_meta_ts.ts",
         (kind, text, ts),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 # --- remote application (called by /api/sync/push) ---
@@ -595,14 +691,40 @@ def _apply_clip_new(conn, data: dict, service) -> None:
 
 
 def _apply_memory_upsert(conn, data: dict) -> None:
-    from clipvault.store.memory_repo import MemoryRepo, SecretMemoryError
+    from clipvault.store.memory_repo import (
+        MemoryRepo,
+        SecretMemoryError,
+        memory_contains_secret,
+    )
 
     try:
-        MemoryRepo(conn).upsert(
-            data["kind"], data["text"], label=data.get("label"),
-            source=data.get("source", "manual"), pinned=data.get("pinned", False),
-            use_count=data.get("use_count", 0),
-        )
+        with unit_of_work(conn):
+            repo = MemoryRepo(conn)
+            existing = repo.by_kind_text(data["kind"], data["text"])
+            if existing is not None and (
+                existing.deleted
+                or memory_contains_secret(existing.text, existing.label)
+            ):
+                # A legacy peer event may update only a live, public item. It
+                # cannot sanitize, mutate, or revive a Desktop tombstone or a
+                # row quarantined by the current Secret Guard.
+                return
+            if existing is None and _get_mem_ts(
+                conn, data["kind"], data["text"]
+            ):
+                # A clock without a fact row is still a durable tombstone (for
+                # example, a delete that arrived before a gapped upsert).
+                return
+            repo.upsert(
+                data["kind"],
+                data["text"],
+                label=data.get("label"),
+                source=data.get("source", "manual"),
+                pinned=data.get("pinned", False),
+                use_count=data.get("use_count", 0),
+                revive_deleted=False,
+                commit=False,
+            )
     except SecretMemoryError:
         # Treat a secret-shaped remote event as an acknowledged quarantine
         # no-op. Retrying it forever cannot make it safe and would wedge sync.
@@ -612,14 +734,19 @@ def _apply_memory_upsert(conn, data: dict) -> None:
 def _apply_memory_delete(conn, data: dict) -> None:
     from clipvault.store.memory_repo import MemoryRepo
     kind, text, ts = data["kind"], data["text"], data.get("ts", "")
-    # LWW (CONTRACTS §5.2): a stale delete must not remove a locally newer item.
-    if ts < _get_mem_ts(conn, kind, text):
-        return
-    repo = MemoryRepo(conn)
-    item = repo.by_kind_text(kind, text)
-    if item is not None:
-        repo.soft_delete(item.id)
-    _set_mem_ts(conn, kind, text, ts)
+    with unit_of_work(conn):
+        if _memory_key_is_secret(conn, kind, text):
+            log.error("remote secret memory delete rejected")
+            return
+        # Read only after the writer lock. A stale delete must not remove a
+        # locally newer item, including a maximum-timestamp local fence.
+        if ts < _get_mem_ts(conn, kind, text):
+            return
+        repo = MemoryRepo(conn)
+        item = repo.by_kind_text(kind, text)
+        if item is not None:
+            repo.soft_delete(item.id, commit=False)
+        _set_mem_ts(conn, kind, text, ts, commit=False)
 
 
 def _apply_clip_meta(conn, data: dict) -> None:
@@ -750,12 +877,16 @@ def _outbox_event_is_blocked(conn, event: dict) -> bool:
             if not set(payload).issubset(_MEMORY_UPSERT_PAYLOAD_FIELDS):
                 return True
             _validate_memory_upsert(payload)
-            return _memory_data_is_secret(payload)
+            return _memory_data_is_secret(payload) or _memory_key_is_secret(
+                conn, payload["kind"], payload["text"]
+            )
         if kind == "memory_delete":
             if set(payload) != _MEMORY_DELETE_PAYLOAD_FIELDS:
                 return True
             _validate_memory_delete(payload)
-            return _memory_data_is_secret(payload)
+            return _memory_key_is_secret(
+                conn, payload["kind"], payload["text"]
+            )
     except MalformedSyncEvent:
         return True
     # A downgraded or corrupted writer must not turn an unknown payload shape
