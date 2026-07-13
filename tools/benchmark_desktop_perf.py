@@ -148,6 +148,11 @@ def _clip_seed_row(index: int, *, seen: str, created: str) -> tuple[tuple, tuple
     clip_id = f"P{index:025d}"
     content = f"记录 {index:06d} 服务器部署文档 alpha beta"
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    # New clips start with times_seen=1 in production. Keep the suggestion
+    # population deliberately sparse so a recency-only index cannot hide an
+    # O(N) residual eligibility scan. The first ten rows keep small CLI runs
+    # capable of exercising a real ten-result suggestion response.
+    times_seen = 3 if index < 10 or index % 1_000 == 0 else 1
     clip = (
         clip_id,
         content,
@@ -162,7 +167,7 @@ def _clip_seed_row(index: int, *, seen: str, created: str) -> tuple[tuple, tuple
         None,
         created,
         seen,
-        3,
+        times_seen,
         0,
         0,
         0,

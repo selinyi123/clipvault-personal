@@ -63,6 +63,20 @@ def test_tree_state_is_aggregate_only():
     assert benchmark._source_tree_state() in {"clean", "dirty", "unknown"}
 
 
+def test_synthetic_suggestion_population_is_sparse_but_has_ten_results():
+    rows = [
+        benchmark._clip_seed_row(
+            index,
+            seen="2026-07-13T00:00:00Z",
+            created="2026-07-01T00:00:00Z",
+        )[0]
+        for index in range(10_000)
+    ]
+    eligible = sum(row[13] >= 3 or bool(row[15]) for row in rows)
+
+    assert 10 <= eligible < 50
+
+
 @pytest.mark.parametrize(
     "argv",
     [
