@@ -114,19 +114,33 @@ def test_android_pairing_does_not_commit_host_before_token_redeem():
     assert "SyncClient(s).pairWithHost(h, c)" in main
 
     assert "fun pairWithHost(host: String, code: String): Boolean" in sync
-    assert "val token = SyncClient(s, h).requestPairToken(code) ?: return false" in sync
-    assert "s.replacePairing(h, token)" in sync
+    assert "val redemption = SyncClient(s, h).requestPairToken(code) ?: return false" in sync
+    assert "s.replacePairingIfCurrent(" in sync
+    assert "redemption.serverDevice" in sync
+    assert "pairingInProgress = true" in main
+    assert "enabled = !pairingInProgress" in main
+    assert "onDismissRequest = { if (!pairingInProgress) onDismiss() }" in main
+    assert "TextButton(enabled = !pairingInProgress, onClick = onDismiss)" in main
 
-    commit = re.search(
-        r"(?s)fun replacePairing\(host: String, token: String\) \{(?P<body>.*?)\n    \}",
-        sync,
-    )
-    assert commit, "Settings.replacePairing must commit pairing state fail-closed"
-    body = commit.group("body")
-    clear = body.index("tokenStore.set(null)")
+    commit_start = sync.index("private fun replacePairingStorage(")
+    commit_end = sync.index("private fun updateServerIdentityAndResetCursorIfChanged", commit_start)
+    body = sync[commit_start:commit_end]
+    clear = body.index("clearStoredToken()")
     host = body.index('putString("host", host)')
     install = body.index("installFreshToken(token)")
     assert clear < host < install
+
+    snapshot_start = sync.index("internal fun requestSnapshot(hostOverride: String?, auth: Boolean)")
+    snapshot_end = sync.index("internal fun clearTokenIfCurrent", snapshot_start)
+    snapshot_body = sync[snapshot_start:snapshot_end]
+    assert "pairingGate.snapshot" in snapshot_body
+    assert 'sp.getString("host", null)' in snapshot_body
+    assert 'sp.getInt("port", 8787)' in snapshot_body
+    assert "tokenStore.get()" in snapshot_body
+    assert "authenticated sync host override rejected" in snapshot_body
+    assert "if (auth && bearerToken.isNullOrEmpty()) throw SyncAuthException()" in snapshot_body
+    assert 'putLong("since", 0L)' in body
+    assert 'optString("server_device", "")' in sync
 
     fresh = re.search(
         r"(?s)private fun installFreshToken\(token: String\) \{(?P<body>.*?)\n    \}",

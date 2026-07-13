@@ -265,8 +265,9 @@ private fun PairDialog(onDismiss: () -> Unit) {
     var host by remember { mutableStateOf(Settings(ctx).host ?: "") }
     var code by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
+    var pairingInProgress by remember { mutableStateOf(false) }
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!pairingInProgress) onDismiss() },
         title = { Text("配对桌面") },
         text = {
             Column {
@@ -279,22 +280,26 @@ private fun PairDialog(onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            TextButton(onClick = {
+            TextButton(enabled = !pairingInProgress, onClick = {
                 val h = host.trim(); val c = code.trim()
                 if (h.isEmpty()) { msg = "请先填写电脑 IP"; return@TextButton }
                 if (c.isEmpty()) { msg = "请先填写配对码"; return@TextButton }
                 val s = Settings(ctx)
+                pairingInProgress = true
                 msg = "配对中…"
                 scope.launch {
                     // try/catch so a network/parse failure can never crash the app.
                     val ok = try {
                         withContext(Dispatchers.IO) { SyncClient(s).pairWithHost(h, c) }
                     } catch (e: Exception) { false }
+                    pairingInProgress = false
                     if (ok) { SyncScheduler.requestPush(ctx); onDismiss() }
                     else msg = "配对失败：请确认电脑端 ClipVault 正在运行、IP 与配对码正确（码 5 分钟有效）、手机和电脑在同一网络。若电脑端 server.host 仍是默认的 127.0.0.1，需在可信网络下改为 0.0.0.0 并重启才能被手机连接"
                 }
             }) { Text("配对") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = {
+            TextButton(enabled = !pairingInProgress, onClick = onDismiss) { Text("取消") }
+        },
     )
 }

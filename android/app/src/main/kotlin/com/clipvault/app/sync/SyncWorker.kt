@@ -274,15 +274,20 @@ internal fun runSyncCycle(
 class SyncWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
     override fun doWork(): Result {
         val s = Settings(applicationContext)
-        if (s.host.isNullOrBlank() || s.token.isNullOrBlank()) return Result.success()
-        val db = ClipVaultApp.db(applicationContext)
-        val client = SyncClient(s)
         return try {
+            if (s.host.isNullOrBlank() || s.token.isNullOrBlank()) return Result.success()
+            val cycleSnapshot = s.requestSnapshot(hostOverride = null, auth = true)
+            val db = ClipVaultApp.db(applicationContext)
+            val client = SyncClient(s, cycleSnapshot)
             val complete = runSyncCycle(
                 firstPendingSeq = { db.outbox().firstSeq() },
                 readBlocked = { s.syncPushBlocked },
-                persistBlocked = { state -> s.markSyncPushBlocked(state) },
-                clearBlocked = { s.clearSyncPushBlocked() },
+                persistBlocked = { state ->
+                    runIfCurrentOrThrow(s, cycleSnapshot) { s.markSyncPushBlocked(state) }
+                },
+                clearBlocked = {
+                    runIfCurrentOrThrow(s, cycleSnapshot) { s.clearSyncPushBlocked() }
+                },
                 pushPhase = {
                     val outbox = db.outbox()
                     drainSyncOutbox(
@@ -294,18 +299,26 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
                         },
                         deviceId = s.deviceId,
                         push = { events -> client.push(events) },
-                        clearUpTo = { seq -> outbox.clearUpTo(seq) },
+                        clearUpTo = { seq ->
+                            runIfCurrentOrThrow(s, cycleSnapshot) { outbox.clearUpTo(seq) }
+                        },
                     )
                 },
-                pullPhase = { pullAll(db, s, client) },
+                pullPhase = { pullAll(db, s, client, cycleSnapshot) },
                 onBlocked = { Log.w("ClipVaultSync", "sync push blocked") },
             )
             if (complete) Result.success() else Result.retry()
+        } catch (e: SyncPairingChangedException) {
+            // A newer pairing owns all future response side effects. Retry so
+            // WorkManager can take a fresh cycle snapshot if still paired.
+            Log.w("ClipVaultSync", "sync pairing changed")
+            Result.retry()
         } catch (e: SyncAuthException) {
             // The paired desktop rejected the bearer token. Stop immediate
             // WorkManager retry loops and require an explicit re-pair instead
             // of repeatedly sending a known-bad token on every backoff attempt.
-            s.token = null
+            // SyncClient conditionally clears only the exact request snapshot;
+            // a late rejection from an old peer must not clear a fresh pairing.
             Log.w("ClipVaultSync", "sync auth failed")
             Result.success()
         } catch (e: Exception) {
@@ -316,17 +329,32 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
         }
     }
 
-    private fun pullAll(db: AppDatabase, s: Settings, client: SyncClient): Boolean {
+    private fun pullAll(
+        db: AppDatabase,
+        s: Settings,
+        client: SyncClient,
+        cycleSnapshot: SyncRequestSnapshot,
+    ): Boolean {
         var since = s.sinceSeq
         while (true) {
             val resp = client.pull(since) ?: return false
             val events = resp.getJSONArray("events")
             val nextSince = nextPullCursorOrThrow(since, events, resp)
-            SyncApply.applyEvents(db, events)
+            runIfCurrentOrThrow(s, cycleSnapshot) {
+                SyncApply.applyEvents(db, events)
+                s.sinceSeq = nextSince
+            }
             since = nextSince
-            s.sinceSeq = since
             if (!resp.optBoolean("has_more", false)) return true
         }
+    }
+
+    private fun runIfCurrentOrThrow(
+        settings: Settings,
+        expected: SyncRequestSnapshot,
+        block: () -> Unit,
+    ) {
+        if (!settings.runIfCurrent(expected, block)) throw SyncPairingChangedException()
     }
 }
 
