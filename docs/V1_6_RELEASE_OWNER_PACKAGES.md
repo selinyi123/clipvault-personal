@@ -16,7 +16,9 @@ one exact current-main commit:
    - `ANDROID_RELEASE_KEY_ALIAS`
    - `ANDROID_RELEASE_KEY_PASSWORD`
 4. The workflow enforces an independently confirmed 64-hex Owner certificate
-   SHA-256. A generic valid APK signature is not sufficient.
+   SHA-256 before attestation or upload. Missing,
+   malformed, multi-signer, and mismatched certificates fail closed; a generic
+   valid APK signature is not sufficient.
 5. The final `draft=true` run produces the draft Release asset set.
 6. Downloaded bytes, manifests, attestations, APK signer identity, and SHA-256
    values are verified from that same run and draft.

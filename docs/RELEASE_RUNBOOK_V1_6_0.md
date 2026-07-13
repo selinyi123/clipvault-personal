@@ -100,9 +100,12 @@ ANDROID_RELEASE_KEY_PASSWORD
 
 The release workflow must also enforce the non-secret environment variable
 `ANDROID_RELEASE_CERT_SHA256`, containing the 64-hex certificate SHA-256 that
-the Owner independently confirmed from the long-lived release key. Do not run a
-final signing workflow until that comparison is fail-closed; a generic valid APK
-signature or an `apksigner --print-certs` text shape is not Owner identity proof.
+the Owner independently confirmed from the long-lived release key. The workflow
+requires 64 lowercase hex characters, verifies exactly one signer with
+`apksigner verify --verbose -Werr --print-certs`, and compares that signer with
+the Owner value before attestation or upload. A generic
+valid APK signature or an unbound `apksigner` text file is not Owner identity
+proof.
 
 Example CLI setup for the keystore value:
 
@@ -191,10 +194,11 @@ Those commands deliberately:
 - save the draft Release digest set for the pre-publication recheck.
 
 Run `python tools/release_artifact_evidence.py` against the Actions artifact
-directories as shown in the pack. At present that helper validates manifest/checksum shape,
-not the GitHub run, attestation, real downloaded APK signer, or expected Owner
-certificate identity. Until those checks are implemented and pass, its report is
-only a structural precheck and the artifact gate remains blocked.
+directories as shown in the pack. The helper validates the exact manifest/checksum
+set and binds captured signer evidence to the supplied Owner certificate SHA-256.
+It does not independently run `apksigner` on the downloaded APK or verify the
+GitHub run and attestations. Until those live checks are implemented and pass,
+its report is only a structural precheck and the artifact gate remains blocked.
 A green workflow run does not by itself prove the artifact contents.
 
 The hardened artifact gate must also make GitHub attestation verification

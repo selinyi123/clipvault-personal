@@ -19,6 +19,11 @@ def _load_script(name):
 
 release_candidate_manifest = _load_script("release_candidate_manifest")
 verify_release_manifest = _load_script("verify_release_manifest")
+OWNER_CERT_SHA256 = "ab" * 32
+OTHER_CERT_SHA256 = "cd" * 32
+VALID_APKSIGNER_EVIDENCE = (
+    f"Signer #1 certificate SHA-256 digest: {OWNER_CERT_SHA256}\n".encode("ascii")
+)
 
 
 def _build_fixture(tmp_path):
@@ -36,7 +41,7 @@ def _build_signed_android_fixture(
     tmp_path,
     *,
     include_evidence=True,
-    evidence_body=b"Signer #1 certificate SHA-256 digest: abc123\n",
+    evidence_body=VALID_APKSIGNER_EVIDENCE,
 ):
     (tmp_path / "ClipVault-Android-v1.6.0-release-signed.apk").write_bytes(b"signed apk")
     if include_evidence:
@@ -161,6 +166,23 @@ def test_verify_rejects_actual_hidden_artifacts(tmp_path):
         verify_release_manifest.verify_manifest(tmp_path, expect_dry_run=True)
 
 
+def test_verify_rejects_extra_artifact_even_when_manifest_and_checksums_include_it(
+    tmp_path,
+):
+    (tmp_path / "ClipVault-Desktop-v1.6.0-portable.exe").write_bytes(b"portable")
+    (tmp_path / "ClipVault-Setup-v1.6.0.exe").write_bytes(b"installer")
+    (tmp_path / "unexpected.bin").write_bytes(b"not part of the release contract")
+    release_candidate_manifest.build_manifest(
+        tmp_path,
+        platform="windows",
+        version="1.6.0",
+        commit="abc123",
+    )
+
+    with pytest.raises(ValueError, match="unexpected release artifact"):
+        verify_release_manifest.verify_manifest(tmp_path, expect_dry_run=True)
+
+
 def test_verify_rejects_symlink_artifacts(tmp_path):
     _build_fixture(tmp_path)
     artifact = tmp_path / "ClipVault-Desktop-v1.6.0-portable.exe"
@@ -195,6 +217,7 @@ def test_verify_signed_android_manifest_requires_apksigner_evidence(tmp_path):
         version="1.6.0",
         commit="123release",
         require_signed=True,
+        expected_android_cert_sha256=OWNER_CERT_SHA256,
     )
 
     assert manifest["signed"] is True
@@ -202,6 +225,95 @@ def test_verify_signed_android_manifest_requires_apksigner_evidence(tmp_path):
         "ANDROID_APKSIGNER_VERIFY.txt",
         "ClipVault-Android-v1.6.0-release-signed.apk",
     ]
+
+
+def test_android_certificate_digest_normalization_is_strict_and_case_insensitive():
+    assert verify_release_manifest.normalize_android_cert_sha256(
+        OWNER_CERT_SHA256.upper()
+    ) == OWNER_CERT_SHA256
+
+
+def test_parse_realistic_multiline_apksigner_output_with_crlf():
+    output = (
+        "Verifies\r\n"
+        "Verified using v1 scheme (JAR signing): true\r\n"
+        "Verified using v2 scheme (APK Signature Scheme v2): true\r\n"
+        "Verified using v3 scheme (APK Signature Scheme v3): true\r\n"
+        "Number of signers: 1\r\n"
+        "Signer #1 certificate DN: CN=ClipVault Owner\r\n"
+        f"Signer #1 certificate SHA-256 digest: {OWNER_CERT_SHA256.upper()}\r\n"
+        f"Signer #1 certificate SHA-1 digest: {'1' * 40}\r\n"
+        f"Signer #1 certificate MD5 digest: {'2' * 32}\r\n"
+        "Signer #1 key algorithm: RSA\r\n"
+        "Signer #1 key size (bits): 4096\r\n"
+        f"Signer #1 public key SHA-256 digest: {OTHER_CERT_SHA256}\r\n"
+        f"Source Stamp Signer certificate SHA-256 digest: {OTHER_CERT_SHA256}\r\n"
+    )
+
+    assert (
+        verify_release_manifest.parse_android_signer_cert_sha256(output)
+        == OWNER_CERT_SHA256
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "abc123",
+        "a" * 63,
+        "a" * 65,
+        "aa:" * 31 + "aa",
+        f"sha256:{OWNER_CERT_SHA256}",
+        f" {OWNER_CERT_SHA256}",
+        f"{OWNER_CERT_SHA256}\n",
+    ],
+)
+def test_android_certificate_digest_normalization_rejects_ambiguous_values(value):
+    with pytest.raises(ValueError, match="exactly 64 unseparated hex"):
+        verify_release_manifest.normalize_android_cert_sha256(value)
+
+
+def test_verify_signed_android_manifest_matches_owner_certificate(tmp_path):
+    _build_signed_android_fixture(tmp_path)
+
+    manifest = verify_release_manifest.verify_manifest(
+        tmp_path,
+        platform="android",
+        version="1.6.0",
+        commit="123release",
+        require_signed=True,
+        expected_android_cert_sha256=OWNER_CERT_SHA256.upper(),
+    )
+
+    assert manifest["signed"] is True
+
+
+def test_verify_android_release_requires_owner_certificate_even_without_cli_flag(
+    tmp_path,
+):
+    _build_signed_android_fixture(tmp_path)
+
+    with pytest.raises(ValueError, match="requires expected_android_cert_sha256"):
+        verify_release_manifest.verify_manifest(
+            tmp_path,
+            platform="android",
+            version="1.6.0",
+            commit="123release",
+        )
+
+
+def test_verify_signed_android_manifest_rejects_wrong_owner_certificate(tmp_path):
+    _build_signed_android_fixture(tmp_path)
+
+    with pytest.raises(ValueError, match="Owner trust anchor"):
+        verify_release_manifest.verify_manifest(
+            tmp_path,
+            platform="android",
+            version="1.6.0",
+            commit="123release",
+            require_signed=True,
+            expected_android_cert_sha256=OTHER_CERT_SHA256,
+        )
 
 
 def test_verify_signed_android_manifest_uses_manifest_platform_for_evidence(tmp_path):
@@ -213,6 +325,7 @@ def test_verify_signed_android_manifest_uses_manifest_platform_for_evidence(tmp_
             version="1.6.0",
             commit="123release",
             require_signed=True,
+            expected_android_cert_sha256=OWNER_CERT_SHA256,
         )
 
 
@@ -226,6 +339,7 @@ def test_verify_rejects_signed_android_manifest_without_apksigner_evidence(tmp_p
             version="1.6.0",
             commit="123release",
             require_signed=True,
+            expected_android_cert_sha256=OWNER_CERT_SHA256,
         )
 
 
@@ -239,26 +353,79 @@ def test_verify_rejects_empty_android_apksigner_evidence(tmp_path):
             version="1.6.0",
             commit="123release",
             require_signed=True,
+            expected_android_cert_sha256=OWNER_CERT_SHA256,
         )
 
 
 def test_verify_rejects_non_apksigner_signed_evidence_text(tmp_path):
     _build_signed_android_fixture(tmp_path, evidence_body=b"not empty\n")
 
-    with pytest.raises(ValueError, match="apksigner --print-certs"):
+    with pytest.raises(ValueError, match="exactly one Signer #1"):
         verify_release_manifest.verify_manifest(
             tmp_path,
             platform="android",
             version="1.6.0",
             commit="123release",
             require_signed=True,
+            expected_android_cert_sha256=OWNER_CERT_SHA256,
+        )
+
+
+@pytest.mark.parametrize(
+    "evidence_body",
+    [
+        b"Signer #1 certificate SHA-256 digest: abc123\n",
+        (
+            f"Signer #1 certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+            f"Signer #2 certificate SHA-256 digest: {OTHER_CERT_SHA256}\n"
+        ).encode("ascii"),
+        (
+            f"Signer #1 certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+            f"Signer #1 certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+        ).encode("ascii"),
+        f" Signer #1 certificate SHA-256 digest: {OWNER_CERT_SHA256}\n".encode("ascii"),
+        f"Signer #1 certificate SHA-1 digest: {'1' * 40}\n".encode("ascii"),
+        b"\xff\xfe",
+    ],
+)
+def test_verify_rejects_malformed_or_ambiguous_signer_evidence(
+    tmp_path,
+    evidence_body,
+):
+    _build_signed_android_fixture(tmp_path, evidence_body=evidence_body)
+
+    with pytest.raises(ValueError):
+        verify_release_manifest.verify_manifest(
+            tmp_path,
+            platform="android",
+            version="1.6.0",
+            commit="123release",
+            require_signed=True,
+            expected_android_cert_sha256=OWNER_CERT_SHA256,
+        )
+
+
+def test_verify_rejects_oversized_signer_evidence(tmp_path):
+    evidence = VALID_APKSIGNER_EVIDENCE + b"x" * (
+        verify_release_manifest.MAX_ANDROID_APKSIGNER_EVIDENCE_BYTES
+    )
+    _build_signed_android_fixture(tmp_path, evidence_body=evidence)
+
+    with pytest.raises(ValueError, match="exceeds"):
+        verify_release_manifest.verify_manifest(
+            tmp_path,
+            platform="android",
+            version="1.6.0",
+            commit="123release",
+            require_signed=True,
+            expected_android_cert_sha256=OWNER_CERT_SHA256,
         )
 
 
 def test_verify_rejects_android_release_with_unexpected_signed_apk_name(tmp_path):
     (tmp_path / "renamed.apk").write_bytes(b"signed apk")
     (tmp_path / "ANDROID_APKSIGNER_VERIFY.txt").write_text(
-        "Signer #1 certificate SHA-256 digest: abc123\n",
+        f"Signer #1 certificate SHA-256 digest: {OWNER_CERT_SHA256}\n",
         encoding="utf-8",
     )
     release_candidate_manifest.build_manifest(
@@ -277,6 +444,7 @@ def test_verify_rejects_android_release_with_unexpected_signed_apk_name(tmp_path
             version="1.6.0",
             commit="123release",
             require_signed=True,
+            expected_android_cert_sha256=OWNER_CERT_SHA256,
         )
 
 
@@ -296,3 +464,43 @@ def test_cli_returns_nonzero_for_mismatched_version(tmp_path, capsys):
     captured = capsys.readouterr()
     assert rc == 1
     assert "manifest version mismatch" in captured.err
+
+
+def test_signed_android_cli_requires_owner_certificate_argument(tmp_path, capsys):
+    _build_signed_android_fixture(tmp_path)
+
+    rc = verify_release_manifest.main([
+        "--artifact-dir",
+        str(tmp_path),
+        "--platform",
+        "android",
+        "--version",
+        "1.6.0",
+        "--commit",
+        "123release",
+        "--require-signed",
+    ])
+
+    assert rc == 1
+    assert "requires --expected-android-cert-sha256" in capsys.readouterr().err
+
+
+def test_signed_android_cli_accepts_matching_owner_certificate(tmp_path, capsys):
+    _build_signed_android_fixture(tmp_path)
+
+    rc = verify_release_manifest.main([
+        "--artifact-dir",
+        str(tmp_path),
+        "--platform",
+        "android",
+        "--version",
+        "1.6.0",
+        "--commit",
+        "123release",
+        "--require-signed",
+        "--expected-android-cert-sha256",
+        OWNER_CERT_SHA256,
+    ])
+
+    assert rc == 0
+    assert "verified release manifest" in capsys.readouterr().out

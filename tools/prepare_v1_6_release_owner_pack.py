@@ -137,10 +137,11 @@ This ignored local folder coordinates Issue #36 evidence collection. It does not
 perform or prove Owner-controlled signing, artifact provenance, API 26/27 or
 physical-device QA, publication approval, Release publication, or Issue closure.
 
-The Android gate remains **BLOCKED** until the workflow compares the real APK
-signer certificate SHA-256 with an Owner-confirmed 64-hex
-`ANDROID_RELEASE_CERT_SHA256`. A generic `apksigner --print-certs` text file is
-not proof of Owner signer identity.
+The release workflow rejects a missing, malformed, multi-signer, or mismatched
+APK certificate. The Android gate nevertheless remains **BLOCKED** until the
+Owner configures the independently confirmed 64-hex
+`ANDROID_RELEASE_CERT_SHA256` and a real workflow run proves that comparison.
+A generic `apksigner --print-certs` text file is not proof by itself.
 
 ## 2. Fixed target and command order
 
@@ -163,8 +164,9 @@ review policy, and add these **environment secrets**:
 
 {secret_names}
 
-Also configure the non-secret Owner certificate fingerprint only after the
-signer-identity hardening gate is present:
+Also configure the non-secret Owner certificate fingerprint. The workflow
+requires this canonical lowercase value and compares it with the sole APK signer
+before attestation or upload:
 
 ```text
 ANDROID_RELEASE_CERT_SHA256=<64 lowercase hex characters confirmed independently by Owner>
@@ -287,21 +289,26 @@ Get-ChildItem $releaseRoot -File | Sort-Object Name | ForEach-Object {{
   "{{0}}  {{1}}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(), $_.Name
 }} | Set-Content -Encoding ascii $digestReport
 
+if ($env:ANDROID_RELEASE_CERT_SHA256 -cnotmatch '^[0-9a-f]{{64}}$') {{
+  throw "Set the independently confirmed 64-lowercase-hex ANDROID_RELEASE_CERT_SHA256 locally"
+}}
+
 python tools/release_artifact_evidence.py `
   --windows-dir "$actionsRoot/clipvault-windows-release-artifacts" `
   --android-dir "$actionsRoot/clipvault-android-signed-release-artifacts" `
   --version {version} `
   --commit $targetCommit `
   --run-url $run.url `
+  --expected-android-cert-sha256 $env:ANDROID_RELEASE_CERT_SHA256 `
   --output "$artifactRoot/artifact-structure-comment.md"
 Assert-NativeSuccess "release_artifact_evidence.py"
 ```
 
-Use the APK and EXEs downloaded from `$releaseRoot` for final QA. Until the
-artifact helper independently verifies the run, attestations, downloaded APK
-with real `apksigner`, and Owner certificate identity, its output and the manual
-parity commands above remain Owner-attested prechecks; the artifact gate stays
-blocked.
+Use the APK and EXEs downloaded from `$releaseRoot` for final QA. The artifact
+helper binds captured signer evidence to the supplied Owner certificate, but it
+does not independently verify the run, attestations, or downloaded APK with real
+`apksigner`. Its output and the manual parity commands above remain Owner-attested
+prechecks; the artifact gate stays blocked.
 
 ### Step F - execute manual QA against exact bytes
 
