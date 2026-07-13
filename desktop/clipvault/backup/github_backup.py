@@ -5,7 +5,6 @@ that slipped past gates A/B (older rules) is still dropped here.
 
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 
 from clipvault.core import secret_guard
 from clipvault.backup import git_repo, jsonl_store
@@ -29,7 +28,7 @@ def _append_missing_lines(repo_path: str, relpath: str, lines: list[str]) -> Non
     commit, the queue is still pending. Retrying must not duplicate those lines;
     it should commit the already-written working-tree change instead.
     """
-    target = Path(repo_path) / relpath
+    target = jsonl_store.daily_target_path(repo_path, relpath)
     existing = set(target.read_text(encoding="utf-8").splitlines()) if target.exists() else set()
     missing = [line for line in lines if line not in existing]
     if missing:
@@ -83,7 +82,9 @@ class BackupWorker:
             # If commit fails, do not mark queue rows done. The next worker run
             # must retry because there is no durable recovery point yet.
             committed = git_repo.add_commit(
-                self.repo_path, f"backup: {written} clips {self.now_fn()}"
+                self.repo_path,
+                f"backup: {written} clips {self.now_fn()}",
+                paths=sorted(by_day),
             )
             if committed is not None:
                 for clip_id, done_at in mark_after_commit:
@@ -108,8 +109,12 @@ class BackupWorker:
         except git_repo.GitPushError as exc:
             self._backoff_s = min(self._backoff_s * 2, _BACKOFF_MAX_S)
             self._monotonic_blocked_until = (monotonic or 0.0) + self._backoff_s
-            log.error("push failed, data committed locally; backoff=%ds err=%s",
-                      self._backoff_s, exc)
+            log.error(
+                "push failed, data committed locally; backoff=%ds error=%s code=%s",
+                self._backoff_s,
+                exc.__class__.__name__,
+                getattr(exc, "returncode", None),
+            )
             return False
         self._backoff_s = _BACKOFF_START_S
         self._monotonic_blocked_until = 0.0

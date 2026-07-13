@@ -4,7 +4,8 @@
 
 ## 决策
 1. GitHub 私库永远只是灾难恢复备份：批量 commit、定时 push、永不 pull、永不作为同步通道。
-2. 备份内容只有 JSONL（每行一个 Clip 对象）+ 元数据。不再镜像 Markdown。
+2. 备份内容只有 `clips/YYYY/MM/YYYY-MM-DD.jsonl`（每行一个 Clip 对象）。不存独立元数据文件，也不再镜像 Markdown。
+3. 备份必须使用专用私有仓库；适配器只提交显式 daily JSONL 路径，并拒绝推送历史中曾跟踪其他路径的仓库。
 
 ## 理由
 - JSONL 是无损事实源：Markdown 可以由 `tools/restore.py` 从 JSONL 确定性重建，反向不行（frontmatter 有损）。

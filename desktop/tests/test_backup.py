@@ -20,6 +20,7 @@ from clipvault.sync import engine as sync_engine
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 FAKE_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+VALID_DAILY_RELPATH = "clips/2026/06/2026-06-13.jsonl"
 
 
 def _restore(repo, out_db):
@@ -47,6 +48,97 @@ def work_repo(tmp_path):
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "remote", "add", "origin", str(bare))
     return repo, bare
+
+
+@pytest.mark.parametrize(
+    "invalid_timestamp",
+    [
+        None,
+        "../../private",
+        "2026-06-13",
+        "2026-6-13T01:50:22Z",
+        "2026-06-3T01:50:22Z",
+        "2026-06-13T01:50:22+00:00",
+        "2026-06-13T24:00:00Z",
+        "2026-06-13T01:60:00Z",
+        "2026-02-30T01:50:22Z",
+        "2025-02-29T01:50:22Z",
+        "2026-06-13T01:50:22Z/../../private",
+    ],
+)
+def test_daily_relpath_rejects_noncanonical_or_invalid_utc_timestamp(invalid_timestamp):
+    with pytest.raises(ValueError):
+        jsonl_store.daily_relpath(invalid_timestamp)
+
+
+def test_daily_relpath_accepts_valid_leap_day():
+    assert jsonl_store.daily_relpath("2024-02-29T23:59:59Z") == (
+        "clips/2024/02/2024-02-29.jsonl"
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_relpath",
+    [
+        "private.jsonl",
+        "clips/private.jsonl",
+        "clips/2026/06/2026-06-13.txt",
+        "clips/2026/07/2026-06-13.jsonl",
+        "clips/2026/02/2026-02-30.jsonl",
+        "clips/2026/06/../../private.jsonl",
+        "../private.jsonl",
+    ],
+)
+def test_jsonl_write_target_rejects_paths_outside_dated_layout(tmp_path, invalid_relpath):
+    repo = tmp_path / "backup"
+
+    with pytest.raises(ValueError):
+        jsonl_store.daily_target_path(repo, invalid_relpath)
+    with pytest.raises(ValueError):
+        jsonl_store.append_lines(repo, invalid_relpath, ["secret"])
+
+    assert not (tmp_path / "private.jsonl").exists()
+
+
+def test_jsonl_daily_target_and_reader_accept_valid_path(tmp_path):
+    repo = tmp_path / "backup"
+    expected = repo / Path(VALID_DAILY_RELPATH)
+
+    assert jsonl_store.daily_target_path(repo, VALID_DAILY_RELPATH) == expected
+    assert jsonl_store.append_lines(repo, VALID_DAILY_RELPATH, ['{"id":"1"}']) == expected
+    assert list(jsonl_store.iter_jsonl(repo)) == ['{"id":"1"}']
+
+
+def test_iter_jsonl_rejects_non_dated_jsonl_path(tmp_path):
+    repo = tmp_path / "backup"
+    invalid = repo / "clips" / "private.jsonl"
+    invalid.parent.mkdir(parents=True)
+    invalid.write_text("secret\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        list(jsonl_store.iter_jsonl(repo))
+
+
+def test_jsonl_targets_reject_clips_directory_symlink_escape(tmp_path):
+    repo = tmp_path / "backup"
+    repo.mkdir()
+    outside = tmp_path / "outside"
+    external_target = outside / "2026" / "06" / "2026-06-13.jsonl"
+    external_target.parent.mkdir(parents=True)
+    external_target.write_text("external-secret\n", encoding="utf-8")
+    try:
+        (repo / "clips").symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    with pytest.raises(ValueError):
+        jsonl_store.daily_target_path(repo, VALID_DAILY_RELPATH)
+    with pytest.raises(ValueError):
+        jsonl_store.append_lines(repo, VALID_DAILY_RELPATH, ["must-not-escape"])
+    with pytest.raises(ValueError):
+        list(jsonl_store.iter_jsonl(repo))
+
+    assert external_target.read_text(encoding="utf-8") == "external-secret\n"
 
 
 def test_c1_public_clip_serialized(conn, work_repo):
@@ -302,3 +394,33 @@ def test_c8_logs_no_content(conn, work_repo, caplog):
         BackupWorker(conn, str(repo), push_enabled=False).run_once()
     assert "payload" not in caplog.text
     assert "AKIA" not in caplog.text
+
+
+def test_c8_push_failure_log_redacts_git_diagnostics(conn, tmp_path, caplog):
+    repo = tmp_path / "backup"
+    git_repo.init(repo)
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "config", "user.email", "test@example.com")
+    pipeline.ingest(
+        conn,
+        "safe backup payload",
+        source_device="d",
+        now_fn=lambda: "2026-06-13T10:00:00Z",
+    )
+    sensitive = "PRIVATE-AKIAIOSFODNN7EXAMPLE-Alice-Vault"
+    worker = BackupWorker(
+        conn,
+        str(repo),
+        remote=str(tmp_path / sensitive),
+        push_enabled=True,
+        now_fn=lambda: "2026-06-13T10:00:00Z",
+    )
+
+    with caplog.at_level(logging.ERROR, logger="clipvault.backup"):
+        stats = worker.run_once(monotonic=100.0)
+
+    assert stats["committed"] is not None
+    assert stats["pushed"] is False
+    assert "push failed" in caplog.text
+    assert sensitive not in caplog.text
+    assert str(tmp_path) not in caplog.text
