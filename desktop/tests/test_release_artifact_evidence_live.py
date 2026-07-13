@@ -197,6 +197,8 @@ class FakeRunner:
         self.release_environment_cert = OWNER_CERT
         self.final_release_environment_cert = OWNER_CERT
         self.release_digest_override: tuple[str, str] | None = None
+        self.release_asset_id_offset = 0
+        self.release_is_published = False
         self.final_main_sha = COMMIT
         self.release_tag_object: dict[str, str] | None = None
         self.final_release_tag_object: dict[str, str] | None | object = self._UNCHANGED
@@ -233,7 +235,7 @@ class FakeRunner:
             if self.release_digest_override and path.name == self.release_digest_override[0]:
                 digest = self.release_digest_override[1]
             assets.append({
-                "id": index,
+                "id": index + self.release_asset_id_offset,
                 "name": path.name,
                 "state": "uploaded",
                 "size": path.stat().st_size,
@@ -241,14 +243,20 @@ class FakeRunner:
             })
         record = {
             "id": 77,
-            "html_url": "https://github.com/selinyi123/clipvault-personal/releases/tag/untagged-77",
+            "html_url": (
+                "https://github.com/selinyi123/clipvault-personal/releases/tag/v1.6.0"
+                if self.release_is_published
+                else "https://github.com/selinyi123/clipvault-personal/releases/tag/untagged-77"
+            ),
             "tag_name": "v1.6.0",
             "name": "ClipVault Personal v1.6.0",
-            "draft": True,
+            "draft": not self.release_is_published,
             "prerelease": False,
             "target_commitish": COMMIT,
             "assets": assets,
         }
+        if self.release_is_published:
+            record["published_at"] = "2026-07-13T01:00:00Z"
         record.update(self.release_overrides)
         if self.release_calls > 1:
             record.update(self.final_release_overrides)
@@ -325,6 +333,9 @@ class FakeRunner:
             if endpoint.endswith("/releases?per_page=100"):
                 self.release_calls += 1
                 return self._result([self._release_record()])
+            if endpoint.endswith("/releases/tags/v1.6.0") and self.release_is_published:
+                self.release_calls += 1
+                return self._result(self._release_record())
         if args[0] == str(self.gh) and args[1:3] == ["attestation", "verify"]:
             artifact = Path(args[3])
             digest = self.attestation_digest_override or _sha256(artifact)
@@ -363,6 +374,69 @@ def _collect(tmp_path: Path, runner: FakeRunner | None = None):
         now_fn=lambda: "2026-07-13T00:00:00Z",
     )
     return report, runner, (windows, android, release, apksigner)
+
+
+def _published_fixture(tmp_path: Path, *, prepublication_tag_present: bool = False):
+    windows, android, release, apksigner = _build_fixture(tmp_path)
+    draft_runner = FakeRunner(release, apksigner)
+    if prepublication_tag_present:
+        draft_runner.release_tag_object = {"type": "commit", "sha": COMMIT}
+    draft_report = evidence.collect_final_draft_evidence(
+        windows_dir=windows,
+        android_dir=android,
+        draft_release_dir=release,
+        gh=draft_runner.gh,
+        apksigner=apksigner,
+        java=draft_runner.java,
+        version="v1.6.0",
+        commit=COMMIT,
+        run_url=RUN_URL,
+        expected_android_cert_sha256=OWNER_CERT,
+        runner=draft_runner,
+        now_fn=lambda: "2026-07-13T00:00:00Z",
+    )
+
+    runner = FakeRunner(release, apksigner)
+    runner.release_is_published = True
+    runner.release_tag_object = {"type": "commit", "sha": COMMIT}
+    return (
+        runner,
+        (windows, android, release, apksigner),
+        draft_report["artifact_binding_sha256"],
+    )
+
+
+def _run_published(
+    runner: FakeRunner,
+    paths: tuple[Path, Path, Path, Path],
+    owner_binding: str,
+):
+    windows, android, release, apksigner = paths
+    report = evidence.collect_published_release_evidence(
+        windows_dir=windows,
+        android_dir=android,
+        published_release_dir=release,
+        gh=runner.gh,
+        apksigner=apksigner,
+        java=runner.java,
+        version="v1.6.0",
+        commit=COMMIT,
+        run_url=RUN_URL,
+        expected_android_cert_sha256=OWNER_CERT,
+        owner_approved_binding=owner_binding,
+        runner=runner,
+        now_fn=lambda: "2026-07-13T01:00:00Z",
+    )
+    return report
+
+
+def _collect_published(tmp_path: Path, *, prepublication_tag_present: bool = False):
+    runner, paths, owner_binding = _published_fixture(
+        tmp_path,
+        prepublication_tag_present=prepublication_tag_present,
+    )
+    report = _run_published(runner, paths, owner_binding)
+    return report, runner, paths, owner_binding
 
 
 def test_live_evidence_binds_exact_run_draft_bytes_attestations_and_signer(tmp_path):
@@ -910,6 +984,9 @@ def test_binding_is_stable_across_validation_time(tmp_path):
     report_b, _, _ = _collect(tmp_path / "b")
     report_b["validated_at"] = "2099-01-01T00:00:00Z"
 
+    assert report_a["artifact_binding_sha256"] == (
+        "fdd831b421a3bf89afb2251c44b0327f58513a6b03a963175eb0bd081a0d98dc"
+    )
     assert report_a["artifact_binding_sha256"] == evidence._compute_binding_sha256(report_a)
     assert evidence._compute_binding_sha256(report_a) == evidence._compute_binding_sha256(report_b)
 
@@ -970,6 +1047,233 @@ def test_publication_projection_recomputes_binding_and_rejects_tampered_snapshot
         )
 
 
+@pytest.mark.parametrize("prepublication_tag_present", [False, True])
+def test_published_evidence_recovers_owner_binding_and_revalidates_live_state(
+    tmp_path,
+    prepublication_tag_present,
+):
+    report, runner, paths, owner_binding = _collect_published(
+        tmp_path,
+        prepublication_tag_present=prepublication_tag_present,
+    )
+
+    assert report["publication_gate_status"] == (
+        "published_release_verified_live_revalidation_required"
+    )
+    assert report["owner_approved_artifact_binding_sha256"] == owner_binding
+    assert report["owner_approved_prepublication_release_tag"] == {
+        "ref": "refs/tags/v1.6.0",
+        "state": "present" if prepublication_tag_present else "absent",
+        "commit_sha": COMMIT if prepublication_tag_present else None,
+    }
+    assert report["published_release"] == {
+        "id": 77,
+        "url": "https://github.com/selinyi123/clipvault-personal/releases/tag/v1.6.0",
+        "tag_name": "v1.6.0",
+        "name": "ClipVault Personal v1.6.0",
+        "is_draft": False,
+        "is_prerelease": False,
+        "target_commitish": COMMIT,
+        "published_at": "2026-07-13T01:00:00Z",
+    }
+    assert report["release_tag"] == {
+        "ref": "refs/tags/v1.6.0",
+        "state": "present",
+        "commit_sha": COMMIT,
+        "ref_object_type": "commit",
+        "ref_object_sha": COMMIT,
+    }
+    assert len(report["artifacts"]) == 8
+    assert all(row["attestation_verified"] for row in report["artifacts"])
+    assert report["publication_closure_binding_sha256"] == (
+        evidence._compute_publication_closure_sha256(report)
+    )
+    serialized = json.dumps(report)
+    comment = evidence.render_published_release_issue_comment(report)
+    assert all(str(path) not in serialized for path in paths)
+    assert all(str(path) not in comment for path in paths)
+    assert "does not replace manual QA" in comment
+    assert runner.branch_calls == 2
+    assert runner.run_calls == 2
+    assert runner.release_calls == 2
+    assert runner.cert_variable_calls == 2
+    assert runner.release_tag_calls == 2
+    api_calls = [
+        args
+        for args, _ in runner.calls
+        if args[0] == str(runner.gh) and args[1] == "api"
+    ]
+    assert api_calls
+    assert all(args[1:4] == ["api", "-X", "GET"] for args in api_calls)
+
+
+def test_published_evidence_rejects_wrong_owner_binding(tmp_path):
+    runner, paths, _ = _published_fixture(tmp_path)
+
+    with pytest.raises(ValueError, match="does not reproduce the Owner-approved"):
+        _run_published(runner, paths, "f" * 64)
+
+    with pytest.raises(ValueError, match="64 lowercase hex"):
+        evidence.collect_published_release_evidence(
+            windows_dir=paths[0],
+            android_dir=paths[1],
+            published_release_dir=paths[2],
+            gh=runner.gh,
+            apksigner=paths[3],
+            java=runner.java,
+            version="v1.6.0",
+            commit=COMMIT,
+            run_url=RUN_URL,
+            expected_android_cert_sha256=OWNER_CERT,
+            owner_approved_binding=None,
+            runner=runner,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda runner: runner.release_overrides.update({"id": 78}),
+        lambda runner: setattr(runner, "release_asset_id_offset", 1000),
+    ],
+)
+def test_published_evidence_rejects_replaced_release_or_asset_identity(tmp_path, mutate):
+    runner, paths, owner_binding = _published_fixture(tmp_path)
+    mutate(runner)
+
+    with pytest.raises(ValueError, match="does not reproduce the Owner-approved"):
+        _run_published(runner, paths, owner_binding)
+
+
+@pytest.mark.parametrize(
+    "field,value,expected",
+    [
+        ("draft", True, "published and non-prerelease"),
+        ("prerelease", True, "published and non-prerelease"),
+        ("tag_name", "v1.5.10", "published Release tag mismatch"),
+        ("name", "ClipVault v1.6.0", "published Release title mismatch"),
+        ("target_commitish", "d" * 40, "published Release target commit mismatch"),
+        ("html_url", "https://example.invalid/release", "published Release URL mismatch"),
+        ("published_at", None, "RFC3339 UTC timestamp"),
+        ("published_at", "not-a-timestamp", "RFC3339 UTC timestamp"),
+    ],
+)
+def test_published_evidence_rejects_wrong_release_metadata(
+    tmp_path,
+    field,
+    value,
+    expected,
+):
+    runner, paths, owner_binding = _published_fixture(tmp_path)
+    runner.release_overrides[field] = value
+
+    with pytest.raises(ValueError, match=expected):
+        _run_published(runner, paths, owner_binding)
+
+
+def test_published_evidence_rejects_absent_or_wrong_release_tag(tmp_path):
+    runner, paths, owner_binding = _published_fixture(tmp_path / "absent")
+    runner.release_tag_object = None
+    with pytest.raises(ValueError, match="tag is absent"):
+        _run_published(runner, paths, owner_binding)
+
+    runner, paths, owner_binding = _published_fixture(tmp_path / "wrong")
+    runner.release_tag_object = {"type": "commit", "sha": "d" * 40}
+    with pytest.raises(ValueError, match="points to a different commit"):
+        _run_published(runner, paths, owner_binding)
+
+
+def test_published_evidence_accepts_annotated_release_tag(tmp_path):
+    runner, paths, owner_binding = _published_fixture(tmp_path)
+    tag_sha = "e" * 40
+    runner.release_tag_object = {"type": "tag", "sha": tag_sha}
+    runner.annotated_tag_objects[tag_sha] = {"type": "commit", "sha": COMMIT}
+
+    report = _run_published(runner, paths, owner_binding)
+
+    assert report["release_tag"]["commit_sha"] == COMMIT
+    assert report["release_tag"]["ref_object_sha"] == tag_sha
+
+
+def test_published_evidence_rejects_annotated_tag_object_swap(tmp_path):
+    runner, paths, owner_binding = _published_fixture(tmp_path)
+    first_tag = "e" * 40
+    second_tag = "f" * 40
+    runner.release_tag_object = {"type": "tag", "sha": first_tag}
+    runner.final_release_tag_object = {"type": "tag", "sha": second_tag}
+    runner.annotated_tag_objects[first_tag] = {"type": "commit", "sha": COMMIT}
+    runner.annotated_tag_objects[second_tag] = {"type": "commit", "sha": COMMIT}
+
+    with pytest.raises(ValueError, match="tag changed"):
+        _run_published(runner, paths, owner_binding)
+
+
+def test_published_evidence_rejects_tag_or_release_change_during_collection(tmp_path):
+    runner, paths, owner_binding = _published_fixture(tmp_path / "tag")
+    runner.final_release_tag_object = None
+    with pytest.raises(ValueError, match="tag changed"):
+        _run_published(runner, paths, owner_binding)
+
+    runner, paths, owner_binding = _published_fixture(tmp_path / "release")
+    runner.final_release_overrides["id"] = 78
+    with pytest.raises(ValueError, match="published Release changed"):
+        _run_published(runner, paths, owner_binding)
+
+
+def test_published_evidence_rejects_run_or_owner_certificate_change(tmp_path):
+    runner, paths, owner_binding = _published_fixture(tmp_path / "run")
+    runner.final_run_overrides["run_attempt"] = 2
+    with pytest.raises(ValueError, match="workflow run changed"):
+        _run_published(runner, paths, owner_binding)
+
+    runner, paths, owner_binding = _published_fixture(tmp_path / "cert")
+    runner.final_release_environment_cert = "cd" * 32
+    with pytest.raises(ValueError, match="Owner Android certificates must match"):
+        _run_published(runner, paths, owner_binding)
+
+
+def test_published_evidence_rejects_main_or_local_byte_change(tmp_path):
+    runner, paths, owner_binding = _published_fixture(tmp_path / "main")
+    runner.final_main_sha = "d" * 40
+    with pytest.raises(ValueError, match="not the current main"):
+        _run_published(runner, paths, owner_binding)
+
+    runner, paths, owner_binding = _published_fixture(tmp_path / "bytes")
+    paths[2].joinpath("ClipVault-Desktop-v1.6.0-portable.exe").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="Actions and published Release bytes differ"):
+        _run_published(runner, paths, owner_binding)
+
+
+def test_publication_closure_binding_is_stable_and_identity_sensitive(tmp_path):
+    report_a, _, _, _ = _collect_published(tmp_path / "a")
+    report_b, _, _, _ = _collect_published(tmp_path / "b")
+    report_b["validated_at"] = "2099-01-01T00:00:00Z"
+    original = report_a["publication_closure_binding_sha256"]
+
+    assert original == evidence._compute_publication_closure_sha256(report_a)
+    assert evidence._compute_publication_closure_sha256(report_b) == original
+    for mutate in (
+        lambda row: row.__setitem__(
+            "owner_approved_artifact_binding_sha256", "f" * 64
+        ),
+        lambda row: row["published_release"].__setitem__("id", 78),
+        lambda row: row["published_release"].__setitem__(
+            "url", "https://example.invalid/release"
+        ),
+        lambda row: row["published_release"].__setitem__(
+            "published_at", "2099-01-01T00:00:00Z"
+        ),
+        lambda row: row["release_tag"].__setitem__("commit_sha", "d" * 40),
+        lambda row: row["artifacts"][0].__setitem__("release_asset_id", 999),
+        lambda row: row["artifacts"][0].__setitem__("sha256", "e" * 64),
+        lambda row: row["artifacts"][0].__setitem__("attestation_verified", False),
+        lambda row: row["artifacts"][0].__setitem__("matching_invocation_count", 2),
+    ):
+        variant = json.loads(json.dumps(report_a))
+        mutate(variant)
+        assert evidence._compute_publication_closure_sha256(variant) != original
+
+
 def test_live_cli_forbids_no_fail_and_requires_strict_outputs(capsys):
     base = [
         "--windows-dir", "windows",
@@ -1000,6 +1304,65 @@ def test_live_cli_forbids_no_fail_and_requires_strict_outputs(capsys):
     assert "must be used together" in capsys.readouterr().err
 
 
+def test_published_cli_is_strict_and_mutually_exclusive(capsys):
+    base = [
+        "--windows-dir", "windows",
+        "--android-dir", "android",
+        "--commit", COMMIT,
+        "--run-url", RUN_URL,
+        "--expected-android-cert-sha256", OWNER_CERT,
+        "--require-live-published-release",
+    ]
+    with pytest.raises(SystemExit, match="2"):
+        evidence.main([*base, "--no-fail"])
+    assert "forbids --no-fail" in capsys.readouterr().err
+
+    with pytest.raises(SystemExit, match="2"):
+        evidence.main(base)
+    error = capsys.readouterr().err
+    assert "--published-release-dir" in error
+    assert "--owner-approved-binding" in error
+
+    with pytest.raises(SystemExit, match="2"):
+        evidence.main([*base, "--require-live-final-draft"])
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
+def test_published_cli_success_writes_exact_evidence_outputs(tmp_path, monkeypatch):
+    runner, paths, owner_binding = _published_fixture(tmp_path)
+    windows, android, release, apksigner = paths
+    output_dir = tmp_path / "evidence-output"
+    output_dir.mkdir()
+    evidence_output = output_dir / "published-release.json"
+    comment_output = output_dir / "issue-comment.md"
+    monkeypatch.setattr(evidence, "SubprocessRunner", lambda: runner)
+
+    result = evidence.main([
+        "--windows-dir", str(windows),
+        "--android-dir", str(android),
+        "--commit", COMMIT,
+        "--run-url", RUN_URL,
+        "--expected-android-cert-sha256", OWNER_CERT,
+        "--require-live-published-release",
+        "--published-release-dir", str(release),
+        "--gh", str(runner.gh),
+        "--apksigner", str(apksigner),
+        "--java", str(runner.java),
+        "--owner-approved-binding", owner_binding,
+        "--evidence-output", str(evidence_output),
+        "--comment-output", str(comment_output),
+    ])
+
+    assert result == 0
+    report = json.loads(evidence_output.read_text(encoding="utf-8"))
+    assert report["owner_approved_artifact_binding_sha256"] == owner_binding
+    assert report["published_release"]["id"] == 77
+    assert report["publication_closure_binding_sha256"] == (
+        evidence._compute_publication_closure_sha256(report)
+    )
+    assert "does not replace manual QA" in comment_output.read_text(encoding="utf-8")
+
+
 def test_strict_output_writer_refuses_overwrite_without_partial_write(tmp_path):
     evidence_path = tmp_path / "evidence.json"
     comment_path = tmp_path / "comment.md"
@@ -1013,3 +1376,58 @@ def test_strict_output_writer_refuses_overwrite_without_partial_write(tmp_path):
 
     assert not evidence_path.exists()
     assert comment_path.read_text(encoding="utf-8") == "owner notes"
+
+
+def test_strict_output_writer_cleans_current_partial_file_on_write_failure(
+    tmp_path,
+    monkeypatch,
+):
+    evidence_path = tmp_path / "evidence.json"
+    comment_path = tmp_path / "comment.md"
+    original_open = Path.open
+
+    class FailingWriter:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def write(self, content):
+            self.stream.write(content[:1])
+            self.stream.flush()
+            raise OSError("simulated partial write")
+
+        def __exit__(self, exc_type, exc, traceback):
+            return self.stream.__exit__(exc_type, exc, traceback)
+
+    def flaky_open(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        return FailingWriter(stream) if path == comment_path else stream
+
+    monkeypatch.setattr(Path, "open", flaky_open)
+
+    with pytest.raises(ValueError, match="could not write evidence outputs"):
+        evidence._write_new_outputs([
+            (evidence_path, "{}\n"),
+            (comment_path, "comment\n"),
+        ])
+
+    assert not evidence_path.exists()
+    assert not comment_path.exists()
+
+
+def test_live_outputs_must_not_pollute_verified_artifact_directories(tmp_path):
+    windows, android, release, _ = _build_fixture(tmp_path)
+
+    with pytest.raises(ValueError, match="outside verified artifact directories"):
+        evidence._validate_output_locations(
+            [release / "evidence.json", tmp_path / "comment.md"],
+            artifact_dirs=[windows, android, release],
+        )
+
+    evidence._validate_output_locations(
+        [tmp_path / "evidence.json", tmp_path / "comment.md"],
+        artifact_dirs=[windows, android, release],
+    )

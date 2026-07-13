@@ -2,10 +2,10 @@
 """Validate v1.6 release artifacts and render Issue #36 evidence.
 
 The default mode remains a local structural precheck for compatibility. This tool
-does not download GitHub Actions artifacts. The explicit live-final-draft mode
-additionally verifies GitHub run metadata,
-artifact attestations, draft Release bytes, and the Android signer. Neither mode
-performs manual QA, publishes a Release, posts to GitHub, or closes Issue #36.
+does not download GitHub Actions artifacts. The explicit live final-draft and
+published-release modes additionally verify GitHub run metadata, artifact
+attestations, Release bytes, and the Android signer. No mode performs manual QA,
+publishes a Release, posts to GitHub, or closes Issue #36.
 """
 
 from __future__ import annotations
@@ -41,6 +41,9 @@ MAX_APKSIGNER_OUTPUT_BYTES = 64 * 1024
 VERSION_RE = re.compile(r"^v(?P<numeric>[0-9]+\.[0-9]+\.[0-9]+)$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+GITHUB_TIMESTAMP_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z$"
+)
 RUN_URL_RE = re.compile(
     r"^https://github\.com/(?P<repo>[^/\s]+/[^/\s]+)/actions/runs/(?P<run_id>[0-9]+)$"
 )
@@ -380,6 +383,18 @@ def _normalize_api_digest(value: Any, *, label: str) -> str:
     return digest
 
 
+def _validate_github_timestamp(value: Any, *, label: str) -> str:
+    if not isinstance(value, str) or GITHUB_TIMESTAMP_RE.fullmatch(value) is None:
+        raise ValueError(f"{label} must be an RFC3339 UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise ValueError(f"{label} must be an RFC3339 UTC timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        raise ValueError(f"{label} must be an RFC3339 UTC timestamp")
+    return value
+
+
 def _sha256_file(path: Path) -> tuple[int, str]:
     digest = hashlib.sha256()
     size = 0
@@ -414,8 +429,9 @@ def _local_asset_rows(
     *,
     windows_dir: Path,
     android_dir: Path,
-    draft_release_dir: Path,
+    release_dir: Path,
     specs: Sequence[AssetSpec],
+    release_label: str = "draft Release",
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     platform_dirs = {"windows": windows_dir, "android": android_dir}
     action_rows: dict[str, dict[str, Any]] = {}
@@ -427,7 +443,7 @@ def _local_asset_rows(
                 action_rows[spec.role] = rows[spec.workflow_name]
 
     release_names = {spec.release_name for spec in specs}
-    release_by_name = _exact_directory_rows(draft_release_dir, release_names)
+    release_by_name = _exact_directory_rows(release_dir, release_names)
     release_rows = {spec.role: release_by_name[spec.release_name] for spec in specs}
     for spec in specs:
         action = action_rows[spec.role]
@@ -436,7 +452,7 @@ def _local_asset_rows(
             release["size_bytes"],
             release["sha256"],
         ):
-            raise ValueError(f"Actions and draft Release bytes differ for {spec.release_name!r}")
+            raise ValueError(f"Actions and {release_label} bytes differ for {spec.release_name!r}")
     return action_rows, release_rows
 
 
@@ -454,6 +470,7 @@ def _lookup_release_tag_state(
     *,
     repo: str,
     version: str,
+    include_object_identity: bool = False,
 ) -> dict[str, Any]:
     """Resolve the exact release tag through annotated tags, or report absence."""
 
@@ -476,6 +493,8 @@ def _lookup_release_tag_state(
         raise ValueError("release tag lookup returned duplicate exact refs")
 
     obj = _require_dict(exact[0].get("object"), label="release tag object")
+    ref_object_type = obj.get("type")
+    ref_object_sha = obj.get("sha")
     seen: set[str] = set()
     for _ in range(8):
         object_type = obj.get("type")
@@ -483,7 +502,13 @@ def _lookup_release_tag_state(
         if not isinstance(object_sha, str) or COMMIT_RE.fullmatch(object_sha) is None:
             raise ValueError("release tag object has an invalid Git SHA")
         if object_type == "commit":
-            return {"ref": exact_ref, "state": "present", "commit_sha": object_sha}
+            result = {"ref": exact_ref, "state": "present", "commit_sha": object_sha}
+            if include_object_identity:
+                result.update({
+                    "ref_object_type": ref_object_type,
+                    "ref_object_sha": ref_object_sha,
+                })
+            return result
         if object_type != "tag":
             raise ValueError("release tag does not resolve to a commit")
         if object_sha in seen:
@@ -600,6 +625,88 @@ def _validate_workflow_artifacts(record: Any) -> list[dict[str, Any]]:
     return sorted(result, key=lambda row: row["name"])
 
 
+def _validate_release_record(
+    record: Any,
+    *,
+    repo: str,
+    version: str,
+    commit: str,
+    release_rows: dict[str, dict[str, Any]],
+    specs: Sequence[AssetSpec],
+    expected_draft: bool,
+    release_label: str,
+) -> dict[str, Any]:
+    data = _require_dict(record, label=f"{release_label} response")
+    if data.get("tag_name") != version:
+        raise ValueError(f"{release_label} tag mismatch")
+    if data.get("name") != f"ClipVault Personal {version}":
+        raise ValueError(f"{release_label} title mismatch")
+    if data.get("draft") is not expected_draft or data.get("prerelease") is not False:
+        state = "a non-prerelease draft" if expected_draft else "published and non-prerelease"
+        raise ValueError(f"GitHub Release must be {state}")
+    if data.get("target_commitish") != commit:
+        raise ValueError(f"{release_label} target commit mismatch")
+    release_url = data.get("html_url")
+    expected_published_url = f"https://github.com/{repo}/releases/tag/{version}"
+    if expected_draft:
+        valid_url = isinstance(release_url, str) and release_url.startswith(
+            f"https://github.com/{repo}/releases/"
+        )
+    else:
+        valid_url = release_url == expected_published_url
+    if not valid_url:
+        raise ValueError(f"{release_label} URL mismatch")
+    published_at: str | None = None
+    if not expected_draft:
+        published_at = _validate_github_timestamp(
+            data.get("published_at"), label="published Release publication timestamp"
+        )
+    assets = data.get("assets")
+    if not isinstance(assets, list) or len(assets) != len(specs):
+        raise ValueError(f"{release_label} asset inventory mismatch")
+    by_name: dict[str, dict[str, Any]] = {}
+    for raw in assets:
+        asset = _require_dict(raw, label=f"{release_label} asset")
+        name = asset.get("name")
+        if not isinstance(name, str) or name in by_name:
+            raise ValueError(f"{release_label} contains an invalid or duplicate asset name")
+        by_name[name] = asset
+    expected_names = {spec.release_name for spec in specs}
+    if set(by_name) != expected_names:
+        raise ValueError(f"{release_label} asset inventory mismatch")
+
+    asset_rows: dict[str, dict[str, Any]] = {}
+    for spec in specs:
+        live = by_name[spec.release_name]
+        local = release_rows[spec.role]
+        if live.get("state") != "uploaded":
+            raise ValueError(f"{release_label} asset is not fully uploaded")
+        size = _require_positive_int(live.get("size"), label=f"{release_label} asset size")
+        digest = _normalize_api_digest(live.get("digest"), label=f"{release_label} asset digest")
+        if (size, digest) != (local["size_bytes"], local["sha256"]):
+            raise ValueError(f"{release_label} API bytes differ for {spec.release_name!r}")
+        asset_rows[spec.role] = {
+            "release_asset_id": _require_positive_int(
+                live.get("id"), label=f"{release_label} asset id"
+            ),
+            "size_bytes": size,
+            "sha256": digest,
+        }
+    result = {
+        "id": _require_positive_int(data.get("id"), label=f"{release_label} id"),
+        "url": release_url,
+        "tag_name": version,
+        "name": f"ClipVault Personal {version}",
+        "is_draft": expected_draft,
+        "is_prerelease": False,
+        "target_commitish": commit,
+        "assets": asset_rows,
+    }
+    if published_at is not None:
+        result["published_at"] = published_at
+    return result
+
+
 def _validate_draft_release_record(
     record: Any,
     *,
@@ -609,61 +716,37 @@ def _validate_draft_release_record(
     release_rows: dict[str, dict[str, Any]],
     specs: Sequence[AssetSpec],
 ) -> dict[str, Any]:
-    data = _require_dict(record, label="draft Release response")
-    if data.get("tag_name") != version:
-        raise ValueError("draft Release tag mismatch")
-    if data.get("name") != f"ClipVault Personal {version}":
-        raise ValueError("draft Release title mismatch")
-    if data.get("draft") is not True or data.get("prerelease") is not False:
-        raise ValueError("GitHub Release must be a non-prerelease draft")
-    if data.get("target_commitish") != commit:
-        raise ValueError("draft Release target commit mismatch")
-    release_url = data.get("html_url")
-    if not isinstance(release_url, str) or not release_url.startswith(
-        f"https://github.com/{repo}/releases/"
-    ):
-        raise ValueError("draft Release URL mismatch")
-    assets = data.get("assets")
-    if not isinstance(assets, list) or len(assets) != len(specs):
-        raise ValueError("draft Release asset inventory mismatch")
-    by_name: dict[str, dict[str, Any]] = {}
-    for raw in assets:
-        asset = _require_dict(raw, label="draft Release asset")
-        name = asset.get("name")
-        if not isinstance(name, str) or name in by_name:
-            raise ValueError("draft Release contains an invalid or duplicate asset name")
-        by_name[name] = asset
-    expected_names = {spec.release_name for spec in specs}
-    if set(by_name) != expected_names:
-        raise ValueError("draft Release asset inventory mismatch")
+    return _validate_release_record(
+        record,
+        repo=repo,
+        version=version,
+        commit=commit,
+        release_rows=release_rows,
+        specs=specs,
+        expected_draft=True,
+        release_label="draft Release",
+    )
 
-    asset_rows: dict[str, dict[str, Any]] = {}
-    for spec in specs:
-        live = by_name[spec.release_name]
-        local = release_rows[spec.role]
-        if live.get("state") != "uploaded":
-            raise ValueError("draft Release asset is not fully uploaded")
-        size = _require_positive_int(live.get("size"), label="draft Release asset size")
-        digest = _normalize_api_digest(live.get("digest"), label="draft Release asset digest")
-        if (size, digest) != (local["size_bytes"], local["sha256"]):
-            raise ValueError(f"draft Release API bytes differ for {spec.release_name!r}")
-        asset_rows[spec.role] = {
-            "release_asset_id": _require_positive_int(
-                live.get("id"), label="draft Release asset id"
-            ),
-            "size_bytes": size,
-            "sha256": digest,
-        }
-    return {
-        "id": _require_positive_int(data.get("id"), label="draft Release id"),
-        "url": release_url,
-        "tag_name": version,
-        "name": f"ClipVault Personal {version}",
-        "is_draft": True,
-        "is_prerelease": False,
-        "target_commitish": commit,
-        "assets": asset_rows,
-    }
+
+def _validate_published_release_record(
+    record: Any,
+    *,
+    repo: str,
+    version: str,
+    commit: str,
+    release_rows: dict[str, dict[str, Any]],
+    specs: Sequence[AssetSpec],
+) -> dict[str, Any]:
+    return _validate_release_record(
+        record,
+        repo=repo,
+        version=version,
+        commit=commit,
+        release_rows=release_rows,
+        specs=specs,
+        expected_draft=False,
+        release_label="published Release",
+    )
 
 
 def _select_draft_release(record: Any, *, version: str) -> dict[str, Any]:
@@ -906,12 +989,109 @@ def _compute_binding_sha256(report: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _owner_binding_candidate(
+    *,
+    repo: str,
+    version: str,
+    target_commit: str,
+    workflow_run: dict[str, Any],
+    workflow_artifacts: list[dict[str, Any]],
+    release_id: int,
+    prepublication_release_tag: dict[str, Any],
+    android_signer: dict[str, Any],
+    artifacts: list[dict[str, Any]],
+) -> str:
+    """Recreate one #111-compatible pre-publication binding candidate."""
+
+    return _compute_binding_sha256({
+        "repo": repo,
+        "version": version,
+        "target_commit": target_commit,
+        "workflow_run": workflow_run,
+        "workflow_artifacts": workflow_artifacts,
+        "draft_release": {"id": release_id},
+        "release_tag": prepublication_release_tag,
+        "android_signer": android_signer,
+        "artifacts": artifacts,
+    })
+
+
+def _publication_closure_projection(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "repo": report["repo"],
+        "version": report["version"],
+        "target_commit": report["target_commit"],
+        "owner_approved_artifact_binding_sha256": report[
+            "owner_approved_artifact_binding_sha256"
+        ],
+        "owner_approved_prepublication_release_tag": report[
+            "owner_approved_prepublication_release_tag"
+        ],
+        "workflow_run": {
+            "id": report["workflow_run"]["id"],
+            "attempt": report["workflow_run"]["attempt"],
+            "path": report["workflow_run"]["path"],
+        },
+        "workflow_artifacts": [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "size_bytes": row["size_bytes"],
+                "api_archive_sha256": row["api_archive_sha256"],
+            }
+            for row in report["workflow_artifacts"]
+        ],
+        "published_release": {
+            key: report["published_release"][key]
+            for key in (
+                "id",
+                "url",
+                "tag_name",
+                "name",
+                "is_draft",
+                "is_prerelease",
+                "target_commitish",
+                "published_at",
+            )
+        },
+        "release_tag": report["release_tag"],
+        "android_signer": report["android_signer"],
+        "artifacts": [
+            {
+                "role": row["role"],
+                "workflow_bundle": row["workflow_bundle"],
+                "workflow_name": row["workflow_name"],
+                "release_name": row["release_name"],
+                "release_asset_id": row["release_asset_id"],
+                "size_bytes": row["size_bytes"],
+                "sha256": row["sha256"],
+                "attestation_verified": row["attestation_verified"],
+                "matching_invocation_count": row["matching_invocation_count"],
+            }
+            for row in report["artifacts"]
+        ],
+    }
+
+
+def _compute_publication_closure_sha256(report: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        _publication_closure_projection(report),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def build_owner_approved_publication_projection(
     report: dict[str, Any], *, owner_approved_binding: str
 ) -> dict[str, Any]:
     """Return the in-memory fields permitted to drive exact-ID publication."""
 
-    if SHA256_RE.fullmatch(owner_approved_binding) is None:
+    if (
+        not isinstance(owner_approved_binding, str)
+        or SHA256_RE.fullmatch(owner_approved_binding) is None
+    ):
         raise ValueError("Owner-approved artifact binding must be 64 lowercase hex characters")
     recomputed = _compute_binding_sha256(report)
     if report.get("artifact_binding_sha256") != recomputed:
@@ -999,7 +1179,7 @@ def collect_final_draft_evidence(
     action_rows, release_rows = _local_asset_rows(
         windows_dir=windows_dir,
         android_dir=android_dir,
-        draft_release_dir=draft_release_dir,
+        release_dir=draft_release_dir,
         specs=specs,
     )
     initial_action_rows = json.loads(json.dumps(action_rows))
@@ -1146,7 +1326,7 @@ def collect_final_draft_evidence(
     final_action_rows, final_release_rows = _local_asset_rows(
         windows_dir=windows_dir,
         android_dir=android_dir,
-        draft_release_dir=draft_release_dir,
+        release_dir=draft_release_dir,
         specs=specs,
     )
     if final_action_rows != initial_action_rows or final_release_rows != initial_release_rows:
@@ -1189,6 +1369,289 @@ def collect_final_draft_evidence(
         ),
     }
     report["artifact_binding_sha256"] = _compute_binding_sha256(report)
+    return report
+
+
+def collect_published_release_evidence(
+    *,
+    windows_dir: Path,
+    android_dir: Path,
+    published_release_dir: Path,
+    gh: Path,
+    apksigner: Path,
+    java: Path | None = None,
+    version: str,
+    commit: str,
+    run_url: str,
+    expected_android_cert_sha256: str,
+    owner_approved_binding: str,
+    repo: str = DEFAULT_REPO,
+    runner: Runner,
+    now_fn: Callable[[], str] = _utc_now,
+) -> dict[str, Any]:
+    """Revalidate one published Release against the Owner-approved draft binding."""
+
+    if repo != DEFAULT_REPO or version != DEFAULT_VERSION:
+        raise ValueError("live published evidence is fixed to ClipVault v1.6.0")
+    if (
+        not isinstance(owner_approved_binding, str)
+        or SHA256_RE.fullmatch(owner_approved_binding) is None
+    ):
+        raise ValueError("Owner-approved artifact binding must be 64 lowercase hex characters")
+    commit = validate_commit(commit)
+    run_url = validate_run_url(run_url, repo)
+    run_id = _run_id(run_url, repo)
+    owner_cert = verify_release_manifest.normalize_android_cert_sha256(
+        expected_android_cert_sha256
+    )
+    gh = _validate_gh_path(gh)
+    windows_dir = windows_dir.resolve(strict=True)
+    android_dir = android_dir.resolve(strict=True)
+    published_release_dir = published_release_dir.resolve(strict=True)
+
+    validate_evidence(
+        windows_dir=windows_dir,
+        android_dir=android_dir,
+        version=version,
+        commit=commit,
+        run_url=run_url,
+        expected_android_cert_sha256=owner_cert,
+        repo=repo,
+    )
+    specs = _asset_specs(version)
+    action_rows, release_rows = _local_asset_rows(
+        windows_dir=windows_dir,
+        android_dir=android_dir,
+        release_dir=published_release_dir,
+        specs=specs,
+        release_label="published Release",
+    )
+    initial_action_rows = json.loads(json.dumps(action_rows))
+    initial_release_rows = json.loads(json.dumps(release_rows))
+
+    branch_endpoint = f"repos/{repo}/branches/{BRANCH}"
+    run_endpoint = f"repos/{repo}/actions/runs/{run_id}"
+    artifacts_endpoint = f"repos/{repo}/actions/runs/{run_id}/artifacts?per_page=100"
+    cert_variable_endpoint = (
+        f"repos/{repo}/environments/{RELEASE_ENVIRONMENT}/variables/"
+        f"{RELEASE_CERT_VARIABLE}"
+    )
+    release_endpoint = f"repos/{repo}/releases/tags/{version}"
+
+    _validate_main_record(
+        _gh_get(runner, gh, branch_endpoint, label="current main lookup"), commit=commit
+    )
+    release_tag = _validate_release_tag_state(
+        _lookup_release_tag_state(
+            runner,
+            gh,
+            repo=repo,
+            version=version,
+            include_object_identity=True,
+        ),
+        commit=commit,
+    )
+    if release_tag["state"] != "present":
+        raise ValueError("published release tag is absent")
+    cert_variable = _validate_release_cert_variable(
+        _gh_get(
+            runner,
+            gh,
+            cert_variable_endpoint,
+            label="release environment certificate variable lookup",
+        ),
+        owner_cert_sha256=owner_cert,
+    )
+    run = _validate_run_record(
+        _gh_get(runner, gh, run_endpoint, label="workflow run lookup"),
+        run_id=run_id,
+        run_url=run_url,
+        repo=repo,
+        version=version,
+        commit=commit,
+    )
+    workflow_artifacts = _validate_workflow_artifacts(
+        _gh_get(runner, gh, artifacts_endpoint, label="workflow artifact lookup")
+    )
+    published_release = _validate_published_release_record(
+        _gh_get(runner, gh, release_endpoint, label="published Release lookup"),
+        repo=repo,
+        version=version,
+        commit=commit,
+        release_rows=release_rows,
+        specs=specs,
+    )
+
+    published_apk = published_release_dir / next(
+        spec.release_name for spec in specs if spec.role == "android_signed_apk"
+    )
+    captured_evidence = published_release_dir / "ANDROID_APKSIGNER_VERIFY.txt"
+    observed_cert = _verify_live_apksigner(
+        runner,
+        apksigner=apksigner,
+        java=java,
+        apk=published_apk,
+        captured_evidence=captured_evidence,
+        owner_cert_sha256=owner_cert,
+    )
+
+    artifact_rows: list[dict[str, Any]] = []
+    for spec in sorted(specs, key=lambda value: value.release_name):
+        local = action_rows[spec.role]
+        matching = _verify_attestation(
+            runner,
+            gh=gh,
+            path={"windows": windows_dir, "android": android_dir}[spec.platform]
+            / spec.workflow_name,
+            digest=local["sha256"],
+            repo=repo,
+            commit=commit,
+            run_url=run_url,
+            run_attempt=run["attempt"],
+        )
+        live_asset = published_release["assets"][spec.role]
+        artifact_rows.append({
+            "role": spec.role,
+            "workflow_bundle": spec.workflow_bundle,
+            "workflow_name": spec.workflow_name,
+            "release_name": spec.release_name,
+            "size_bytes": local["size_bytes"],
+            "sha256": local["sha256"],
+            "attestation_verified": True,
+            "matching_invocation_count": matching,
+            "release_asset_id": live_asset["release_asset_id"],
+        })
+
+    android_signer = {
+        "expected_cert_sha256": owner_cert,
+        "observed_cert_sha256": observed_cert,
+        "signer_count": 1,
+        "apksigner_verified": True,
+        "trust_anchor_source": "github_release_environment_variable_and_owner_input_match",
+        "release_environment": cert_variable["environment"],
+        "release_environment_variable": cert_variable["name"],
+    }
+    exact_ref = f"refs/tags/{version}"
+    prepublication_candidates = (
+        {"ref": exact_ref, "state": "absent", "commit_sha": None},
+        {"ref": exact_ref, "state": "present", "commit_sha": commit},
+    )
+    matching_candidates = [
+        candidate
+        for candidate in prepublication_candidates
+        if _owner_binding_candidate(
+            repo=repo,
+            version=version,
+            target_commit=commit,
+            workflow_run=run,
+            workflow_artifacts=workflow_artifacts,
+            release_id=published_release["id"],
+            prepublication_release_tag=candidate,
+            android_signer=android_signer,
+            artifacts=artifact_rows,
+        )
+        == owner_approved_binding
+    ]
+    if len(matching_candidates) != 1:
+        raise ValueError(
+            "live published state does not reproduce the Owner-approved artifact binding"
+        )
+    owner_prepublication_tag = matching_candidates[0]
+
+    _validate_main_record(
+        _gh_get(runner, gh, branch_endpoint, label="final current main lookup"), commit=commit
+    )
+    final_release_tag = _validate_release_tag_state(
+        _lookup_release_tag_state(
+            runner,
+            gh,
+            repo=repo,
+            version=version,
+            include_object_identity=True,
+        ),
+        commit=commit,
+    )
+    if final_release_tag != release_tag:
+        raise ValueError("release tag changed during published evidence collection")
+    final_cert_variable = _validate_release_cert_variable(
+        _gh_get(
+            runner,
+            gh,
+            cert_variable_endpoint,
+            label="final release environment certificate variable lookup",
+        ),
+        owner_cert_sha256=owner_cert,
+    )
+    if final_cert_variable != cert_variable:
+        raise ValueError("release environment certificate variable changed during collection")
+    final_run = _validate_run_record(
+        _gh_get(runner, gh, run_endpoint, label="final workflow run lookup"),
+        run_id=run_id,
+        run_url=run_url,
+        repo=repo,
+        version=version,
+        commit=commit,
+    )
+    if final_run != run:
+        raise ValueError("workflow run changed during published evidence collection")
+    final_workflow_artifacts = _validate_workflow_artifacts(
+        _gh_get(runner, gh, artifacts_endpoint, label="final workflow artifact lookup")
+    )
+    if final_workflow_artifacts != workflow_artifacts:
+        raise ValueError("workflow artifact bundles changed during published evidence collection")
+    final_published_release = _validate_published_release_record(
+        _gh_get(runner, gh, release_endpoint, label="final published Release lookup"),
+        repo=repo,
+        version=version,
+        commit=commit,
+        release_rows=release_rows,
+        specs=specs,
+    )
+    if final_published_release != published_release:
+        raise ValueError("published Release changed during evidence collection")
+    final_action_rows, final_release_rows = _local_asset_rows(
+        windows_dir=windows_dir,
+        android_dir=android_dir,
+        release_dir=published_release_dir,
+        specs=specs,
+        release_label="published Release",
+    )
+    if final_action_rows != initial_action_rows or final_release_rows != initial_release_rows:
+        raise ValueError("local artifact bytes changed during published evidence collection")
+
+    report: dict[str, Any] = {
+        "schema_version": 1,
+        "evidence_type": "clipvault.issue36.published_release",
+        "publication_gate_status": "published_release_verified_live_revalidation_required",
+        "repo": repo,
+        "issue": ISSUE_NUMBER,
+        "version": version,
+        "branch": BRANCH,
+        "target_commit": commit,
+        "workflow_run": run,
+        "workflow_artifacts": workflow_artifacts,
+        "owner_approved_artifact_binding_sha256": owner_approved_binding,
+        "owner_approved_prepublication_release_tag": owner_prepublication_tag,
+        "published_release": {
+            key: value for key, value in published_release.items() if key != "assets"
+        },
+        "release_tag": release_tag,
+        "android_signer": android_signer,
+        "artifacts": artifact_rows,
+        "validated_at": now_fn(),
+        "assurance": "live_exact_run_and_published_release_snapshot",
+        "consumer_requirement": "rerun_or_live_cross_check_before_release_readiness",
+        "scope_note": (
+            "This evidence revalidates the exact successful draft=true run, eight attested "
+            "artifact files, published Release ID and bytes, exact current release tag, and "
+            "Owner Android signer against the Owner-approved pre-publication binding. This "
+            "JSON is not self-authenticating and does not replace manual QA, Owner closure "
+            "approval, or Issue #36 closure."
+        ),
+    }
+    report["publication_closure_binding_sha256"] = _compute_publication_closure_sha256(
+        report
+    )
     return report
 
 
@@ -1268,6 +1731,50 @@ def render_final_draft_issue_comment(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_published_release_issue_comment(report: dict[str, Any]) -> str:
+    lines = [
+        f"Live-verified published Release snapshot for Issue #{report['issue']}",
+        "",
+        f"- Repository: `{report['repo']}`",
+        f"- Version: `{report['version']}`",
+        f"- Target commit: `{report['target_commit']}`",
+        f"- Workflow run: {report['workflow_run']['url']} (attempt {report['workflow_run']['attempt']})",
+        f"- Published Release: {report['published_release']['url']} "
+        f"(ID {report['published_release']['id']})",
+        f"- Release tag: `{report['release_tag']['ref']}` -> "
+        f"`{report['release_tag']['commit_sha']}`",
+        f"- Owner-approved artifact binding SHA-256: "
+        f"`{report['owner_approved_artifact_binding_sha256']}`",
+        f"- Publication closure binding SHA-256: "
+        f"`{report['publication_closure_binding_sha256']}`",
+        f"- Owner Android certificate SHA-256: "
+        f"`{report['android_signer']['expected_cert_sha256']}`",
+        "",
+        "| Platform | File | Bytes | SHA-256 | Attestation |",
+        "|---|---|---:|---|---|",
+    ]
+    for row in report["artifacts"]:
+        platform = "Android" if row["role"].startswith("android_") else "Windows"
+        lines.append(
+            f"| {platform} | `{row['release_name']}` | {row['size_bytes']} | "
+            f"`{row['sha256']}` | exact run attempt verified |"
+        )
+    lines.extend(["", str(report["scope_note"])])
+    return "\n".join(lines) + "\n"
+
+
+def _validate_output_locations(
+    outputs: Sequence[Path],
+    *,
+    artifact_dirs: Sequence[Path],
+) -> None:
+    roots = [directory.resolve(strict=True) for directory in artifact_dirs]
+    for output in outputs:
+        candidate = output.resolve(strict=False)
+        if any(candidate == root or root in candidate.parents for root in roots):
+            raise ValueError("evidence outputs must be outside verified artifact directories")
+
+
 def _write_new_outputs(outputs: Sequence[tuple[Path, str]]) -> None:
     paths = [path for path, _ in outputs]
     if len(set(paths)) != len(paths):
@@ -1280,9 +1787,10 @@ def _write_new_outputs(outputs: Sequence[tuple[Path, str]]) -> None:
     created: list[Path] = []
     try:
         for path, content in outputs:
-            with path.open("x", encoding="utf-8", newline="\n") as stream:
-                stream.write(content)
+            stream = path.open("x", encoding="utf-8", newline="\n")
             created.append(path)
+            with stream:
+                stream.write(content)
     except OSError as exc:
         for path in created:
             try:
@@ -1311,7 +1819,9 @@ def main(argv: list[str] | None = None) -> int:
         help="return exit code 0 after structural-precheck validation errors",
     )
     parser.add_argument("--require-live-final-draft", action="store_true")
+    parser.add_argument("--require-live-published-release", action="store_true")
     parser.add_argument("--draft-release-dir", type=Path)
+    parser.add_argument("--published-release-dir", type=Path)
     parser.add_argument("--gh", type=Path)
     parser.add_argument("--apksigner", type=Path)
     parser.add_argument("--java", type=Path)
@@ -1321,9 +1831,81 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--publication-projection-stdout", action="store_true")
     args = parser.parse_args(argv)
 
+    if args.require_live_final_draft and args.require_live_published_release:
+        parser.error("live final-draft and published-release modes are mutually exclusive")
+
+    if args.require_live_published_release:
+        if args.no_fail or args.output is not None or args.json:
+            parser.error("live published-release mode forbids --no-fail, --output, and --json")
+        if args.draft_release_dir is not None or args.publication_projection_stdout:
+            parser.error(
+                "live published-release mode forbids --draft-release-dir and "
+                "--publication-projection-stdout"
+            )
+        missing = [
+            name
+            for name, value in (
+                ("--published-release-dir", args.published_release_dir),
+                ("--gh", args.gh),
+                ("--apksigner", args.apksigner),
+                ("--evidence-output", args.evidence_output),
+                ("--comment-output", args.comment_output),
+                ("--owner-approved-binding", args.owner_approved_binding),
+            )
+            if value is None
+        ]
+        if missing:
+            parser.error("live published-release mode requires " + ", ".join(missing))
+        try:
+            _validate_output_locations(
+                [args.evidence_output, args.comment_output],
+                artifact_dirs=[
+                    args.windows_dir,
+                    args.android_dir,
+                    args.published_release_dir,
+                ],
+            )
+            report = collect_published_release_evidence(
+                windows_dir=args.windows_dir,
+                android_dir=args.android_dir,
+                published_release_dir=args.published_release_dir,
+                gh=args.gh,
+                apksigner=args.apksigner,
+                java=args.java,
+                version=args.version,
+                commit=args.commit,
+                run_url=args.run_url,
+                expected_android_cert_sha256=args.expected_android_cert_sha256,
+                owner_approved_binding=args.owner_approved_binding,
+                repo=args.repo,
+                runner=SubprocessRunner(),
+            )
+            _validate_output_locations(
+                [args.evidence_output, args.comment_output],
+                artifact_dirs=[
+                    args.windows_dir,
+                    args.android_dir,
+                    args.published_release_dir,
+                ],
+            )
+            _write_new_outputs([
+                (
+                    args.evidence_output,
+                    json.dumps(report, indent=2, sort_keys=True, ensure_ascii=True) + "\n",
+                ),
+                (args.comment_output, render_published_release_issue_comment(report)),
+            ])
+        except (ValueError, OSError, UnicodeError) as exc:
+            detail = str(exc) if isinstance(exc, ValueError) else "local filesystem validation failed"
+            print(f"live published-release evidence validation failed: {detail}", file=sys.stderr)
+            return 1
+        return 0
+
     if args.require_live_final_draft:
         if args.no_fail or args.output is not None or args.json:
             parser.error("live final-draft mode forbids --no-fail, --output, and --json")
+        if args.published_release_dir is not None:
+            parser.error("live final-draft mode forbids --published-release-dir")
         missing = [
             name
             for name, value in (
@@ -1342,6 +1924,10 @@ def main(argv: list[str] | None = None) -> int:
                 "--publication-projection-stdout and --owner-approved-binding must be used together"
             )
         try:
+            _validate_output_locations(
+                [args.evidence_output, args.comment_output],
+                artifact_dirs=[args.windows_dir, args.android_dir, args.draft_release_dir],
+            )
             report = collect_final_draft_evidence(
                 windows_dir=args.windows_dir,
                 android_dir=args.android_dir,
@@ -1362,6 +1948,10 @@ def main(argv: list[str] | None = None) -> int:
                     report,
                     owner_approved_binding=args.owner_approved_binding,
                 )
+            _validate_output_locations(
+                [args.evidence_output, args.comment_output],
+                artifact_dirs=[args.windows_dir, args.android_dir, args.draft_release_dir],
+            )
             _write_new_outputs([
                 (
                     args.evidence_output,
@@ -1388,6 +1978,7 @@ def main(argv: list[str] | None = None) -> int:
         value is not None
         for value in (
             args.draft_release_dir,
+            args.published_release_dir,
             args.gh,
             args.apksigner,
             args.java,
@@ -1396,7 +1987,10 @@ def main(argv: list[str] | None = None) -> int:
             args.owner_approved_binding,
         )
     ) or args.publication_projection_stdout:
-        parser.error("live final-draft arguments require --require-live-final-draft")
+        parser.error(
+            "live evidence arguments require --require-live-final-draft or "
+            "--require-live-published-release"
+        )
     try:
         report = validate_evidence(
             windows_dir=args.windows_dir,
