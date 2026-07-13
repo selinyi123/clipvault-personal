@@ -23,7 +23,7 @@ class ImeSourceBoundaryTest {
 
         val facadeSource = imeSourceDir.parent.resolve(Path.of("runtime", "ClipVaultFacade.kt"))
         assertTrue("Runtime facade source is missing: $facadeSource", Files.isRegularFile(facadeSource))
-        val facadeText = Files.readString(facadeSource)
+        val facadeText = String(Files.readAllBytes(facadeSource), Charsets.UTF_8)
         val interfaceStart = facadeText.indexOf("interface ClipVaultFacade {")
         val interfaceEnd = facadeText.indexOf("\n}", interfaceStart)
         assertTrue("ClipVaultFacade interface boundary is missing", interfaceStart >= 0 && interfaceEnd > interfaceStart)
