@@ -13,6 +13,11 @@ class PrivacyAwareFilterTest {
     }
 
     @Test
+    fun suppressesTypeNullEditor() {
+        assertTrue(PrivacyAwareFilter.shouldSuppressCandidates(InputType.TYPE_NULL))
+    }
+
+    @Test
     fun suppressesNoSuggestionsTextFields() {
         val inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
 
@@ -59,6 +64,21 @@ class PrivacyAwareFilterTest {
         val inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_NORMAL
 
         assertFalse(PrivacyAwareFilter.shouldSuppressCandidates(inputType))
+    }
+
+    @Test
+    fun allowsOrdinaryPhoneFields() {
+        assertFalse(PrivacyAwareFilter.shouldSuppressCandidates(InputType.TYPE_CLASS_PHONE))
+    }
+
+    @Test
+    fun allowsOrdinaryDatetimeFields() {
+        assertFalse(PrivacyAwareFilter.shouldSuppressCandidates(InputType.TYPE_CLASS_DATETIME))
+    }
+
+    @Test
+    fun suppressesUnknownFutureInputClasses() {
+        assertTrue(PrivacyAwareFilter.shouldSuppressCandidates(0x0f))
     }
 
     @Test

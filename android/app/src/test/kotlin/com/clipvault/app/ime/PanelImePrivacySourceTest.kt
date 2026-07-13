@@ -5,6 +5,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.stream.Collectors
 
 class PanelImePrivacySourceTest {
     private val panelSource: Path = Path.of(
@@ -17,6 +18,7 @@ class PanelImePrivacySourceTest {
         "ime",
         "ClipVaultPanelImeService.kt",
     )
+    private val imeSourceDir: Path = panelSource.parent
 
     @Test
     fun saveClipboardChecksPrivacyBeforeClipboardReadAndBeforeRuntimeWrite() {
@@ -49,5 +51,57 @@ class PanelImePrivacySourceTest {
         assertTrue("runtime write must happen from the explicit-save worker", worker > primaryClip)
         assertTrue("worker must re-check privacy before writing", secondGuard > worker)
         assertTrue("saveExplicit must happen only after the worker privacy guard", saveExplicit > secondGuard)
+    }
+
+    @Test
+    fun explicitSaveIsTheOnlyImeClipboardReadOrRuntimeWrite() {
+        val stream = Files.walk(imeSourceDir)
+        val sources = try {
+            stream
+                .filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".kt") }
+                .map { it to String(Files.readAllBytes(it), Charsets.UTF_8) }
+                .collect(Collectors.toList())
+        } finally {
+            stream.close()
+        }
+
+        val clipboardFiles = sources
+            .filter { (_, text) ->
+                listOf("ClipboardManager", "CLIPBOARD_SERVICE", ".primaryClip", ".getPrimaryClip")
+                    .any { it in text }
+            }
+            .map { (path, _) -> path.fileName.toString() }
+            .toSet()
+        assertEquals(
+            "Only the Panel IME explicit-save action may reach the clipboard",
+            setOf(panelSource.fileName.toString()),
+            clipboardFiles,
+        )
+        assertEquals(
+            "IME package must have exactly one clipboard content read",
+            1,
+            sources.sumOf { (_, text) ->
+                Regex("""(?:\.primaryClip\b|\.getPrimaryClip\s*\()""").findAll(text).count()
+            },
+        )
+        assertEquals(
+            "IME package must have exactly one explicit Runtime save",
+            1,
+            sources.sumOf { (_, text) -> Regex("""\bsaveExplicit\s*\(""").findAll(text).count() },
+        )
+        assertTrue(
+            "IME package must never listen for clipboard changes",
+            sources.none { (_, text) ->
+                Regex("""\b(addPrimaryClipChangedListener|onPrimaryClipChanged)\b""")
+                    .containsMatchIn(text)
+            },
+        )
+        assertTrue(
+            "IME package must not use deprecated or synthetic clipboard text reads",
+            sources.none { (_, text) ->
+                Regex("""\.getText\s*\(|\b(?:cm|clipboard|clipboardManager)\.text\b""")
+                    .containsMatchIn(text)
+            },
+        )
     }
 }
