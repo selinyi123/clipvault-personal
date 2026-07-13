@@ -91,9 +91,10 @@ desktop/
       handlers.py    # endpoint 逻辑，直接单测
       webui/         # 单页极简 UI（原生 JS/htmx，不引前端框架）
     runtime/
+      app.py             # composition root：线程、连接、readiness、stop/join/health
       obsidian_worker.py # 专用 Vault IO worker：durable queue + wake/周期兜底
     config.py        # config.toml 加载（合同 CFG-1）
-    main.py          # 进程入口：单实例锁、线程编排、优雅退出
+    main.py          # 薄入口：CLI、单实例锁、signal、tray；不实现 worker
   tests/
 ```
 
@@ -104,6 +105,10 @@ desktop/
 - 线程4：DB-only maintenance（同步 outbox 清理）与可选 GitHub 备份定时器
 - 前台通过 SQLite durable queue 交接，并用进程内 wake signal 降低延迟；signal
   可以丢失而任务不能丢失。SQLite 开 WAL，每个线程拥有自己的 connection。
+- `runtime/app.py` 在 API 成功 bind 后才启动其他 worker，watcher 最后启动；
+  partial start、terminal worker error 或未预期提前退出统一触发 stop + bounded join。
+- 启动 migration 使用主线程短连接；API、Obsidian、maintenance、backup 各自在线程
+  内创建/关闭长连接；watcher 每次捕获创建短连接。任何 SQLite connection 都不跨线程。
 
 **core/ 与 IO 严格分层**是给 Codex 的硬要求：core 内不允许 import sqlite3 / pathlib 写文件 / 网络库，保证合同级逻辑 100% 可单测。
 

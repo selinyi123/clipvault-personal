@@ -10,6 +10,7 @@ Design goals for first contact:
 """
 
 import os
+import threading
 import webbrowser
 from pathlib import Path
 
@@ -107,10 +108,13 @@ def make_icon_image(size: int = 64):
     return img
 
 
-def run_tray(port: int, base_dir: Path, on_quit) -> bool:
+def run_tray(port: int, base_dir: Path, on_quit, stop_event=None) -> bool:
     """Block on a system tray icon. Calls on_quit() when the user exits.
+    An optional runtime stop event also closes the icon after worker failure.
     Returns False if the tray can't start (no pystray, or no GUI session) so the
     caller can fall back to a plain headless run instead of crashing."""
+    if stop_event is not None and stop_event.is_set():
+        return True
     try:
         import pystray
     except Exception:
@@ -136,6 +140,16 @@ def run_tray(port: int, base_dir: Path, on_quit) -> bool:
     )
     try:
         icon = pystray.Icon("ClipVault", make_icon_image(), "ClipVault Personal", menu)
+        if stop_event is not None:
+            def _stop_on_runtime_exit():
+                stop_event.wait()
+                icon.stop()
+
+            threading.Thread(
+                target=_stop_on_runtime_exit,
+                daemon=True,
+                name="tray-runtime-stop",
+            ).start()
         icon.run()
     except Exception:
         return False  # e.g. no GUI session — caller falls back to a headless run
