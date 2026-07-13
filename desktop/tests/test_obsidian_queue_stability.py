@@ -239,11 +239,25 @@ def test_populated_v6_upgrades_to_bounded_v7_reconciliation(tmp_path):
     conn = db.connect(tmp_path / "upgrade.db")
     try:
         assert db.migrate(conn, v6_migrations) == 6
-        clips = [
-            _ingest(conn, f"v6 populated {index}", f"clipv6upgrade{index:02d}")
-            for index in range(3)
-        ]
-        conn.execute("DELETE FROM obsidian_queue WHERE clip_id=?", (clips[1].id,))
+        # Populate a real v6 shape directly.  Current production repositories
+        # require the latest schema and must not be used to fabricate legacy
+        # databases in migration tests.
+        clip_ids = [f"clipv6upgrade{index:02d}" for index in range(3)]
+        conn.executemany(
+            "INSERT INTO clips(id,content,content_hash,source_device,created_at,"
+            "last_seen_at) VALUES (?,?,?,?,?,?)",
+            [
+                (clip_id, f"v6 populated {index}", f"hash-v6-{index}",
+                 "desktop-test", NOW, NOW)
+                for index, clip_id in enumerate(clip_ids)
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO obsidian_queue(clip_id,state,attempts,next_attempt_at,"
+            "created_at,updated_at) VALUES (?,'pending',0,?,?,?)",
+            [(clip_id, NOW, NOW, NOW) for clip_id in clip_ids],
+        )
+        conn.execute("DELETE FROM obsidian_queue WHERE clip_id=?", (clip_ids[1],))
         conn.commit()
 
         assert db.migrate(conn, v7_migrations) == 7
@@ -285,7 +299,7 @@ def test_populated_v6_upgrades_to_bounded_v7_reconciliation(tmp_path):
         for _ in range(3):
             queue.reconcile_missing(NOW, limit=1)
         assert conn.execute(
-            "SELECT 1 FROM obsidian_queue WHERE clip_id=?", (clips[1].id,)
+            "SELECT 1 FROM obsidian_queue WHERE clip_id=?", (clip_ids[1],)
         ).fetchone() is not None
     finally:
         conn.close()

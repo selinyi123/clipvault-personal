@@ -15,11 +15,12 @@ FIXED_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 EXPECTED_TABLES = {
     "schema_meta", "clips", "memory_items", "sync_outbox", "sync_peers",
     "backup_queue", "obsidian_queue", "obsidian_reconcile_state",
+    "clip_search_map",
 }
 
 
 def test_a1_migration_from_zero(conn):
-    assert db.schema_version(conn) == 8
+    assert db.schema_version(conn) == 9
     names = {
         r[0]
         for r in conn.execute(
@@ -33,7 +34,7 @@ def test_a1_migration_from_zero(conn):
 
 
 def test_a1_migration_idempotent(conn):
-    assert db.migrate(conn) == 8  # second run is a no-op, returns current version
+    assert db.migrate(conn) == 9  # second run is a no-op, returns current version
 
 
 def test_a1_v5_to_v6_backfills_only_eligible_obsidian_rows(tmp_path):
@@ -303,6 +304,20 @@ def test_suggestion_index_tracks_eligibility_and_privacy_transitions(conn):
         "by-favorite",
         "released",
     }
+
+    plan = " ".join(
+        row[3]
+        for row in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM clips "
+            "INDEXED BY idx_clips_suggest_recent "
+            "WHERE is_secret=0 AND deleted=0 AND last_seen_at>=? "
+            "AND (favorite=1 OR times_seen>=3) "
+            "ORDER BY last_seen_at DESC,id DESC LIMIT 200",
+            ("2026-07-12T00:00:00Z",),
+        )
+    )
+    assert "idx_clips_suggest_recent" in plan
+    assert "USE TEMP B-TREE" not in plan
 
 
 def test_a1_failed_migration_rolls_back_script_and_schema_version(tmp_path):

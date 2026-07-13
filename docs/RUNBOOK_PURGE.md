@@ -10,7 +10,9 @@
 4. 用 `git filter-repo` 删除/替换污染内容（按行替换 JSONL 中对应行为 `{"purged": true, "id": "<clip_id>"}`）。
 5. `git push --force` 到远端（仅此场景允许）。
 6. 在 GitHub 仓库 Settings → 联系 GitHub Support 请求清除悬挂 commit 缓存（cached views）。
-7. 本地 SQLite：将该 clip 标记 `is_secret=1`（重新隔离），`backed_up_at` 置空。
+7. 停止服务后，在一个 SQLite 事务中删除该 clip 的 `clip_search_map`（schema 9
+   trigger 会同步清理 FTS），再将 clip 标记 `is_secret=1`、清空 `backed_up_at`；不得只
+   更新 `is_secret` 而留下可搜索索引。操作前保存一致性数据库副本。
 8. 若该内容也写入了 Obsidian：删除对应 .md，检查 Vault 的同步盘/git 历史是否需要同样清除。
 9. 在 docs/HANDOFF.md 的 Architect Decisions Log 记录：日期、规则缺口、已补的 SG 规则 ID。
 10. 给 `contracts/vectors/secret_guard.json` 增加该模式的用例，恢复 backup worker。

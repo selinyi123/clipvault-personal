@@ -404,6 +404,32 @@ times_seen >= 3)` 的行，避免在资格稀疏时按时间回表扫描全部 p
 `id DESC` 只为同秒时间戳与 `LIMIT` 边界提供确定性；索引不得改变 SUG-1
 评分、来源上限、Secret Guard、删除语义或 API 响应结构。
 
+**DB-1.4（schema 9，2026-07-13）**：每个且仅有 `is_secret = 0 AND
+deleted = 0` 的 searchable clip 必须同时拥有一条 `clip_search_map` 与一条
+`clips_fts` 记录；`clip_search_map.search_id = clips_fts.rowid` 且两者的
+`clip_id/id` 必须相等。`search_id` 是稳定的 `INTEGER PRIMARY KEY
+AUTOINCREMENT`，不得改用可能在 `VACUUM` 后变化的 `clips.rowid`。public insert、
+secret release、delete、restore 与物理删除必须原子维护该双向映射；任何异常不得留下
+clip/map/FTS 的部分状态。
+
+长度至少 3 的 public 查询先判断是否超过 4096 个 FTS matches；高频词只对最终排序
+中的前 256 个完整候选做精确 FTS probe，已经取得完整 page 才可早返，否则必须执行 exact
+FTS-first fallback。相关多语句读取必须处于同一 SQLite snapshot。所有 probe 与
+fallback 仍显式过滤 `is_secret = 0 AND deleted = 0`，map 不能代替 Secret Guard。
+带 `type` / `before_id` 过滤器或 repo limit 大于 256 的查询不得进入 recent probe，
+因为其候选排序可能重新变成无界工作；这些路径直接执行 exact fallback。
+public 列表总排序为 `pinned DESC, last_seen_at DESC, id DESC`，repo-only FTS 搜索为
+`last_seen_at DESC, id DESC`；`id DESC` 稳定原先未定义的同 pin/同秒 tie，并与既有
+`before_id = id < ?` 的方向一致。`before_id` 仍只是独立 ID 过滤器，不是复合
+`pinned/last_seen_at/id` cursor；跨排序组的完整分页需另行版本化，不能在本优化中
+悄悄改变。
+
+schema 9 可由 schema 8 代码读取，但旧二进制产生的新写入不会维护 map。当前服务启动
+会检测并完整修复这类 legacy drift 后再对外服务；这只是意外降级后的恢复护栏，不是
+支持双向版本切换。升级后不得用旧 ClipVault 二进制打开原数据库。应用级回退必须停止
+服务并恢复升级前的一致性备份；诊断只能对副本使用 SQLite URI `mode=ro` 或其他外部
+只读工具，旧 ClipVault 本身没有只读运行模式。
+
 Android Room 为其子集：clips（缓存）、memory_items（缓存）、sync_outbox、自己的 cursor 存储。字段名与语义必须一致。
 
 ## 10. 桌面 REST API（API-1）

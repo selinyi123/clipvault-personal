@@ -22,7 +22,7 @@ def test_small_cli_smoke_uses_temporary_database_and_emits_json(capsys):
 
     report = json.loads(capsys.readouterr().out)
     assert report["rows"] == 200
-    assert report["report_schema_version"] == 1
+    assert report["report_schema_version"] == 2
     assert report["source_revision"] == "unknown" or re.fullmatch(
         r"[0-9a-f]{40}", report["source_revision"]
     )

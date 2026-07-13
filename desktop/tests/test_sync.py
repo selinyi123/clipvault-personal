@@ -287,6 +287,16 @@ def test_h7_clip_meta_lww(api, conn):
     api.sync_push(token, {"events": [stale]})
     assert ClipsRepo(conn).get(clip.id).deleted is True  # unchanged
 
+    # A genuinely newer restore must recreate both schema-9 search rows.  Older
+    # versions flipped deleted=0 but left the clip permanently absent from FTS.
+    fresh = {"origin_device": PEER, "seq": 4, "kind": "clip_meta",
+             "ts": "2026-06-13T10:30:00Z",
+             "data": {"content_hash": content_hash, "patch": {"deleted": False},
+                      "ts": "2026-06-13T10:30:00Z"}}
+    api.sync_push(token, {"events": [fresh]})
+    assert ClipsRepo(conn).get(clip.id).deleted is False
+    assert ClipsRepo(conn).fts_contains(clip.id)
+
 
 def test_h7_clip_meta_pins_and_favorites(api, conn):
     # A peer's clip_meta carrying pinned/favorite must mirror onto the desktop

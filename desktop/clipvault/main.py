@@ -17,6 +17,7 @@ from clipvault.instance_lock import AlreadyRunningError, InstanceLock
 from clipvault.runtime.app import ClipVaultRuntime, RuntimeStopRequested
 from clipvault.service import ClipVaultService
 from clipvault.store import db
+from clipvault.store.clips_repo import ClipsRepo
 from clipvault.watcher.win_clipboard import (
     get_clipboard_text,
     get_foreground_app,
@@ -59,6 +60,10 @@ def main(argv: list[str] | None = None) -> int:
         conn = db.connect(cfg.db_path)
         try:
             db.migrate(conn)
+            if ClipsRepo(conn).repair_search_index():
+                logging.getLogger("clipvault.main").warning(
+                    "repaired legacy search-index drift"
+                )
             text = get_clipboard_text()
             if not text:
                 print("clipboard has no text")
