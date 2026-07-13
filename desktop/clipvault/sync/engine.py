@@ -453,9 +453,9 @@ def _apply_clip_new(conn, data: dict, service) -> None:
                     target.id, ",".join(target.secret_reasons))
         return
     if not target.deleted and not target.obsidian_path:
-        # External IO occurs after the atomic DB commit.  The queue remains
-        # durable if the process stops before or during this best-effort attempt.
-        service.write_obsidian_or_queue(target)
+        # Foreground sync only wakes the dedicated worker. The queue intent is
+        # already durable, so a slow Vault never blocks the single API thread.
+        service.dispatch_obsidian_work(target)
 
 
 def _apply_memory_upsert(conn, data: dict) -> None:

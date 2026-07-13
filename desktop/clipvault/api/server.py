@@ -358,18 +358,25 @@ def build_server(
     return HTTPServer((host, port), make_handler(api, read_timeout_s))
 
 
-def serve(config, stop: threading.Event, pairing=None) -> None:
+def serve(config, stop: threading.Event, pairing=None, *, obsidian_notify=None) -> None:
     """Own the DB connection inside this (serving) thread, then loop."""
     from clipvault.service import ClipVaultService
     from clipvault.store import db
 
     conn = db.connect(config.db_path)
-    db.migrate(conn)  # idempotent; self-sufficient regardless of caller order
-    api = Api(ClipVaultService(conn, config), pairing=pairing)
-    httpd = build_server(api, config.host, config.port)
-    httpd.timeout = 0.5
-    log.info("api listening on %s:%d", config.host, httpd.server_address[1])
-    while not stop.is_set():
-        httpd.handle_request()
-    httpd.server_close()
-    conn.close()
+    httpd = None
+    try:
+        db.migrate(conn)  # idempotent; self-sufficient regardless of caller order
+        api = Api(
+            ClipVaultService(conn, config, obsidian_notify=obsidian_notify),
+            pairing=pairing,
+        )
+        httpd = build_server(api, config.host, config.port)
+        httpd.timeout = 0.5
+        log.info("api listening on %s:%d", config.host, httpd.server_address[1])
+        while not stop.is_set():
+            httpd.handle_request()
+    finally:
+        if httpd is not None:
+            httpd.server_close()
+        conn.close()

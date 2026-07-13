@@ -90,6 +90,8 @@ desktop/
       server.py      # stdlib HTTPServer：REST（合同 API-1）+ 静态 Web UI + sync routes
       handlers.py    # endpoint 逻辑，直接单测
       webui/         # 单页极简 UI（原生 JS/htmx，不引前端框架）
+    runtime/
+      obsidian_worker.py # 专用 Vault IO worker：durable queue + wake/周期兜底
     config.py        # config.toml 加载（合同 CFG-1）
     main.py          # 进程入口：单实例锁、线程编排、优雅退出
   tests/
@@ -98,8 +100,10 @@ desktop/
 **进程模型**：单进程多线程。
 - 线程1：win32 消息泵（剪切板监听）
 - 线程2：stdlib HTTPServer（REST + Web UI + HTTP push/pull 同步）
-- 线程3：后台 worker（Obsidian 写入队列、GitHub 备份定时器）
-- 全部通过线程安全队列交接；SQLite 开 WAL，写操作串行经过 store 层单写锁。
+- 线程3：专用 Obsidian worker（唯一执行 Vault 文件 IO）
+- 线程4：DB-only maintenance（同步 outbox 清理）与可选 GitHub 备份定时器
+- 前台通过 SQLite durable queue 交接，并用进程内 wake signal 降低延迟；signal
+  可以丢失而任务不能丢失。SQLite 开 WAL，每个线程拥有自己的 connection。
 
 **core/ 与 IO 严格分层**是给 Codex 的硬要求：core 内不允许 import sqlite3 / pathlib 写文件 / 网络库，保证合同级逻辑 100% 可单测。
 
@@ -124,9 +128,10 @@ android/
 ```text
 Ctrl+C → Watcher 捕获 → normalize/hash → 去重（命中则 times_seen+1 结束）
 → Secret Guard（命中→隔离，流程终止于本地）
-→ 分类 → clips 落库 + FTS → outbox 记 clip_new 事件
-→ Obsidian Writer（按类型目录写 .md，记 obsidian_path）
-→ backup_queue 入队（worker 定时 JSONL+push）
+→ 分类 → 同一 SQLite 事务提交 clips + FTS + sync outbox + backup_queue + obsidian_queue
+→ 立即返回 watcher；wake 专用 Obsidian worker
+→ worker 按类型目录原子写 .md，并以 lease 所有权提交 obsidian_path
+→ backup worker 定时 JSONL+push
 → Android 在线：HTTP push/pull 同步；离线：下次连上 pull
 → IME 面板"电脑同步"页可见 → 一键粘贴
 ```
@@ -137,7 +142,7 @@ Ctrl+C → Watcher 捕获 → normalize/hash → 去重（命中则 times_seen+1
 分享/手动保存 → Android Capture Pipeline（normalize + Secret Guard）
 → Room 落库 + outbox → HTTP push 到桌面（离线则排队）
 → 桌面 ingest：去重 → 再过 Secret Guard（桌面规则可能更新）→ 分类
-→ Obsidian + backup_queue（同 5.1 尾部）
+→ 原子提交 Obsidian/backup intents（同 5.1 尾部），文件 IO 由 worker 异步执行
 → ack 回 Android，标记已同步
 ```
 
@@ -162,7 +167,12 @@ Ctrl+C → Watcher 捕获 → normalize/hash → 去重（命中则 times_seen+1
 - 一条 clip = 一个 .md 文件，文件名含时间戳 + 首行 slug + id 后缀，天然防撞。
 - **原子写**：tmp 文件 + `os.replace`，避免 Obsidian/同步盘读到半截文件。
 - **幂等**：写成功才记 `obsidian_path`；已有 path 的 clip 永不重写。**用户删了笔记 = 用户的策展决定，绝不复活。**
-- Vault 不可达（路径不存在/被占用）→ 进重试队列，指数退避，Web UI 亮黄灯；绝不丢数据（clip 已在 SQLite）。
+- **前台不做文件 IO**：捕获、release、sync push 只提交 durable intent 并唤醒 worker，
+  避免 Vault、同步盘或杀毒扫描阻塞 watcher/HTTPServer。
+- Vault 不可达（路径不存在/被占用）→ lease 释放回重试队列，指数退避，Web UI
+  暴露不含正文/路径的聚合状态；绝不丢数据（clip 与 intent 已在 SQLite）。
+- `soft_runtime_budget_ms` 只限制是否开始下一条，不能取消已经进入内核的文件系统调用；
+  进程退出通过 stop + wake 让等待中的 worker 及时收束。
 
 ## 8. GitHub 备份要点（布局见 CONTRACTS §7）
 
