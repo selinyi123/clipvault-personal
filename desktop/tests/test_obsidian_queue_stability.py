@@ -227,9 +227,14 @@ def test_expired_old_owner_cannot_finalize_or_delete_new_claim(conn, tmp_path):
 def test_populated_v6_upgrades_to_bounded_v7_reconciliation(tmp_path):
     v6_migrations = tmp_path / "migrations-v6"
     v6_migrations.mkdir()
+    v7_migrations = tmp_path / "migrations-v7"
+    v7_migrations.mkdir()
     for script in sorted(db.MIGRATIONS_DIR.glob("[0-9]*.sql")):
-        if int(script.name.split("_", 1)[0]) <= 6:
+        number = int(script.name.split("_", 1)[0])
+        if number <= 6:
             shutil.copy2(script, v6_migrations / script.name)
+        if number <= 7:
+            shutil.copy2(script, v7_migrations / script.name)
 
     conn = db.connect(tmp_path / "upgrade.db")
     try:
@@ -241,7 +246,7 @@ def test_populated_v6_upgrades_to_bounded_v7_reconciliation(tmp_path):
         conn.execute("DELETE FROM obsidian_queue WHERE clip_id=?", (clips[1].id,))
         conn.commit()
 
-        assert db.migrate(conn) == 7
+        assert db.migrate(conn, v7_migrations) == 7
         indexes = {
             row[0]
             for row in conn.execute(

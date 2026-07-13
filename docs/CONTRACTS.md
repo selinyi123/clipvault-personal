@@ -397,6 +397,13 @@ Obsidian 文件 IO 在事务提交后执行，worker 只有持有未过期 claim
 每轮 reconciliation/cleanup 检查固定上限的行，游标更新与对应修复/清理同事务，禁止恢复
 无界全表 sweep。
 
+**DB-1.3（schema 8，2026-07-13）**：Desktop suggestion 的 recent public clip
+候选扫描使用 `idx_clips_suggest_recent`，按 `last_seen_at DESC, id DESC` 读取。
+索引只包含满足 `is_secret = 0 AND deleted = 0 AND (favorite = 1 OR
+times_seen >= 3)` 的行，避免在资格稀疏时按时间回表扫描全部 public clips。
+`id DESC` 只为同秒时间戳与 `LIMIT` 边界提供确定性；索引不得改变 SUG-1
+评分、来源上限、Secret Guard、删除语义或 API 响应结构。
+
 Android Room 为其子集：clips（缓存）、memory_items（缓存）、sync_outbox、自己的 cursor 存储。字段名与语义必须一致。
 
 ## 10. 桌面 REST API（API-1）

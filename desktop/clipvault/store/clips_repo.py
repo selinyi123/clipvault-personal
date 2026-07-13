@@ -240,7 +240,7 @@ class ClipsRepo:
             f"SELECT {_COLUMNS} FROM clips "
             "WHERE is_secret = 0 AND deleted = 0 AND last_seen_at >= ? "
             "AND (favorite = 1 OR times_seen >= 3) "
-            "ORDER BY last_seen_at DESC LIMIT ?",
+            "ORDER BY last_seen_at DESC, id DESC LIMIT ?",
             (since_iso, limit),
         ).fetchall()
         return [_row_to_clip(r) for r in rows]

@@ -35,10 +35,13 @@ Do not relabel CI regression ceilings as these budgets.
 `desktop/tests/perf/test_perf_smoke.py` constructs 10,000 public clips and 500
 Memory candidates in an in-memory migrated database. Dataset construction is
 not timed. Direct seed inserts populate both `clips` and `clips_fts`; measured
-ingests still use the production pipeline. Seed timestamps are anchored to the
-benchmark start and spread across the preceding 28 days, so `/suggest` always
-exercises its real recent-candidate path instead of becoming an empty fast path
-as a fixed fixture date ages.
+ingests still use the production pipeline. Most synthetic clips retain the
+production-default `times_seen=1`, while fewer than 0.5% are suggestion-
+eligible. This sparse shape prevents a recency-only index from hiding a large
+residual eligibility scan. Seed timestamps are anchored to the benchmark start
+and spread across the preceding 28 days, so `/suggest` always exercises its
+real recent-candidate path instead of becoming an empty fast path as a fixed
+fixture date ages.
 
 Each repeated operation gets one untimed warm-up. Seven measured iterations
 produce median, nearest-rank p95, and maximum values. New ingest uses one
@@ -108,9 +111,10 @@ reviewable PR with before/after output from this tool.
 - A common trigram can return a large FTS row-id set; the current query then
   resolves clips and sorts by `last_seen_at`, so three-character FTS is not
   automatically faster for high-frequency terms.
-- Suggestion output is bounded, but the current clip filter/order and Memory
-  order have no matching composite indexes. Legacy-secret defence can also page
-  past unsafe Memory rows before it finds 500 safe candidates.
+- Suggestion output is bounded, and schema v8 uses a partial index containing
+  only eligible, non-secret, non-deleted clips in deterministic recency order.
+  Memory ordering has no matching composite index; legacy-secret defence can
+  also page past unsafe Memory rows before it finds 500 safe candidates.
 - Public sync pull permits 100 events but deliberately materialises at most eight
   outbox rows per internal page. The 100-event metric therefore exercises the
   complete multi-page loop, but only with small events.
