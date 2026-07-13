@@ -28,9 +28,15 @@
   the JSONL contract. This prevents a misconfigured existing repository from
   exporting unrelated history through ClipVault's configured remote.
 - Merge-result diffs are included in that history audit. Push resolves exactly
-  one destination URL and sends only the current full branch refspec; mirror,
+  one destination URL and sends only the audited HEAD object ID to the current
+  full branch destination; mirror,
   tag, force, prune, submodule, signed, push-option, and hook behavior from Git
   configuration cannot broaden the unattended operation.
+- Commits are built from raw `hash-object --no-filters` blobs through an
+  isolated temporary index. Managed files are opened without following nested
+  links and hard-linked files fail closed. Effective content-transform
+  attributes fail closed, and the caller's real index keeps unrelated staged
+  state unchanged, including if another branch is checked out concurrently.
 - Git failures retain only a safe operation label, exception class, return code,
   and backoff. Raw stderr, remote URLs, credentials, and the local repository
   path are not logged or propagated through adapter exceptions.

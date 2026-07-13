@@ -7,6 +7,7 @@ directory accidentally points at an existing repository.
 """
 
 import inspect
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -17,6 +18,7 @@ from clipvault.backup import git_repo
 
 FORBIDDEN = {"pull", "force", "rebase", "amend", "reset", "fetch"}
 ALLOWED_PATH = "clips/2026/06/2026-06-13.jsonl"
+BRANCH_REF = "refs/heads/main"
 SENSITIVE_DIAGNOSTIC = "PRIVATE-AKIAIOSFODNN7EXAMPLE-Alice-Vault"
 
 
@@ -26,6 +28,18 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
         check=check,
         capture_output=True,
         text=True,
+    )
+
+
+def _git_bytes(
+    repo: Path,
+    *args: str,
+    check: bool = True,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=check,
+        capture_output=True,
     )
 
 
@@ -65,6 +79,35 @@ def _install_hook(
     return hook
 
 
+def _install_marker_command(
+    repo: Path,
+    name: str,
+    marker_name: str,
+    *,
+    passthrough: bool = False,
+) -> Path:
+    command = repo / name
+    command.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' {name} >> {marker_name}\n"
+        + ("cat\n" if passthrough else "exit 1\n"),
+        encoding="utf-8",
+        newline="\n",
+    )
+    command.chmod(
+        command.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+    )
+    return command
+
+
+def _unspecified_attributes_output(*paths: str) -> str:
+    return "".join(
+        f"{path}\0{attribute}\0unspecified\0"
+        for path in paths
+        for attribute in git_repo._CONTENT_ATTRIBUTES
+    )
+
+
 def test_c7_no_history_rewriting_functions():
     public = {
         name for name, obj in inspect.getmembers(git_repo, inspect.isfunction)
@@ -98,56 +141,86 @@ def test_add_timeout_raises_git_error(monkeypatch):
         git_repo.add_commit("/tmp/whatever", "msg", paths=[ALLOWED_PATH])
 
 
-def test_add_failure_does_not_run_commit(monkeypatch):
+def test_raw_object_write_failure_does_not_run_commit_tree(monkeypatch):
     calls = []
 
-    def fake_run(repo, args, timeout=git_repo._TIMEOUT):
-        calls.append(args)
-        if args == ["rev-parse", "--verify", "-q", "HEAD^{commit}"]:
+    def fake_run(
+        repo, args, timeout=git_repo._TIMEOUT, *, env=None, input_bytes=None,
+    ):
+        calls.append((args, env))
+        if args == ["symbolic-ref", "--quiet", "HEAD"]:
+            return subprocess.CompletedProcess(["git", *args], 0, BRANCH_REF + "\n", "")
+        if args == ["rev-parse", "--verify", "-q", f"{BRANCH_REF}^{{commit}}"]:
             return subprocess.CompletedProcess(
                 ["git", *args], returncode=1, stdout="", stderr="no commits",
             )
-        if args and args[0] == "add":
+        if args and args[0] == "check-attr":
+            return subprocess.CompletedProcess(
+                ["git", *args], 0, _unspecified_attributes_output(ALLOWED_PATH), "",
+            )
+        if args == ["read-tree", "--empty"] and env:
+            return subprocess.CompletedProcess(["git", *args], 0, "", "")
+        if args and args[0] == "hash-object":
             return subprocess.CompletedProcess(
                 ["git", *args], returncode=1, stdout="", stderr=SENSITIVE_DIAGNOSTIC,
             )
-        raise AssertionError(f"commit should not run after failed add: {args}")
+        raise AssertionError(f"commit-tree should not run after failed object write: {args}")
 
     monkeypatch.setattr(git_repo, "_run", fake_run)
+    monkeypatch.setattr(
+        git_repo, "_read_backup_file_no_follow", lambda repo, path: b"{}\n",
+    )
 
     with pytest.raises(git_repo.GitError) as caught:
         git_repo.add_commit("/tmp/whatever", "msg", paths=[ALLOWED_PATH])
 
-    assert calls[-1][0] == "add"
-    assert not any(args and args[0] == "commit" for args in calls)
+    assert calls[-1][0][0] == "hash-object"
+    assert not any(args and args[0] in {"commit-tree", "update-ref"} for args, _ in calls)
     assert SENSITIVE_DIAGNOSTIC not in str(caught.value)
 
 
 def test_commit_timeout_raises_git_error(monkeypatch):
     calls = []
+    object_id = "1" * 40
+    tree_id = "2" * 40
 
-    def fake_run(repo, args, timeout=git_repo._TIMEOUT):
-        calls.append(args)
-        if args == ["rev-parse", "--verify", "-q", "HEAD^{commit}"]:
+    def fake_run(
+        repo, args, timeout=git_repo._TIMEOUT, *, env=None, input_bytes=None,
+    ):
+        calls.append((args, env))
+        if args == ["symbolic-ref", "--quiet", "HEAD"]:
+            return subprocess.CompletedProcess(["git", *args], 0, BRANCH_REF + "\n", "")
+        if args == ["rev-parse", "--verify", "-q", f"{BRANCH_REF}^{{commit}}"]:
             return subprocess.CompletedProcess(
                 ["git", *args], returncode=1, stdout="", stderr="no commits",
             )
-        if args and args[0] == "add":
+        if args and args[0] == "check-attr":
+            return subprocess.CompletedProcess(
+                ["git", *args], 0, _unspecified_attributes_output(ALLOWED_PATH), "",
+            )
+        if args == ["read-tree", "--empty"] and env:
             return subprocess.CompletedProcess(["git", *args], 0, "", "")
-        if args and args[0] == "diff":
-            return subprocess.CompletedProcess(["git", *args], 1, "", "")
-        if args and args[0] == "commit":
+        if args and args[0] == "hash-object":
+            return subprocess.CompletedProcess(["git", *args], 0, object_id + "\n", "")
+        if args and args[0] == "update-index" and env:
+            return subprocess.CompletedProcess(["git", *args], 0, "", "")
+        if args == ["write-tree"] and env:
+            return subprocess.CompletedProcess(["git", *args], 0, tree_id + "\n", "")
+        if args and args[0] == "commit-tree":
             return subprocess.CompletedProcess(
                 ["git", *args], 124, "", SENSITIVE_DIAGNOSTIC,
             )
         raise AssertionError(f"unexpected git operation: {args}")
 
     monkeypatch.setattr(git_repo, "_run", fake_run)
+    monkeypatch.setattr(
+        git_repo, "_read_backup_file_no_follow", lambda repo, path: b"{}\n",
+    )
 
     with pytest.raises(git_repo.GitError) as caught:
         git_repo.add_commit("/tmp/whatever", "msg", paths=[ALLOWED_PATH])
 
-    assert calls[-1][0] == "commit"
+    assert calls[-1][0][0] == "commit-tree"
     assert SENSITIVE_DIAGNOSTIC not in str(caught.value)
 
 
@@ -155,9 +228,13 @@ def test_commit_timeout_raises_git_error(monkeypatch):
 def test_add_history_probe_failure_fails_closed_before_add(monkeypatch, returncode):
     calls = []
 
-    def fake_run(repo, args, timeout=git_repo._TIMEOUT):
+    def fake_run(
+        repo, args, timeout=git_repo._TIMEOUT, *, env=None, input_bytes=None,
+    ):
         calls.append(args)
-        if args == ["rev-parse", "--verify", "-q", "HEAD^{commit}"]:
+        if args == ["symbolic-ref", "--quiet", "HEAD"]:
+            return subprocess.CompletedProcess(["git", *args], 0, BRANCH_REF + "\n", "")
+        if args == ["rev-parse", "--verify", "-q", f"{BRANCH_REF}^{{commit}}"]:
             return subprocess.CompletedProcess(
                 ["git", *args], returncode, "", SENSITIVE_DIAGNOSTIC,
             )
@@ -168,7 +245,10 @@ def test_add_history_probe_failure_fails_closed_before_add(monkeypatch, returnco
     with pytest.raises(git_repo.GitError) as caught:
         git_repo.add_commit("/tmp/whatever", "msg", paths=[ALLOWED_PATH])
 
-    assert calls == [["rev-parse", "--verify", "-q", "HEAD^{commit}"]]
+    assert calls == [
+        ["symbolic-ref", "--quiet", "HEAD"],
+        ["rev-parse", "--verify", "-q", f"{BRANCH_REF}^{{commit}}"],
+    ]
     assert caught.value.returncode == returncode
     assert SENSITIVE_DIAGNOSTIC not in str(caught.value)
 
@@ -177,9 +257,13 @@ def test_add_history_probe_failure_fails_closed_before_add(monkeypatch, returnco
 def test_push_history_probe_failure_is_safe_push_error(monkeypatch, returncode):
     calls = []
 
-    def fake_run(repo, args, timeout=git_repo._TIMEOUT):
+    def fake_run(
+        repo, args, timeout=git_repo._TIMEOUT, *, env=None, input_bytes=None,
+    ):
         calls.append(args)
-        if args == ["rev-parse", "--verify", "-q", "HEAD^{commit}"]:
+        if args == ["symbolic-ref", "--quiet", "HEAD"]:
+            return subprocess.CompletedProcess(["git", *args], 0, BRANCH_REF + "\n", "")
+        if args == ["rev-parse", "--verify", "-q", f"{BRANCH_REF}^{{commit}}"]:
             return subprocess.CompletedProcess(
                 ["git", *args], returncode, "", SENSITIVE_DIAGNOSTIC,
             )
@@ -190,7 +274,10 @@ def test_push_history_probe_failure_is_safe_push_error(monkeypatch, returncode):
     with pytest.raises(git_repo.GitPushError) as caught:
         git_repo.push("/tmp/whatever")
 
-    assert calls == [["rev-parse", "--verify", "-q", "HEAD^{commit}"]]
+    assert calls == [
+        ["symbolic-ref", "--quiet", "HEAD"],
+        ["rev-parse", "--verify", "-q", f"{BRANCH_REF}^{{commit}}"],
+    ]
     assert caught.value.returncode == returncode
     assert SENSITIVE_DIAGNOSTIC not in str(caught.value)
 
@@ -198,13 +285,20 @@ def test_push_history_probe_failure_is_safe_push_error(monkeypatch, returncode):
 def test_push_uses_option_terminator_before_remote(monkeypatch):
     calls = []
     option_like_remote = "--upload-pack=PRIVATE-AKIAIOSFODNN7EXAMPLE"
+    verified_head = "a" * 40
 
-    def fake_run(repo, args, timeout=git_repo._TIMEOUT):
+    def fake_run(
+        repo, args, timeout=git_repo._TIMEOUT, *, env=None, input_bytes=None,
+    ):
         calls.append(args)
-        if args == ["rev-parse", "--verify", "-q", "HEAD^{commit}"]:
-            return subprocess.CompletedProcess(["git", *args], 1, "", "")
-        if args == ["symbolic-ref", "--quiet", "--short", "HEAD"]:
-            return subprocess.CompletedProcess(["git", *args], 0, "main\n", "")
+        if args == ["symbolic-ref", "--quiet", "HEAD"]:
+            return subprocess.CompletedProcess(["git", *args], 0, BRANCH_REF + "\n", "")
+        if args == ["rev-parse", "--verify", "-q", f"{BRANCH_REF}^{{commit}}"]:
+            return subprocess.CompletedProcess(
+                ["git", *args], 0, verified_head + "\n", "",
+            )
+        if args and args[0] == "log":
+            return subprocess.CompletedProcess(["git", *args], 0, "", "")
         if args == ["remote"]:
             return subprocess.CompletedProcess(["git", *args], 0, "", "")
         if args and args[0] == "push":
@@ -220,7 +314,7 @@ def test_push_uses_option_terminator_before_remote(monkeypatch):
     assert push_args[0] == "push"
     assert push_args[separator + 1:] == [
         option_like_remote,
-        "refs/heads/main:refs/heads/main",
+        f"{verified_head}:{BRANCH_REF}",
     ]
 
 
@@ -270,20 +364,209 @@ def test_add_commit_accepts_dated_jsonl_path(tmp_path):
     ]
 
 
+def test_add_commit_rejects_symbolic_link_file_without_reading_target(tmp_path):
+    repo = _configured_repo(tmp_path)
+    outside = tmp_path / "private-outside-repo.txt"
+    outside.write_text(SENSITIVE_DIAGNOSTIC, encoding="utf-8")
+    target = repo / Path(ALLOWED_PATH)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        target.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symbolic links unavailable: {exc.__class__.__name__}")
+
+    with pytest.raises(git_repo.GitError):
+        git_repo.add_commit(repo, "backup", paths=[ALLOWED_PATH])
+
+    assert git_repo.head_commit(repo) is None
+
+
+def test_add_commit_rejects_hard_link_file_without_reading_target(tmp_path):
+    repo = _configured_repo(tmp_path)
+    outside = tmp_path / "private-hardlink-target.txt"
+    outside.write_text(SENSITIVE_DIAGNOSTIC, encoding="utf-8")
+    target = repo / Path(ALLOWED_PATH)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(outside, target)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc.__class__.__name__}")
+
+    with pytest.raises(git_repo.GitError):
+        git_repo.add_commit(repo, "backup", paths=[ALLOWED_PATH])
+
+    assert git_repo.head_commit(repo) is None
+
+
+def test_add_commit_updates_snapshotted_branch_during_concurrent_checkout(
+    tmp_path,
+    monkeypatch,
+):
+    repo = _configured_repo(tmp_path)
+    _write(repo, ALLOWED_PATH, '{"content":"base"}\n')
+    base = git_repo.add_commit(repo, "base", paths=[ALLOWED_PATH])
+    _git(repo, "branch", "peer")
+    _write(repo, ALLOWED_PATH, '{"content":"next"}\n')
+    peer_index_before = _git_bytes(repo, "show", f":{ALLOWED_PATH}").stdout
+    peer_status_before = _git(repo, "status", "--porcelain", "--", ALLOWED_PATH).stdout
+    original_run = git_repo._run
+    switched = False
+
+    def switch_before_commit(repo_arg, args, timeout=git_repo._TIMEOUT, **kwargs):
+        nonlocal switched
+        if args and args[0] == "commit-tree" and not switched:
+            _git(repo, "checkout", "--quiet", "peer")
+            switched = True
+        return original_run(repo_arg, args, timeout, **kwargs)
+
+    monkeypatch.setattr(git_repo, "_run", switch_before_commit)
+
+    committed = git_repo.add_commit(repo, "next", paths=[ALLOWED_PATH])
+
+    assert switched
+    assert committed is not None
+    assert _git(repo, "rev-parse", "refs/heads/main").stdout.strip() == committed
+    assert _git(repo, "rev-parse", "refs/heads/peer").stdout.strip() == base
+    assert _git_bytes(repo, "show", f":{ALLOWED_PATH}").stdout == peer_index_before
+    assert _git(repo, "status", "--porcelain", "--", ALLOWED_PATH).stdout == (
+        peer_status_before
+    )
+
+
+@pytest.mark.parametrize("driver_command", ["clean", "process"])
+def test_add_commit_rejects_info_attribute_filter_without_executing_it(
+    tmp_path,
+    driver_command,
+):
+    repo = _configured_repo(tmp_path)
+    marker = repo / "filter-ran.txt"
+    command = _install_marker_command(
+        repo,
+        "evil-filter.sh",
+        marker.name,
+        passthrough=True,
+    )
+    _git(repo, "config", f"filter.evil.{driver_command}", f"./{command.name}")
+    info_attributes = repo / ".git" / "info" / "attributes"
+    info_attributes.parent.mkdir(parents=True, exist_ok=True)
+    info_attributes.write_text(
+        f"{ALLOWED_PATH} filter=evil\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _write(repo, ALLOWED_PATH, '{"content":"public"}\n')
+
+    with pytest.raises(git_repo.GitError):
+        git_repo.add_commit(repo, "backup", paths=[ALLOWED_PATH])
+
+    assert not marker.exists()
+    assert git_repo.head_commit(repo) is None
+
+
+def test_add_commit_rejects_untracked_worktree_attributes_without_running_filter(
+    tmp_path,
+):
+    repo = _configured_repo(tmp_path)
+    marker = repo / "filter-ran.txt"
+    command = _install_marker_command(
+        repo,
+        "evil-filter.sh",
+        marker.name,
+        passthrough=True,
+    )
+    _git(repo, "config", "filter.evil.clean", f"./{command.name}")
+    attributes = repo / ".gitattributes"
+    attributes.write_text(
+        f"{ALLOWED_PATH} filter=evil\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _write(repo, ALLOWED_PATH, '{"content":"public"}\n')
+
+    with pytest.raises(git_repo.GitError):
+        git_repo.add_commit(repo, "backup", paths=[ALLOWED_PATH])
+
+    assert not marker.exists()
+    assert _git(repo, "status", "--porcelain", "--", attributes.name).stdout == (
+        f"?? {attributes.name}\n"
+    )
+    assert git_repo.head_commit(repo) is None
+
+
+def test_add_commit_disables_configured_commit_signing_program(tmp_path):
+    repo = _configured_repo(tmp_path)
+    marker = repo / "gpg-ran.txt"
+    command = _install_marker_command(repo, "evil-gpg.sh", marker.name)
+    _git(repo, "config", "commit.gpgSign", "true")
+    _git(repo, "config", "gpg.program", f"./{command.name}")
+    _write(repo, ALLOWED_PATH, '{"content":"public"}\n')
+
+    assert git_repo.add_commit(repo, "backup", paths=[ALLOWED_PATH]) is not None
+
+    assert not marker.exists()
+
+
+def test_add_commit_preserves_raw_lf_bytes_when_autocrlf_is_enabled(tmp_path):
+    repo = _configured_repo(tmp_path)
+    _git(repo, "config", "core.autocrlf", "true")
+    raw = b'{"content":"line one\\nline two"}\n'
+    path = repo / Path(ALLOWED_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+
+    git_repo.add_commit(repo, "backup", paths=[ALLOWED_PATH])
+
+    assert path.read_bytes() == raw
+    assert _git_bytes(repo, "show", f"HEAD:{ALLOWED_PATH}").stdout == raw
+
+
 def test_add_commit_preserves_unrelated_staged_and_untracked_files(tmp_path):
     repo = _configured_repo(tmp_path)
     _write(repo, ALLOWED_PATH, '{"content":"public"}\n')
-    staged = _write(repo, "staged-private.txt", SENSITIVE_DIAGNOSTIC)
+    staged_bytes = (SENSITIVE_DIAGNOSTIC + "-staged\n").encode()
+    working_bytes = (SENSITIVE_DIAGNOSTIC + "-working\n").encode()
+    staged = repo / "staged-private.txt"
+    staged.write_bytes(staged_bytes)
     untracked = _write(repo, "untracked-private.txt", SENSITIVE_DIAGNOSTIC)
     _git(repo, "add", "--", staged.name)
+    staged.write_bytes(working_bytes)
+    staged_entry_before = _git(repo, "ls-files", "--stage", "--", staged.name).stdout
+    staged_blob_before = _git_bytes(repo, "show", f":{staged.name}").stdout
+    status_before = _git(repo, "status", "--porcelain", "--", staged.name).stdout
 
     git_repo.add_commit(repo, "backup", paths=[ALLOWED_PATH])
 
     committed = _git(repo, "ls-tree", "-r", "--name-only", "HEAD")
     assert committed.stdout.splitlines() == [ALLOWED_PATH]
     assert _git(repo, "diff", "--cached", "--name-only").stdout.splitlines() == [staged.name]
+    assert _git(repo, "ls-files", "--stage", "--", staged.name).stdout == staged_entry_before
+    assert _git_bytes(repo, "show", f":{staged.name}").stdout == staged_blob_before
+    assert staged_blob_before == staged_bytes
+    assert staged.read_bytes() == working_bytes
+    assert _git(repo, "status", "--porcelain", "--", staged.name).stdout == status_before
     status = _git(repo, "status", "--porcelain", "--", untracked.name).stdout
     assert status == f"?? {untracked.name}\n"
+
+
+def test_noop_commit_synchronizes_target_path_in_real_index(tmp_path):
+    repo = _configured_repo(tmp_path)
+    committed_bytes = b'{"content":"committed"}\n'
+    staged_bytes = b'{"content":"staged-but-not-committed"}\n'
+    target = repo / Path(ALLOWED_PATH)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(committed_bytes)
+    git_repo.add_commit(repo, "initial backup", paths=[ALLOWED_PATH])
+
+    target.write_bytes(staged_bytes)
+    _git(repo, "add", "--", ALLOWED_PATH)
+    assert _git_bytes(repo, "show", f":{ALLOWED_PATH}").stdout == staged_bytes
+    target.write_bytes(committed_bytes)
+
+    assert git_repo.add_commit(repo, "noop backup", paths=[ALLOWED_PATH]) is None
+
+    assert _git_bytes(repo, "show", f":{ALLOWED_PATH}").stdout == committed_bytes
+    assert target.read_bytes() == committed_bytes
+    assert _git(repo, "status", "--porcelain", "--", ALLOWED_PATH).stdout == ""
 
 
 def test_push_rejects_non_backup_file_anywhere_in_history(tmp_path):
@@ -316,6 +599,42 @@ def test_push_rejects_non_backup_file_anywhere_in_history(tmp_path):
         git_repo.push(repo)
 
     assert _git(remote, "show-ref", check=False).stdout == ""
+
+
+def test_push_uses_snapshotted_branch_destination_during_concurrent_checkout(
+    tmp_path,
+    monkeypatch,
+):
+    repo = _configured_repo(tmp_path)
+    remote = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "init", "--bare", "-b", "main", str(remote)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    _git(repo, "remote", "add", "origin", str(remote))
+    _write(repo, ALLOWED_PATH, '{"content":"public"}\n')
+    committed = git_repo.add_commit(repo, "backup", paths=[ALLOWED_PATH])
+    _git(repo, "branch", "peer")
+    original_run = git_repo._run
+    switched = False
+
+    def switch_after_audit(repo_arg, args, timeout=git_repo._TIMEOUT, **kwargs):
+        nonlocal switched
+        result = original_run(repo_arg, args, timeout, **kwargs)
+        if args and args[0] == "log" and not switched:
+            _git(repo, "checkout", "--quiet", "peer")
+            switched = True
+        return result
+
+    monkeypatch.setattr(git_repo, "_run", switch_after_audit)
+
+    git_repo.push(repo)
+
+    assert switched
+    assert _git(remote, "rev-parse", "refs/heads/main").stdout.strip() == committed
+    assert _git(remote, "show-ref", "--verify", "refs/heads/peer", check=False).returncode != 0
 
 
 def test_push_rejects_foreign_path_introduced_only_by_merge_result(tmp_path):
