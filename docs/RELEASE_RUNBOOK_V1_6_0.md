@@ -223,10 +223,16 @@ privacy checks from `docs/MANUAL_QA_V1_6_0.md`, use the local helper to validate
 and render the manual-QA evidence comment:
 
 ```powershell
-python tools/manual_qa_evidence.py --write-template manual-qa-v1.6.0.json
-python tools/manual_qa_evidence.py --input manual-qa-v1.6.0.json --no-fail
-python tools/manual_qa_evidence.py --input manual-qa-v1.6.0.json --output manual-qa-issue-comment.md
+$qaEvidenceDir = ".\.field-test-artifacts\v1.6.0-manual-qa"
+New-Item -ItemType Directory -Force -Path $qaEvidenceDir | Out-Null
+python tools/manual_qa_evidence.py --write-template "$qaEvidenceDir\manual-qa-v1.6.0.json"
+python tools/manual_qa_evidence.py --input "$qaEvidenceDir\manual-qa-v1.6.0.json" --no-fail
+python tools/manual_qa_evidence.py --input "$qaEvidenceDir\manual-qa-v1.6.0.json" --output "$qaEvidenceDir\manual-qa-issue-comment.md"
 ```
+
+These file-writing modes refuse to replace existing files unless `--force` is
+explicitly provided; symlinks, directories, and input/output self-overwrite are
+always rejected. Preserve the filled JSON and render to a separate path.
 
 Post the rendered comment only after the Owner has filled the JSON with real
 observations. The helper is local-only: it does not call GitHub, run device QA,
@@ -234,6 +240,67 @@ sign artifacts, publish releases, edit checklist rows, or close Issue #36. A
 passing manual-QA report still does not replace signed artifact evidence, final
 Windows artifact evidence, release environment/secrets evidence, or final
 Owner-approved GitHub Release publication.
+
+`PASS (OWNER-ATTESTED)` means the JSON is structurally complete; the helper does
+not fetch or independently parse referenced SDK/JUnit evidence and does not
+prove that the reported physical observations occurred.
+
+The evidence file must use `schema_version=2` and bind all observations to the
+exact target commit, including the Windows environment source commit. Before
+final device QA, run the targeted CursorWindow
+regression once on API 26 and once on API 27 (an emulator is acceptable for
+this compatibility lane). Require `git status --short` to be empty and require
+`git rev-parse HEAD` and `git rev-parse origin/main` to equal the report target
+commit before building either test APK:
+
+```powershell
+git fetch origin
+git status --short
+git rev-parse HEAD
+git rev-parse origin/main
+$qaEvidenceDir = ".\.field-test-artifacts\v1.6.0-manual-qa"
+New-Item -ItemType Directory -Force -Path $qaEvidenceDir | Out-Null
+$sdk = (adb shell getprop ro.build.version.sdk).Trim()
+$sdk | Set-Content -NoNewline -Encoding ascii "$qaEvidenceDir\api-$sdk-sdk.txt"
+Get-FileHash -Algorithm SHA256 "$qaEvidenceDir\api-$sdk-sdk.txt"
+Push-Location android
+.\gradlew.bat :app:connectedDebugAndroidTest --no-daemon "-Pandroid.testInstrumentationRunnerArguments.class=com.clipvault.app.capture.CaptureTransactionTest#maxControlCharacterCaptureCanBeReadThroughBoundedOutboxChunks"
+Pop-Location
+Get-FileHash -Algorithm SHA256 ".\android\app\build\outputs\apk\debug\app-debug.apk"
+Get-FileHash -Algorithm SHA256 ".\android\app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk"
+```
+
+Before switching targets, locate the exact-test XML below
+`android/app/build/outputs/androidTest-results/connected/`, inspect it, copy it
+to a distinct redacted API-specific file under `$qaEvidenceDir`, and hash the
+copy. Do not assume the next connected run will preserve the previous result
+directory. `.field-test-artifacts/` is ignored by Git, so these retained local
+files do not invalidate the clean tracked checkout check.
+
+For each SDK, retain a redacted JUnit result filtered to the named test case
+with `tests=1`, `failures=0`, `errors=0`, and `skipped=0` (not aggregate suite
+counts), plus its SHA-256 and the numeric
+`CLIPVAULT_CURSORWINDOW_EVIDENCE` values. Separately retain the numeric SDK
+command output with its own reference and SHA-256. API 26 and API 27 references
+and digests must be distinct. A compiled test, a skipped test, or a green run
+on any SDK other than 26/27 does not satisfy this gate. Record the hashes of
+both `app-debug.apk` and `app-debug-androidTest.apk`; the instrumentation result
+is not bound to the target code unless both APK inputs are identified. Their
+digests must differ, and the final signed APK digest must differ from all debug
+app/test APK digests. SDK-output and JUnit/result evidence within a run must
+also use different references and digests.
+
+Separately install `ClipVault-Android-v1.6.0-release-signed.apk` on a physical
+device, verify its SHA-256 against the validated release artifact report, and
+bind that run to the exact target commit and artifact-evidence reference. Use
+that physical release run ID for every passing Android, IME, and sync row.
+Debug instrumentation evidence never substitutes for signed-release manual QA.
+Do not record device serials, clipboard payloads, secrets, or full private
+local paths in the JSON or rendered Issue comment. Source/reference fields
+reject absolute Windows/POSIX paths, UNC paths, and `file://` URIs; use public
+URLs, workflow/run references, or short relative evidence labels. Free-form
+evidence is also checked for common absolute path forms, but still requires
+Owner redaction review before posting.
 
 ## 7. Optional draft GitHub Release
 

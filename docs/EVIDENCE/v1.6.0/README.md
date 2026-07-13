@@ -10,7 +10,8 @@ This directory is for release evidence templates and local Owner notes. It is no
 | Release-candidate dry run | GitHub Actions run URL |
 | Release environment | Owner-confirmed environment and required release variable names |
 | Signed release artifacts | Release artifact workflow plus downloaded byte verification |
-| Android device QA | Manual test evidence on physical or emulated Android device |
+| API 26/27 compatibility QA | Non-skipped targeted CursorWindow regression evidence on API 26 and API 27 devices or emulators |
+| Android final APK device QA | Manual test evidence for the exact signed release APK on a physical Android device |
 | IME privacy QA | Manual password/incognito/unknown-field privacy evidence |
 | Sync QA | Manual desktop <-> Android sync evidence |
 | Windows clipboard privacy QA | Manual Windows source-app/exclusion-format evidence |
