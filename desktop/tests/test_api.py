@@ -15,6 +15,8 @@ import pytest
 from clipvault.api.handlers import Api
 from clipvault.api import server as api_server
 from clipvault.config import Config
+from clipvault.core import normalize
+from clipvault.core.models import Clip
 from clipvault.pipeline import ingest as pipeline
 from clipvault.service import ClipVaultService
 from clipvault.store.clips_repo import ClipsRepo
@@ -190,6 +192,41 @@ def test_d6_release_reenters_sync_outbox(api, conn):
     assert len(rows) == 1
     assert rows[0]["kind"] == "clip_new"
     assert rows[0]["payload"]["id"] == cid
+
+
+def test_d6_release_reclassified_legacy_public_clip(api, conn):
+    legacy = Clip(
+        id="01LEGACYRECLASSIFIED0000001",
+        content=FAKE_AWS_KEY,
+        content_hash=normalize.content_hash(FAKE_AWS_KEY),
+        content_type="text",
+        source_device="legacy-desktop",
+        created_at="2026-06-13T10:00:00Z",
+        last_seen_at="2026-06-13T10:00:00Z",
+    )
+    repo = ClipsRepo(conn)
+    repo.insert(legacy)
+    repo.remove_from_search_index(legacy.id)
+
+    code, body = api.release_clip(legacy.id)
+
+    assert code == 200 and body["released"] is True
+    released = repo.get(legacy.id)
+    assert released.is_secret is False and released.released is True
+    assert repo.fts_contains(legacy.id)
+    events = OutboxRepo(conn).list_since(0)
+    assert len(events) == 1
+    assert events[0]["kind"] == "clip_new"
+    assert events[0]["payload"]["id"] == legacy.id
+
+
+def test_d6_release_refuses_safe_public_clip(api):
+    _, created = api.create_clip({"content": "ordinary public clip"})
+
+    code, body = api.release_clip(created["clip"]["id"])
+
+    assert code == 404
+    assert body["error"]["code"] == "not_found_or_not_secret"
 
 
 def test_d6_release_missing_returns_404(api):
