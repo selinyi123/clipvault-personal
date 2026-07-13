@@ -272,11 +272,24 @@ class ClipsRepo:
         if commit:
             self.conn.commit()
 
-    def set_backed_up_at(self, clip_id: str, when: str) -> None:
+    def set_backed_up_at(
+        self, clip_id: str, when: str, *, commit: bool = True
+    ) -> None:
         self.conn.execute(
             "UPDATE clips SET backed_up_at = ? WHERE id = ?", (when, clip_id)
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
+
+    def clear_backed_up_at(self, clip_id: str, *, commit: bool = True) -> None:
+        """Clear a stale durability claim after local secret-history recovery."""
+
+        self.conn.execute(
+            "UPDATE clips SET backed_up_at = NULL WHERE id = ?",
+            (clip_id,),
+        )
+        if commit:
+            self.conn.commit()
 
     def all_clips(self) -> list[Clip]:
         rows = self.conn.execute(

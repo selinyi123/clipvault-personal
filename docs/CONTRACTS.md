@@ -7,7 +7,7 @@
 
 ---
 
-## 1. Clip 对象（DB-1 的载体，同步与备份的统一序列化形式）
+## 1. Clip 对象（DB-1 的载体；同步与备份共享基础字段）
 
 ```json
 {
@@ -35,6 +35,7 @@
 - `content_type` ∈ `text | url | path | command | code | error_log | prompt`。`secret` **不是** content_type——密钥性由 `is_secret` 独立表达，被隔离的 clip 仍保留其内容类型。
 - `secret_level` ∈ `null | "hard" | "suspect"`；`secret_reasons` 为命中的规则 ID 数组（如 `["SG-PEM"]`）。
 - 时间一律 UTC ISO8601，秒精度，`Z` 后缀。
+- 备份 JSONL 对显式 Owner release 额外保存可选审计字段 `released:true` 与 `released_at`；两者只在 released 行出现，旧行缺失时按 `false/null` 兼容。该扩展用于本地灾难恢复，不属于 sync wire 授权：接收端不得信任 peer-supplied release 标志绕过 Gate A。
 
 ## 2. 规范化与哈希（NORM-1）
 
@@ -118,7 +119,7 @@ is_secret=1 的 clip：
 | FTS5 索引 | 不进入 |
 | sync outbox | 入队处拒绝（闸门 B） |
 | Obsidian | 不写入 |
-| GitHub backup_queue | 不入队；backup worker 序列化前再扫一次（闸门 C），命中即丢弃并 ERROR 日志 |
+| GitHub backup_queue | 持久化 `is_secret=1` 一律不入队/丢弃；backup worker 序列化前再扫一次（闸门 C），正文形状命中时除 `released=1` 的显式 Owner 释放外均丢弃并记不含正文的 ERROR 日志 |
 | Personal Memory 派生 | 不参与 |
 | UI 预览 | 脱敏：前 4 字符 + `••••`（长度不泄露） |
 | 日志 | 永不打印正文 |
@@ -277,7 +278,8 @@ clips/
   2026/06/2026-06-12.jsonl     # 每行一个 §1 Clip 对象 JSON，按 backup 时间追加
 ```
 
-- worker 周期（默认 15 分钟）：取 backup_queue 中 state=pending → 闸门 C 复扫 Secret Guard（用当前规则集对 content 再判，命中→丢弃+ERROR）→ 追加当日 JSONL → 仅对本批 `clips/YYYY/MM/YYYY-MM-DD.jsonl` 执行 `git add -- <paths>` 与 path-scoped commit → `git push`。
+- worker 周期（默认 15 分钟）：取 backup_queue 中 state=pending → 闸门 C 复扫 Secret Guard（用当前规则集对 content 再判；显式 Owner release 是唯一正文形状例外，持久化 `is_secret=1` 仍一律拒绝）→ 原子追加当日 JSONL → 从本批 `clips/YYYY/MM/YYYY-MM-DD.jsonl` 的原始 bytes 构造 path-scoped commit → 对精确候选 SHA 执行 `git push`。
+- JSONL 读写只接受仓库内的普通单链接文件；符号链接/目录 junction、hardlink、读取期间 inode/stat 漂移、损坏 UTF-8/JSON/LF framing 均在 commit 前 fail closed。写入采用同目录临时文件、file fsync 与 `os.replace`；状态去重只比较同一 clip 的最新行，因此 crash retry 为 no-op，而 `public → deleted → public` 三次状态均保留。
 - Git adapter 必须拒绝绝对路径、反斜杠、`..`、glob/pathspec magic、非 `.jsonl` 文件、年月不一致的 daily path，
   并拒绝 push 当前分支历史中曾跟踪任何非合同 JSONL 路径的仓库。用户已 staged、tracked 或 untracked 的
   其他文件不得进入 ClipVault commit；Git stderr、remote URL 与本地 repo path 不得进入日志或异常文本。
@@ -288,12 +290,16 @@ clips/
 - Git commit 必须以不跟随目录/文件链接的方式读取普通、单链接 JSONL 文件，再从
   `hash-object --no-filters --stdin` 的原始 bytes 和隔离的临时 index 构造；禁止 clean/process filter、
   working-tree encoding、自动换行、GPG signing、fsmonitor 或真实 index 中无关 staged 状态影响备份 commit。
-- push 失败：commit 保留在本地，queue 条目标记 done（数据已在本地 git），下轮重试 push；退避 1m→2m→4m→…→30m 封顶。
+- 本地 JSONL、index/ref、恢复和 push 由 repo-scoped 跨进程单写锁串行化；锁由 OS 句柄持有，进程崩溃后自动释放。SQLite writer lock **不得**跨远端 Git 操作持有，避免网络超时阻塞剪切板/API/sync 入库。
+- queue ack 只能发生在 exact durable commit blob 再读证明其最新行等于当前 SQLite public 状态之后，并与 `backed_up_at` 同一 SQLite unit of work 提交。commit 后、ack 前崩溃必须以 no-op JSONL 重试收敛，不得重复状态行或误 ack。
+- push 授权必须逐行审计 exact remote base 之后的完整线性 append-only 历史，在远端 tip preflight 后立即重复当前 Gate C，再只发送已授权 SHA。push 失败：commit 保留在本地，queue 条目保持已由 durable local proof 完成的状态，下轮重试；退避 1m→2m→4m→…→30m 封顶。
+- 自动恢复仅可替换**尚未发布**、结构仍为线性 append-only 且被当前 Gate C 明确判定污染的本地后缀；任一 unpublished observation 或当前 SQLite 状态证明某 ID 需隔离时，必须移除该 ID 的全部 unpublished 行，不能保留更早的 public-looking 状态。执行 Git scrub 前，worker 必须在一个短 SQLite unit of work 中把仍存在 clip 的本地 queue acknowledgement 保守地改为 `dropped_secret` 并清除 `backed_up_at`；若权威 clip 行已不存在，则仅删除该孤儿 queue 行，使未来合法的同 ID 重建可重新入队。崩溃只允许留下可重试的 under-claim，不得留下“已可恢复”的虚假声明。恢复保留 exact remote base，不 force、不删除或改写远端历史。若该 clip ID 曾出现在完整 published ancestry，或该次恢复审计无法证明 published ancestry 为严格 append-only，必须抛出 Owner remediation required，且本地 ref/worktree/index 与远端均不得改变。若内容确认包含真实凭据，Owner 必须先轮换，再按 `docs/RUNBOOK_PURGE.md` 清理，或替换/删除受污染的专用仓库并处理远端缓存；若确认只是 Secret Guard 误报，可通过既有显式 Owner release 重新授权。仅新建 branch 不是充分补救。
+- durable HEAD 与 managed index/worktree 可证明一致时，worker 可机械修复 commit 后 index-sync 中断、丢失 worktree 文件或回退到完整旧 JSONL 前缀；未提交的严格 append 必须保留，任意其他 rewrite/所有权不明状态仍 fail closed。
 - **GHB-1.1 修订（2026-06-28，Owner 裁定"不复活已删除内容"）**：clip 的 **deleted** 变化会**重新入队**，
   worker 把当前状态追加为新的 JSONL 行（按 id 去重，restore 取最后一次=最新状态）。原设计"clip_meta 变化不重备"
   会导致**首次备份后被删除的 clip 在 restore 时复活**（违反 NORM-1"已删除的不复活"，且把用户删掉的内容找回来）。
   **仅 deleted 触发重备**；pinned/favorite 是装饰性整理，仍**不重备**（备份是灾难恢复快照，不是完整镜像）。
-  密钥永不备份（闸门 B/C 不变），故 secret clip 的 patch 不入队。追加按行去重，状态数有限→JSONL 不会无界膨胀。
+  密钥永不备份（闸门 B/C 不变），故 secret clip 的 patch 不入队。仅与同 id 的最新行相同才跳过；真实状态切换全部保留，因此 crash retry 幂等，但长期反复切换仍会增长，不能声称 JSONL 有固定上界。
 - 禁止：无 pathspec 的 add/commit、pull、force push、rebase、amend。唯一例外见 docs/RUNBOOK_PURGE.md。
 - 恢复合同：`tools/restore.py` 读全部 JSONL → 重建 SQLite → 可选重建 Markdown。v1.0 门禁要求演练通过。
 

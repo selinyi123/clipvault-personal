@@ -18,6 +18,53 @@
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-13 |
 
+## Current development note - 2026-07-13 / R000 backup crash convergence
+
+- This branch makes the dedicated private JSONL backup pipeline crash-safe from
+  atomic file replacement through raw Git commit, exact-SHA push, and SQLite
+  acknowledgement. A repo-scoped OS lock serializes managed JSONL/worktree/
+  index/ref operations and is released automatically if a process exits.
+- Existing JSONL is opened as one exact private regular inode. Symbolic links,
+  hard links, inode/stat changes, malformed UTF-8/JSON/LF framing, and unknown
+  rewrites fail before any Git commit. Latest-state append makes a crash retry a
+  no-op while preserving real `public -> deleted -> public` transitions.
+- A queue row is marked done only after the exact durable commit blob proves the
+  expected latest line and the current SQLite row remains public and byte-for-
+  byte equivalent. Queue state and `backed_up_at` then commit in one SQLite unit
+  of work. A commit/ack crash window converges without duplicate state lines.
+- Push authorization audits every line of the complete unpublished append-only
+  suffix, repeats Gate C after remote-tip preflight, and sends only the sealed
+  object ID. RepoWriteLock remains held through push, but SQLite is deliberately
+  not write-locked across network commands, so a slow remote cannot block
+  clipboard, API, or sync writes.
+- Automatic recovery can remove a newly quarantined ID only from a local,
+  unpublished suffix rooted at the exact remote base. The complete published
+  ancestry is checked first; any prior published occurrence or structural
+  uncertainty requires Owner remediation. If the content contains a real
+  credential, the Owner must rotate it first, then follow
+  `docs/RUNBOOK_PURGE.md` or replace/delete the contaminated private repository
+  and address remote caches. If the quarantine was a confirmed false positive,
+  the existing explicit Owner release flow may re-authorize the clip instead. A
+  new branch alone is insufficient. No force push, remote rewrite, or automatic
+  credential/repository change exists in the worker.
+- Before an unpublished secret-history scrub, one short SQLite transaction
+  changes an existing clip's queue acknowledgement to `dropped_secret` and
+  clears `backed_up_at`. If the authoritative clip row is already absent, it
+  removes only the orphan queue row so a later legitimate same-ID reconstruction
+  can enqueue normally. A crash can therefore leave a safe under-claim, never a
+  false claim that the quarantined clip remains recoverable from backup.
+- Exact durable HEAD proof permits narrow repair of an interrupted real-index
+  sync, a missing managed worktree file, or a complete old JSONL prefix. A
+  normal uncommitted append is preserved; arbitrary/manual rewrites remain
+  fail-closed.
+- Explicit Owner release retains its existing audit semantics and now atomically
+  reactivates a legacy `dropped_secret` backup intent together with the public
+  clip transition; persisted `is_secret=1` remains ineligible.
+- Branch-local validation: all `test_backup*.py` suites passed (`146 passed`).
+  This is not current-main CI or release-candidate evidence. The slice changes
+  no version metadata, Android/IME behavior, release authority, GitHub Release,
+  or Issue #36 state.
+
 ## Current development note - 2026-07-13 / R000 backup Git path boundary
 
 - The backup Git adapter stages and commits only validated daily JSONL paths

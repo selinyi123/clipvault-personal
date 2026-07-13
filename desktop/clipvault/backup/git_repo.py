@@ -1,8 +1,11 @@
 """Thin git CLI wrapper for the backup repo (GHB-1).
 
-Deliberately offers only append-style operations. There is NO pull, force,
-rebase, or amend function — the backup repo is an append-only log
-(ADR-0003, GATES G3). test_backup_git.py::test_c7 enforces this absence.
+Deliberately offers only append-style publication. There is NO pull, force,
+rebase, or amend function: the remote backup is an append-only log (ADR-0003,
+GATES G3). A private helper may replace an unsafe *local-only* suffix with a
+new candidate rooted at the exact published base; it never rewrites that base
+and never returns a push authorization. test_backup_git.py::test_c7 enforces
+the forbidden public operations.
 """
 
 import os
@@ -10,7 +13,8 @@ import re
 import stat
 import subprocess
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from clipvault.backup import jsonl_store
@@ -46,6 +50,46 @@ class GitError(Exception):
 
 class GitPushError(GitError):
     pass
+
+
+class OwnerRemediationRequired(GitPushError):
+    """Published backup history needs Owner-controlled incident remediation."""
+
+
+class GitWorktreeRecoveryRequired(GitError):
+    """Managed worktree bytes no longer form an append of the branch tip."""
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class PushCandidate:
+    """Immutable snapshot of one unpublished backup branch tip.
+
+    The resolved target may contain credentials or a private path, so neither
+    this object nor its authorization has a value-bearing representation.
+    """
+
+    _repo: str = field(repr=False)
+    _target: str = field(repr=False)
+    branch_ref: str
+    remote_base: str | None
+    candidate_sha: str
+
+    def __repr__(self) -> str:
+        return "<PushCandidate redacted>"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class PushAuthorization:
+    """In-memory proof that every unpublished JSONL line was validated."""
+
+    candidate: PushCandidate = field(repr=False)
+    _seal: object = field(repr=False, compare=False)
+
+    def __repr__(self) -> str:
+        return "<PushAuthorization redacted>"
+
+
+_AUTHORIZATION_SEAL = object()
 
 
 def _validated_backup_paths(paths: Sequence[str]) -> list[str]:
@@ -521,6 +565,837 @@ def _resolved_push_target(repo, remote: str) -> str:
     return targets[0]
 
 
+def _raw_stdout(result: subprocess.CompletedProcess, operation: str) -> bytes:
+    if result.returncode != 0:
+        raise GitError(operation, result.returncode)
+    return result.stdout.encode("utf-8", errors="surrogateescape")
+
+
+def _local_ref_commit(repo, branch_ref: str) -> str:
+    return _object_id(
+        _run(repo, ["rev-parse", "--verify", f"{branch_ref}^{{commit}}"]),
+        "backup branch commit inspection failed",
+    )
+
+
+def _remote_branch_tip(repo, target: str, branch_ref: str) -> str | None:
+    """Resolve exactly one full branch ref without exposing its target."""
+
+    result = _run(
+        repo,
+        ["ls-remote", "--refs", "--", target, branch_ref],
+    )
+    if result.returncode != 0:
+        raise GitError("backup remote branch inspection failed", result.returncode)
+    records = [line for line in result.stdout.splitlines() if line]
+    if not records:
+        return None
+    if len(records) != 1:
+        raise GitError("backup remote branch inspection failed")
+    fields = records[0].split("\t")
+    if (
+        len(fields) != 2
+        or fields[1] != branch_ref
+        or _OBJECT_ID_RE.fullmatch(fields[0]) is None
+    ):
+        raise GitError("backup remote branch inspection failed")
+    return fields[0]
+
+
+def _assert_local_ancestor(repo, base: str | None, candidate: str) -> None:
+    candidate_result = _run(repo, ["cat-file", "-e", f"{candidate}^{{commit}}"])
+    if candidate_result.returncode != 0:
+        raise GitError(
+            "backup candidate commit is unavailable",
+            candidate_result.returncode,
+        )
+    if base is None:
+        return
+    base_result = _run(repo, ["cat-file", "-e", f"{base}^{{commit}}"])
+    if base_result.returncode != 0:
+        raise GitError("backup remote base is unavailable", base_result.returncode)
+    ancestor = _run(repo, ["merge-base", "--is-ancestor", base, candidate])
+    if ancestor.returncode != 0:
+        raise GitError("backup remote base is not a candidate ancestor")
+
+
+def _linear_unpublished_commits(
+    repo,
+    base: str | None,
+    candidate: str,
+) -> list[tuple[str | None, str]]:
+    if base == candidate:
+        return []
+    revision = candidate if base is None else f"{base}..{candidate}"
+    result = _run(repo, ["rev-list", "--reverse", "--topo-order", revision])
+    if result.returncode != 0:
+        raise GitError("backup candidate enumeration failed", result.returncode)
+    commits = [line for line in result.stdout.splitlines() if line]
+    if not commits or any(_OBJECT_ID_RE.fullmatch(value) is None for value in commits):
+        raise GitError("backup candidate enumeration failed")
+
+    expected_parent = base
+    linear: list[tuple[str | None, str]] = []
+    for commit in commits:
+        parent_result = _run(repo, ["rev-list", "--parents", "-n", "1", commit])
+        fields = parent_result.stdout.split()
+        if (
+            parent_result.returncode != 0
+            or not fields
+            or fields[0] != commit
+            or any(_OBJECT_ID_RE.fullmatch(value) is None for value in fields)
+        ):
+            raise GitError("backup commit parent inspection failed", parent_result.returncode)
+        parents = fields[1:]
+        expected = [] if expected_parent is None else [expected_parent]
+        if parents != expected:
+            raise GitError("backup unpublished history is not linear")
+        linear.append((expected_parent, commit))
+        expected_parent = commit
+    if expected_parent != candidate:
+        raise GitError("backup candidate enumeration failed")
+    return linear
+
+
+def _empty_tree(repo) -> str:
+    return _object_id(
+        _run(
+            repo,
+            ["hash-object", "-w", "-t", "tree", "--stdin"],
+            input_bytes=b"",
+        ),
+        "backup empty tree inspection failed",
+    )
+
+
+def _commit_changes(
+    repo,
+    parent: str | None,
+    commit: str,
+) -> list[tuple[str, str]]:
+    parent_tree = parent if parent is not None else _empty_tree(repo)
+    result = _run(
+        repo,
+        [
+            "diff-tree",
+            "--no-commit-id",
+            "--name-status",
+            "-z",
+            "-r",
+            "--no-renames",
+            parent_tree,
+            commit,
+        ],
+        input_bytes=b"",
+    )
+    raw = _raw_stdout(result, "backup commit diff inspection failed")
+    fields = raw.split(b"\0")
+    if fields and fields[-1] == b"":
+        fields.pop()
+    if not fields or len(fields) % 2:
+        raise GitError("backup commit diff inspection failed")
+    changes: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for index in range(0, len(fields), 2):
+        try:
+            status = fields[index].decode("ascii", errors="strict")
+            path = fields[index + 1].decode("utf-8", errors="strict")
+            path = jsonl_store.validated_daily_relpath(path)
+        except (UnicodeError, TypeError, ValueError):
+            raise GitError("backup commit path validation failed") from None
+        if status not in {"A", "M"} or path in seen:
+            raise GitError("backup commit is not append-only")
+        seen.add(path)
+        changes.append((status, path))
+    return changes
+
+
+def _tree_blob(repo, commit: str, path: str, *, required: bool) -> str | None:
+    result = _run(
+        repo,
+        ["ls-tree", "-z", commit, "--", path],
+        input_bytes=b"",
+    )
+    raw = _raw_stdout(result, "backup tree entry inspection failed")
+    if raw == b"":
+        if required:
+            raise GitError("backup tree entry inspection failed")
+        return None
+    if not raw.endswith(b"\0") or raw.count(b"\0") != 1:
+        raise GitError("backup tree entry inspection failed")
+    entry = raw[:-1]
+    try:
+        metadata, raw_path = entry.split(b"\t", 1)
+        mode, kind, raw_object_id = metadata.split(b" ", 2)
+        decoded_path = raw_path.decode("utf-8", errors="strict")
+        object_id = raw_object_id.decode("ascii", errors="strict")
+    except (UnicodeError, ValueError):
+        raise GitError("backup tree entry inspection failed") from None
+    if (
+        mode != b"100644"
+        or kind != b"blob"
+        or decoded_path != path
+        or _OBJECT_ID_RE.fullmatch(object_id) is None
+    ):
+        raise GitError("backup tree entry inspection failed")
+    return object_id
+
+
+def _blob_bytes(repo, object_id: str) -> bytes:
+    return _raw_stdout(
+        _run(repo, ["cat-file", "blob", object_id], input_bytes=b""),
+        "backup blob inspection failed",
+    )
+
+
+def commit_latest_clip_lines(
+    repo,
+    commit: str,
+    relpath: str,
+    clip_ids: Sequence[str],
+) -> dict[str, str]:
+    """Read exact latest clip lines from one durable commit blob.
+
+    Queue acknowledgement uses this proof instead of assuming that a successful
+    branch update necessarily contains every concurrently prepared worktree row.
+    """
+
+    try:
+        path = jsonl_store.validated_daily_relpath(relpath)
+        if _OBJECT_ID_RE.fullmatch(commit) is None:
+            raise GitError("backup durable commit validation failed")
+        blob = _tree_blob(repo, commit, path, required=False)
+        if blob is None:
+            return {}
+        return jsonl_store.latest_clip_lines_bytes(
+            _blob_bytes(repo, blob),
+            clip_ids,
+        )
+    except (GitError, TypeError, ValueError) as exc:
+        raise GitError(
+            "backup durable content verification failed",
+            getattr(exc, "returncode", None),
+        ) from None
+
+
+def assert_managed_worktree_append_only(repo) -> None:
+    """Reject a tracked managed rewrite before a normal backup commit starts.
+
+    Only paths reported dirty by Git are read, so the steady-state cost does not
+    scale with the complete backup history. A partially scrubbed recovery is a
+    rewrite relative to the old contaminated ref and is routed back to recovery
+    instead of becoming a non-append child commit.
+    """
+
+    branch_ref = _symbolic_branch_ref(repo)
+    head_result = _run(
+        repo,
+        ["rev-parse", "--verify", "-q", f"{branch_ref}^{{commit}}"],
+    )
+    if head_result.returncode == 1:
+        return
+    head = _object_id(head_result, "managed backup worktree inspection failed")
+    paths: set[str] = set()
+    for args in (
+        ["diff-files", "--name-only", "-z", "--no-renames", "--"],
+        [
+            "diff-index",
+            "--cached",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            head,
+            "--",
+        ],
+    ):
+        result = _run(repo, args)
+        if result.returncode != 0:
+            raise GitError("managed backup worktree inspection failed", result.returncode)
+        for raw_path in result.stdout.split("\0"):
+            if not raw_path:
+                continue
+            try:
+                paths.add(jsonl_store.validated_daily_relpath(raw_path))
+            except (TypeError, ValueError):
+                # Unrelated staged/worktree state is outside the dedicated
+                # managed path set and remains untouched by normal commits.
+                continue
+    index_repairs: dict[str, str] = {}
+    worktree_repairs: dict[str, bytes] = {}
+    for path in sorted(paths):
+        parent_blob = _tree_blob(repo, head, path, required=True)
+        if parent_blob is None:  # pragma: no cover - required=True owns this
+            raise GitError("managed backup worktree inspection failed")
+        parent = _blob_bytes(repo, parent_blob)
+        try:
+            indexed = _index_blob(repo, path)
+            target = jsonl_store.daily_target_path(repo, path)
+            try:
+                target.lstat()
+            except FileNotFoundError:
+                if indexed != parent_blob:
+                    raise GitError("managed backup worktree is unavailable")
+                # The durable ref and index agree. A lost directory entry can
+                # therefore be restored without guessing about user content.
+                jsonl_store.latest_clip_lines_bytes(parent, ())
+                worktree_repairs[path] = parent
+                continue
+
+            child = _read_backup_file_no_follow(repo, path)
+            if child == parent:
+                if indexed != parent_blob:
+                    # update-ref is the commit durability point. If the later
+                    # best-effort real-index sync was interrupted, the exact
+                    # HEAD worktree proves which managed entry is safe to heal.
+                    index_repairs[path] = parent_blob
+                continue
+
+            try:
+                # The normal case: a complete, uncommitted append remains in
+                # place for add_commit(); never replace it with HEAD.
+                _strict_appended_lines(parent, child)
+                continue
+            except GitError:
+                pass
+
+            if indexed != parent_blob:
+                raise GitError("managed backup worktree is not owned by HEAD")
+            # A crash after an atomic replace can leave a missing/older
+            # directory entry on platforms without directory fsync. Restore
+            # only a complete validated prefix of the exact durable HEAD blob.
+            jsonl_store.latest_clip_lines_bytes(child, ())
+            jsonl_store.latest_clip_lines_bytes(parent, ())
+            _strict_appended_lines(child, parent)
+            worktree_repairs[path] = parent
+        except (GitError, OSError, RuntimeError, TypeError, ValueError):
+            raise GitWorktreeRecoveryRequired(
+                "managed backup worktree requires recovery"
+            ) from None
+
+    # Validate every dirty managed path before changing any of them. Repairs
+    # are intentionally path-scoped; a repository-wide read-tree would destroy
+    # unrelated staged state.
+    try:
+        for path, content in sorted(worktree_repairs.items()):
+            jsonl_store.replace_file_contents(repo, path, content)
+        if index_repairs:
+            _sync_real_index(repo, branch_ref, index_repairs)
+    except (GitError, OSError, RuntimeError, TypeError, ValueError):
+        raise GitWorktreeRecoveryRequired(
+            "managed backup worktree requires recovery"
+        ) from None
+
+
+def _strict_appended_lines(parent: bytes, child: bytes) -> list[str]:
+    if (
+        child == parent
+        or not child.startswith(parent)
+        or (parent and not parent.endswith(b"\n"))
+    ):
+        raise GitError("backup JSONL modification is not an append")
+    suffix = child[len(parent):]
+    if not suffix.endswith(b"\n"):
+        raise GitError("backup JSONL suffix is incomplete")
+    raw_lines = suffix[:-1].split(b"\n")
+    if not raw_lines or any(not line or b"\r" in line or b"\0" in line for line in raw_lines):
+        raise GitError("backup JSONL suffix is invalid")
+    try:
+        return [line.decode("utf-8", errors="strict") for line in raw_lines]
+    except UnicodeDecodeError:
+        raise GitError("backup JSONL suffix is invalid") from None
+
+
+def _visit_unpublished_lines(
+    repo,
+    base: str | None,
+    candidate: str,
+    visitor: Callable[[str, str], None],
+) -> None:
+    _assert_local_ancestor(repo, base, candidate)
+    commits = _linear_unpublished_commits(repo, base, candidate)
+    for parent, commit in commits:
+        for status, path in _commit_changes(repo, parent, commit):
+            child_blob = _tree_blob(repo, commit, path, required=True)
+            if child_blob is None:  # pragma: no cover - required=True owns this
+                raise GitError("backup tree entry inspection failed")
+            if status == "A":
+                if parent is not None and _tree_blob(
+                    repo, parent, path, required=False
+                ) is not None:
+                    raise GitError("backup commit is not append-only")
+                parent_bytes = b""
+            else:
+                if parent is None:
+                    raise GitError("backup commit is not append-only")
+                parent_blob = _tree_blob(repo, parent, path, required=True)
+                if parent_blob is None:  # pragma: no cover - required=True owns this
+                    raise GitError("backup tree entry inspection failed")
+                parent_bytes = _blob_bytes(repo, parent_blob)
+            child_bytes = _blob_bytes(repo, child_blob)
+            for line in _strict_appended_lines(parent_bytes, child_bytes):
+                visitor(path, line)
+
+
+def prepare_push(repo, remote: str = "origin") -> PushCandidate:
+    """Snapshot the exact unpublished branch and its exact remote base."""
+
+    try:
+        resolved_repo = str(Path(repo).resolve(strict=True))
+        branch_ref = _symbolic_branch_ref(repo)
+        candidate_sha = _local_ref_commit(repo, branch_ref)
+        audited_head = _assert_backup_only_history(repo, branch_ref)
+        if audited_head != candidate_sha:
+            raise GitError("backup history validation failed")
+        target = _resolved_push_target(repo, remote)
+        remote_base = _remote_branch_tip(repo, target, branch_ref)
+    except (GitError, OSError, RuntimeError) as exc:
+        raise GitPushError(
+            "backup push candidate preparation failed",
+            getattr(exc, "returncode", None),
+        ) from None
+    return PushCandidate(
+        resolved_repo,
+        target,
+        branch_ref,
+        remote_base,
+        candidate_sha,
+    )
+
+
+def inspect_unpublished_lines(
+    candidate: PushCandidate,
+    *,
+    visitor: Callable[[str, str], None],
+) -> None:
+    """Structurally inspect every unpublished append without authorizing push.
+
+    This deliberately returns no authorization token. The backup worker uses it
+    to decide whether a semantically contaminated *local-only* suffix can be
+    rebuilt from the exact remote base. A malformed or non-append history still
+    fails closed and is never auto-rewritten.
+    """
+
+    if not isinstance(candidate, PushCandidate) or not callable(visitor):
+        raise GitPushError("backup candidate inspection failed")
+    try:
+        _visit_unpublished_lines(
+            candidate._repo,
+            candidate.remote_base,
+            candidate.candidate_sha,
+            visitor,
+        )
+    except Exception as exc:
+        raise GitPushError(
+            "backup candidate inspection failed",
+            getattr(exc, "returncode", None),
+        ) from None
+
+
+def inspect_published_lines(
+    candidate: PushCandidate,
+    *,
+    visitor: Callable[[str, str], None],
+) -> None:
+    """Inspect the complete exact remote-base ancestry without mutating it."""
+
+    if not isinstance(candidate, PushCandidate) or not callable(visitor):
+        raise OwnerRemediationRequired(
+            "published backup history requires owner remediation"
+        )
+    if candidate.remote_base is None:
+        return
+    try:
+        _visit_unpublished_lines(
+            candidate._repo,
+            None,
+            candidate.remote_base,
+            visitor,
+        )
+    except Exception as exc:
+        raise OwnerRemediationRequired(
+            "published backup history requires owner remediation",
+            getattr(exc, "returncode", None),
+        ) from None
+
+
+def authorize_push(
+    candidate: PushCandidate,
+    *,
+    validator: Callable[[str, str], bool],
+) -> PushAuthorization:
+    """Validate every complete line added by every unpublished commit."""
+
+    if not isinstance(candidate, PushCandidate) or not callable(validator):
+        raise GitPushError("backup push authorization failed")
+    repo = candidate._repo
+    try:
+        def validate(path: str, line: str) -> None:
+            try:
+                accepted = validator(path, line)
+            except Exception:
+                raise GitError("backup line validation failed") from None
+            if accepted is not True:
+                raise GitError("backup line validation failed")
+
+        _visit_unpublished_lines(
+            repo,
+            candidate.remote_base,
+            candidate.candidate_sha,
+            validate,
+        )
+    except GitError as exc:
+        raise GitPushError(
+            "backup push authorization failed",
+            exc.returncode,
+        ) from None
+    return PushAuthorization(candidate, _AUTHORIZATION_SEAL)
+
+
+def _tree_blobs(repo, treeish: str) -> dict[str, str]:
+    result = _run(
+        repo,
+        ["ls-tree", "-r", "-z", treeish],
+        input_bytes=b"",
+    )
+    raw = _raw_stdout(result, "backup tree enumeration failed")
+    entries = raw.split(b"\0")
+    if entries and entries[-1] == b"":
+        entries.pop()
+    blobs: dict[str, str] = {}
+    for entry in entries:
+        try:
+            metadata, raw_path = entry.split(b"\t", 1)
+            mode, kind, raw_object_id = metadata.split(b" ", 2)
+            path = jsonl_store.validated_daily_relpath(
+                raw_path.decode("utf-8", errors="strict")
+            )
+            object_id = raw_object_id.decode("ascii", errors="strict")
+        except (UnicodeError, TypeError, ValueError):
+            raise GitError("backup tree enumeration failed") from None
+        if (
+            mode != b"100644"
+            or kind != b"blob"
+            or _OBJECT_ID_RE.fullmatch(object_id) is None
+            or path in blobs
+        ):
+            raise GitError("backup tree enumeration failed")
+        blobs[path] = object_id
+    return blobs
+
+
+def _sync_real_index_exact(
+    repo,
+    branch_ref: str,
+    changed_paths: set[str],
+    new_blobs: Mapping[str, str],
+) -> None:
+    current_ref = _run(repo, ["symbolic-ref", "--quiet", "HEAD"])
+    if (
+        current_ref.returncode != 0
+        or current_ref.stdout.strip() != branch_ref
+    ):
+        raise GitError("backup branch changed during recovery", current_ref.returncode)
+    for path in sorted(changed_paths):
+        object_id = new_blobs.get(path)
+        args = (
+            _cacheinfo_args(path, object_id)
+            if object_id is not None
+            else ["update-index", "--force-remove", "--", path]
+        )
+        result = _run(repo, args)
+        if result.returncode != 0:
+            raise GitError("git index recovery failed", result.returncode)
+
+
+def _index_blob(repo, path: str) -> str | None:
+    result = _run(repo, ["ls-files", "--stage", "-z", "--", path])
+    raw = _raw_stdout(result, "git index recovery inspection failed")
+    if raw == b"":
+        return None
+    if not raw.endswith(b"\0") or raw.count(b"\0") != 1:
+        raise GitError("git index recovery inspection failed")
+    try:
+        metadata, raw_path = raw[:-1].split(b"\t", 1)
+        mode, raw_object_id, stage = metadata.split(b" ", 2)
+        indexed_path = raw_path.decode("utf-8", errors="strict")
+        object_id = raw_object_id.decode("ascii", errors="strict")
+    except (UnicodeError, ValueError):
+        raise GitError("git index recovery inspection failed") from None
+    if (
+        mode != b"100644"
+        or stage != b"0"
+        or indexed_path != path
+        or _OBJECT_ID_RE.fullmatch(object_id) is None
+    ):
+        raise GitError("git index recovery inspection failed")
+    return object_id
+
+
+def _assert_recovery_paths_owned(
+    repo,
+    changed_paths: set[str],
+    old_blobs: Mapping[str, str],
+    new_blobs: Mapping[str, str],
+) -> None:
+    """Allow only the old or already-scrubbed state for each touched path."""
+
+    for path in sorted(changed_paths):
+        allowed_blob_ids = {
+            blob
+            for blob in (old_blobs.get(path), new_blobs.get(path))
+            if blob is not None
+        }
+        absence_allowed = path not in old_blobs or path not in new_blobs
+
+        indexed = _index_blob(repo, path)
+        if indexed is None:
+            if not absence_allowed:
+                raise GitError("managed backup index has unrelated changes")
+        elif indexed not in allowed_blob_ids:
+            raise GitError("managed backup index has unrelated changes")
+
+        try:
+            target = jsonl_store.daily_target_path(repo, path)
+            info = target.lstat()
+        except FileNotFoundError:
+            if not absence_allowed:
+                raise GitError("managed backup worktree has unrelated changes")
+            continue
+        except (OSError, RuntimeError, TypeError, ValueError):
+            raise GitError("managed backup worktree has unrelated changes") from None
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise GitError("managed backup worktree has unrelated changes")
+        content = _read_backup_file_no_follow(repo, path)
+        allowed_contents = {
+            _blob_bytes(repo, object_id)
+            for object_id in allowed_blob_ids
+        }
+        if content not in allowed_contents:
+            raise GitError("managed backup worktree has unrelated changes")
+
+
+def _assert_recovery_paths_exact(
+    repo,
+    changed_paths: set[str],
+    new_blobs: Mapping[str, str],
+) -> None:
+    for path in sorted(changed_paths):
+        expected_blob = new_blobs.get(path)
+        if _index_blob(repo, path) != expected_blob:
+            raise GitError("managed backup index recovery verification failed")
+        target = jsonl_store.daily_target_path(repo, path)
+        if expected_blob is None:
+            try:
+                target.lstat()
+            except FileNotFoundError:
+                continue
+            raise GitError("managed backup worktree recovery verification failed")
+        try:
+            content = _read_backup_file_no_follow(repo, path)
+        except GitError:
+            raise GitError("managed backup worktree recovery verification failed") from None
+        if content != _blob_bytes(repo, expected_blob):
+            raise GitError("managed backup worktree recovery verification failed")
+
+
+def _rebuild_unpublished_candidate(
+    candidate: PushCandidate,
+    replacements: Mapping[str, Sequence[str]],
+) -> str | None:
+    """Replace only the local unpublished suffix with a safe linear candidate.
+
+    The exact published remote base is retained and is never rewritten. Invalid
+    local commits become unreachable from the branch; only a new append-only
+    candidate (or the published base itself) remains eligible for exact-ref push.
+    """
+
+    if not isinstance(candidate, PushCandidate) or not isinstance(replacements, Mapping):
+        raise GitPushError("backup candidate recovery failed")
+    repo = candidate._repo
+    try:
+        if _local_ref_commit(repo, candidate.branch_ref) != candidate.candidate_sha:
+            raise GitError("backup branch moved before recovery")
+        if _remote_branch_tip(repo, candidate._target, candidate.branch_ref) != candidate.remote_base:
+            raise GitError("backup remote branch moved before recovery")
+        if _assert_backup_only_history(repo, candidate.branch_ref) != candidate.candidate_sha:
+            raise GitError("backup history changed before recovery")
+
+        # Recovery is allowed only for a structurally valid append-only suffix.
+        # Malformed/manual history remains fail-closed for owner inspection.
+        def validate_existing(path: str, line: str) -> None:
+            try:
+                clip = jsonl_store.deserialize_clip(line)
+                if (
+                    jsonl_store.serialize_clip(clip) != line
+                    or jsonl_store.daily_relpath(clip.created_at) != path
+                ):
+                    raise ValueError
+            except (KeyError, TypeError, ValueError):
+                raise GitError("backup recovery source validation failed") from None
+
+        _visit_unpublished_lines(
+            repo,
+            candidate.remote_base,
+            candidate.candidate_sha,
+            validate_existing,
+        )
+
+        validated_replacements: dict[str, list[str]] = {}
+        path_by_id: dict[str, str] = {}
+        for raw_path, raw_lines in sorted(replacements.items()):
+            path = jsonl_store.validated_daily_relpath(raw_path)
+            if not isinstance(raw_lines, Sequence) or isinstance(raw_lines, (str, bytes)):
+                raise GitError("backup recovery replacement validation failed")
+            lines: list[str] = []
+            for line in raw_lines:
+                try:
+                    clip = jsonl_store.deserialize_clip(line)
+                    if (
+                        clip.is_secret
+                        or jsonl_store.serialize_clip(clip) != line
+                        or jsonl_store.daily_relpath(clip.created_at) != path
+                        or (
+                            clip.id in path_by_id
+                            and path_by_id[clip.id] != path
+                        )
+                    ):
+                        raise ValueError
+                except (KeyError, TypeError, ValueError):
+                    raise GitError("backup recovery replacement validation failed") from None
+                path_by_id[clip.id] = path
+                lines.append(line)
+            if lines:
+                validated_replacements[path] = lines
+
+        base = candidate.remote_base
+        if base is not None:
+            _assert_local_ancestor(repo, base, candidate.candidate_sha)
+            base_tree = _object_id(
+                _run(repo, ["rev-parse", f"{base}^{{tree}}"]),
+                "backup base tree lookup failed",
+            )
+        else:
+            base_tree = _empty_tree(repo)
+
+        with tempfile.TemporaryDirectory(prefix="clipvault-backup-recovery-") as temp_dir:
+            index_env = {"GIT_INDEX_FILE": str(Path(temp_dir) / "index")}
+            read_result = _run(
+                repo,
+                ["read-tree", base] if base is not None else ["read-tree", "--empty"],
+                env=index_env,
+            )
+            if read_result.returncode != 0:
+                raise GitError("backup recovery index initialization failed", read_result.returncode)
+
+            for path, lines in sorted(validated_replacements.items()):
+                base_blob = (
+                    _tree_blob(repo, base, path, required=False)
+                    if base is not None
+                    else None
+                )
+                base_bytes = _blob_bytes(repo, base_blob) if base_blob is not None else b""
+                rebuilt_bytes = jsonl_store.append_latest_clip_states_bytes(
+                    base_bytes,
+                    lines,
+                )
+                if rebuilt_bytes == base_bytes:
+                    continue
+                object_id = _object_id(
+                    _run(
+                        repo,
+                        ["hash-object", "-w", "--no-filters", "--stdin"],
+                        input_bytes=rebuilt_bytes,
+                    ),
+                    "backup recovery object write failed",
+                )
+                update_result = _run(
+                    repo,
+                    _cacheinfo_args(path, object_id),
+                    env=index_env,
+                )
+                if update_result.returncode != 0:
+                    raise GitError("backup recovery index update failed", update_result.returncode)
+
+            tree = _object_id(
+                _run(repo, ["write-tree"], env=index_env),
+                "backup recovery tree write failed",
+            )
+
+        if tree == base_tree:
+            recovered_tip = base
+        else:
+            commit_args = ["commit-tree", tree]
+            if base is not None:
+                commit_args.extend(["-p", base])
+            commit_args.extend(["-m", "backup: rebuild unpublished safe state"])
+            recovered_tip = _object_id(
+                _run(repo, commit_args),
+                "backup recovery commit write failed",
+            )
+
+        old_blobs = _tree_blobs(repo, candidate.candidate_sha)
+        new_blobs = _tree_blobs(repo, tree)
+        changed_paths = {
+            path
+            for path in set(old_blobs) | set(new_blobs)
+            if old_blobs.get(path) != new_blobs.get(path)
+        }
+        if changed_paths:
+            _assert_no_content_attributes(repo, sorted(changed_paths))
+            _assert_recovery_paths_owned(
+                repo,
+                changed_paths,
+                old_blobs,
+                new_blobs,
+            )
+        if _local_ref_commit(repo, candidate.branch_ref) != candidate.candidate_sha:
+            raise GitError("backup branch moved during recovery")
+        # Put the managed worktree and index in the safe state before moving the
+        # branch. A crash can therefore leave the old branch dirty but can never
+        # make the new safe branch point at a contaminated worktree snapshot.
+        for path in sorted(changed_paths):
+            blob = new_blobs.get(path)
+            data = _blob_bytes(repo, blob) if blob is not None else None
+            jsonl_store.replace_file_contents(repo, path, data)
+        _sync_real_index_exact(
+            repo,
+            candidate.branch_ref,
+            changed_paths,
+            new_blobs,
+        )
+        _assert_recovery_paths_exact(repo, changed_paths, new_blobs)
+        if _remote_branch_tip(
+            repo,
+            candidate._target,
+            candidate.branch_ref,
+        ) != candidate.remote_base:
+            raise GitError("backup remote branch moved during recovery")
+
+        if recovered_tip is None:
+            update_result = _run(
+                repo,
+                ["update-ref", "-d", candidate.branch_ref, candidate.candidate_sha],
+            )
+        else:
+            update_result = _run(
+                repo,
+                [
+                    "update-ref",
+                    candidate.branch_ref,
+                    recovered_tip,
+                    candidate.candidate_sha,
+                ],
+            )
+        if update_result.returncode != 0:
+            raise GitError("backup branch recovery failed", update_result.returncode)
+        return recovered_tip
+    except (GitError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise GitPushError(
+            "backup candidate recovery failed",
+            getattr(exc, "returncode", None),
+        ) from None
+
+
 def add_commit(
     repo,
     message: str,
@@ -548,6 +1423,23 @@ def add_commit(
         blobs: dict[str, str] = {}
         for path in validated:
             content = _read_backup_file_no_follow(repo, path)
+            parent_blob = (
+                _tree_blob(repo, head, path, required=False)
+                if head is not None
+                else None
+            )
+            parent_content = (
+                _blob_bytes(repo, parent_blob)
+                if parent_blob is not None
+                else b""
+            )
+            if content != parent_content:
+                try:
+                    _strict_appended_lines(parent_content, content)
+                except GitError:
+                    raise GitWorktreeRecoveryRequired(
+                        "managed backup worktree requires recovery"
+                    ) from None
             object_result = _run(
                 repo,
                 ["hash-object", "-w", "--no-filters", "--stdin"],
@@ -595,20 +1487,47 @@ def add_commit(
         return committed
 
 
-def push(repo, remote: str = "origin") -> None:
-    # Push the current branch explicitly so behaviour never depends on
-    # push.default, a configured upstream, or remote-specific ref settings.
+def push(
+    authorization: PushAuthorization,
+    *,
+    final_validator: Callable[[PushCandidate], bool] | None = None,
+) -> bool:
+    """Publish exactly one authorized candidate, or safely no-op if present.
+
+    Returns True only when this call executed a successful network/local-remote
+    push.  A remote already at the candidate is a successful False no-op.
+    """
+
+    if (
+        not isinstance(authorization, PushAuthorization)
+        or authorization._seal is not _AUTHORIZATION_SEAL
+    ):
+        raise GitPushError("backup push authorization required")
+    if final_validator is not None and not callable(final_validator):
+        raise GitPushError("backup final validation failed")
+    candidate = authorization.candidate
+    repo = candidate._repo
     try:
-        branch_ref = _symbolic_branch_ref(repo)
-        verified_head = _assert_backup_only_history(repo, branch_ref)
+        local_tip = _local_ref_commit(repo, candidate.branch_ref)
+        if local_tip != candidate.candidate_sha:
+            raise GitError("backup branch moved after authorization")
+        remote_tip = _remote_branch_tip(repo, candidate._target, candidate.branch_ref)
     except GitError as exc:
         raise GitPushError(
-            "backup history validation failed",
+            "backup push preflight failed",
             exc.returncode,
         ) from None
-    if verified_head is None:
-        raise GitPushError("backup history validation failed")
-    target = _resolved_push_target(repo, remote)
+    if remote_tip == candidate.candidate_sha:
+        return False
+    if remote_tip != candidate.remote_base:
+        raise GitPushError("backup remote branch moved after authorization")
+    if final_validator is not None:
+        try:
+            accepted = final_validator(candidate)
+        except Exception:
+            raise GitPushError("backup final validation failed") from None
+        if accepted is not True:
+            raise GitPushError("backup final validation failed")
     result = _run(
         repo,
         [
@@ -626,12 +1545,13 @@ def push(repo, remote: str = "origin") -> None:
             "--no-verify",
             "--receive-pack=git-receive-pack",
             "--",
-            target,
-            f"{verified_head}:{branch_ref}",
+            candidate._target,
+            f"{candidate.candidate_sha}:{candidate.branch_ref}",
         ],
     )
     if result.returncode != 0:
         raise GitPushError("git push failed", result.returncode)
+    return True
 
 
 def has_remote(repo, name: str = "origin") -> bool:
