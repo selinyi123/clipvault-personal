@@ -165,7 +165,7 @@ Ctrl+C → Watcher 捕获 → normalize/hash → 去重（命中则 times_seen+1
 ## 6. 同步设计要点（协议细节见 CONTRACTS §5）
 
 - **事件日志复制**：每台设备维护自增 `seq` 的 outbox；对端记录"我已应用到对方的哪个 seq"。重连后通过 HTTP push/pull 从游标续传。天然幂等：按 `(origin_device, seq)` 去重，clip_new 再按 content_hash 去重。
-- **冲突**：只有元数据标志（pin/favorite/delete）可能冲突 → Desktop 按持久化的每字段逻辑时间戳执行 LWW，相同时间戳 delete 赢；Android 按 Desktop outbox 顺序消费。内容本身永不冲突（追加型 + 哈希去重）。
+- **冲突**：clip 元数据标志（pin/favorite/delete）由 Desktop 按持久化的每字段逻辑时间戳执行 LWW，相同时间戳 delete 赢；Personal Memory 的 Desktop 权威 tombstone 使用持久逻辑时钟，远端兼容 upsert 不得复活已删除项。Android 按 Desktop outbox 顺序消费。内容本身永不冲突（追加型 + 哈希去重）。
 - **拓扑**：星型，桌面是 hub。v1 只有一台 Android，协议按多设备设计（device_id 区分）但不实现多端转发。
 - **安全**：配对 = 桌面 Web UI 生成一次性 8 位码（5 分钟有效）→ Android 提交换取 32 字节长期 token → 桌面只存 token 的 sha256。传输加密依赖 Tailscale（WireGuard）；纯 LAN 模式明文是已接受的残余风险（THREAT_MODEL §5），P2 提供自签 TLS + 证书钉扎。
 - **密钥不进同步**：is_secret=1 的 clip 在 outbox 入队处被闸门 B 拒绝（两端同规则）。

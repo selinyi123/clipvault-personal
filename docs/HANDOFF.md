@@ -18,6 +18,36 @@
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-13 |
 
+## Current development note - 2026-07-13 / R000 Personal Memory convergence
+
+- PR #117 merged as `f1ad807838284c32bf1d9705cd3f900a479f5712`.
+  Exact-main [CI run 29267816578](https://github.com/selinyi123/clipvault-personal/actions/runs/29267816578)
+  and [release-candidate run 29267816822](https://github.com/selinyi123/clipvault-personal/actions/runs/29267816822)
+  both passed. That merge made remote clip metadata effects atomic, repaired
+  Android explicit-false/undelete application, and protected local Owner
+  actions from timestamp-ceiling replay.
+- This follow-up makes each local Personal Memory create, delete, promote, or
+  imported creation commit its fact row, per-item logical clock, and sync
+  outbox event in one SQLite unit of work. Existing repo and emitter callers
+  retain standalone `commit=True` behavior; composed paths use keyword-only
+  `commit=False` under the application transaction.
+- Memory clocks now remain monotonic across same-second actions and wall-clock
+  rollback. At the fixed-format maximum timestamp, the wire value saturates
+  while a Desktop-only fence prevents a replayed plain-maximum delete from
+  undoing a later explicit local action.
+- Remote `memory_delete` applies its tombstone and clock atomically. Legacy or
+  gapped remote `memory_upsert` events can create a new item or update a live
+  item, but cannot revive a Desktop tombstone. Automated import reruns retain
+  the same no-resurrection rule and can recover cleanly after an outbox failure.
+- Local emit, remote apply, and pull re-scan both Memory text and the currently
+  persisted label, so legacy secret-labelled rows cannot be sanitized or
+  exposed by a replay. The create API validates the same wire size/type limits
+  before acquiring the writer lock and returns a bounded client error without
+  leaving a fact row, clock, or outbox fragment.
+- No schema or wire field, Android Room/IME behavior, REST route, backup/FTS
+  boundary, analytics behavior, version metadata, release authority, or Issue
+  #36 state changes in this slice.
+
 ## Current development note - 2026-07-13 / R000 remote metadata convergence
 
 - PR #116 merged as `b4ffb99e84e68f33e152fa83ba05fa9529f567b7`.

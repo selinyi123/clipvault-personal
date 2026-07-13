@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from clipvault.store.memory_repo import MemoryRepo, SecretMemoryError
+from clipvault.store.unit_of_work import unit_of_work
 
 # OBS-1 filenames look like 20260613-095022_slug_ABC123.md
 _OBS_PREFIX = re.compile(r"^\d{8}-\d{6}_")
@@ -65,12 +66,34 @@ def apply(repo: MemoryRepo, items: list[tuple[str, str]], source: str) -> int:
         if before is not None and before.deleted:
             continue
         try:
-            item = repo.upsert(kind, text, source=source)
+            with unit_of_work(repo.conn):
+                # Re-read after acquiring the writer lock so a concurrent
+                # explicit delete cannot be revived by this importer.
+                before = repo.by_kind_text(kind, text)
+                if before is not None and before.deleted:
+                    continue
+                if before is None and repo.conn.execute(
+                    "SELECT 1 FROM memory_meta_ts WHERE kind=? AND text=?",
+                    (kind, text.strip()),
+                ).fetchone() is not None:
+                    # A delete can arrive before its gapped upsert and leave a
+                    # clock-only tombstone. Automated import must not cross it.
+                    continue
+                item = repo.upsert(
+                    kind,
+                    text,
+                    source=source,
+                    revive_deleted=False,
+                    commit=False,
+                )
+                if before is None:
+                    engine.emit_memory_upsert(
+                        repo.conn, item, now, commit=False
+                    )
         except SecretMemoryError:
             # Imported names/titles are untrusted content too. Skip without
             # logging the value; a log message would become a disclosure path.
             continue
         if before is None:
             created += 1
-            engine.emit_memory_upsert(repo.conn, item, now)
     return created
