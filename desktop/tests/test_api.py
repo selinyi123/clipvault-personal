@@ -1,6 +1,7 @@
 """S004 gates D1-D9. Handler-level tests (no socket) plus one end-to-end
 http.client test for routing + loopback guard (D8)."""
 
+from contextlib import contextmanager
 import http.client
 import json
 import logging
@@ -8,7 +9,6 @@ import os
 import socket
 import tempfile
 import threading
-import time
 
 import pytest
 
@@ -28,6 +28,38 @@ def _free_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+@contextmanager
+def _running_config_server(cfg):
+    """Run the real API server and wait for its explicit readiness signal."""
+    stop = threading.Event()
+    ready = threading.Event()
+    failures = []
+
+    def run():
+        try:
+            api_server.serve(cfg, stop, on_ready=ready.set)
+        except BaseException as exc:
+            failures.append(exc)
+            ready.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    try:
+        if not ready.wait(timeout=10):
+            raise AssertionError("API server did not become ready within 10 seconds")
+        if failures:
+            raise AssertionError("API server failed during startup") from failures[0]
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=3)
+
+    if thread.is_alive():
+        raise AssertionError("API server did not stop within 3 seconds")
+    if failures:
+        raise AssertionError("API server failed while handling requests") from failures[0]
 
 
 @pytest.fixture
@@ -407,10 +439,7 @@ def test_d8_release_endpoint_remains_bodyless(cfg):
     # the clip created over the socket is visible to the same serving thread.
     cfg.db_path = os.path.join(tempfile.mkdtemp(), "cv.db")
     cfg.port = _free_port()
-    stop = threading.Event()
-    threading.Thread(target=api_server.serve, args=(cfg, stop), daemon=True).start()
-    time.sleep(0.5)
-    try:
+    with _running_config_server(cfg):
         c = http.client.HTTPConnection("127.0.0.1", cfg.port, timeout=5)
         c.request("POST", "/api/clips", body=json.dumps({"content": FAKE_AWS_KEY}),
                   headers={"Content-Type": "application/json"})
@@ -426,28 +455,19 @@ def test_d8_release_endpoint_remains_bodyless(cfg):
                   headers={"Content-Type": "application/json"})
         assert c.getresponse().status == 200
         c.close()
-    finally:
-        stop.set()
-        time.sleep(0.6)
 
 
 def test_d8_peers_route_is_loopback_reachable(cfg):
     # The device-management route dispatches over a real socket (loopback-only).
     cfg.db_path = os.path.join(tempfile.mkdtemp(), "cv.db")
     cfg.port = _free_port()
-    stop = threading.Event()
-    threading.Thread(target=api_server.serve, args=(cfg, stop), daemon=True).start()
-    time.sleep(0.5)
-    try:
+    with _running_config_server(cfg):
         c = http.client.HTTPConnection("127.0.0.1", cfg.port, timeout=5)
         c.request("GET", "/api/peers")
         resp = c.getresponse()
         assert resp.status == 200
         assert json.loads(resp.read()) == {"peers": []}
         c.close()
-    finally:
-        stop.set()
-        time.sleep(0.6)
 
 
 def test_d8_rejects_forged_host_header(cfg):
@@ -455,10 +475,7 @@ def test_d8_rejects_forged_host_header(cfg):
     # rebinding site sends) is refused on the management API.
     cfg.db_path = os.path.join(tempfile.mkdtemp(), "cv.db")
     cfg.port = _free_port()
-    stop = threading.Event()
-    threading.Thread(target=api_server.serve, args=(cfg, stop), daemon=True).start()
-    time.sleep(0.5)
-    try:
+    with _running_config_server(cfg):
         c = http.client.HTTPConnection("127.0.0.1", cfg.port, timeout=5)
         c.request("GET", "/api/status", headers={"Host": "attacker.example"})
         assert c.getresponse().status == 403
@@ -468,9 +485,6 @@ def test_d8_rejects_forged_host_header(cfg):
         c.request("GET", "/api/status")  # http.client sets Host: 127.0.0.1:<port>
         assert c.getresponse().status == 200
         c.close()
-    finally:
-        stop.set()
-        time.sleep(0.6)
 
 
 def test_d8_rejects_foreign_referer(cfg):
@@ -478,10 +492,7 @@ def test_d8_rejects_foreign_referer(cfg):
     # origin (what a rebinding page sends) is refused; loopback or absent is fine.
     cfg.db_path = os.path.join(tempfile.mkdtemp(), "cv.db")
     cfg.port = _free_port()
-    stop = threading.Event()
-    threading.Thread(target=api_server.serve, args=(cfg, stop), daemon=True).start()
-    time.sleep(0.5)
-    try:
+    with _running_config_server(cfg):
         c = http.client.HTTPConnection("127.0.0.1", cfg.port, timeout=5)
         c.request("GET", "/api/status", headers={"Referer": "http://attacker.example/x"})
         assert c.getresponse().status == 403
@@ -494,9 +505,6 @@ def test_d8_rejects_foreign_referer(cfg):
         c.request("GET", "/api/status")  # no Referer -> allowed (Host is primary)
         assert c.getresponse().status == 200
         c.close()
-    finally:
-        stop.set()
-        time.sleep(0.6)
 
 
 def test_d9_api_logs_no_content(api, caplog):
