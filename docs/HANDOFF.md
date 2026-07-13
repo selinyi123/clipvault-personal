@@ -18,6 +18,37 @@
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-13 |
 
+## Current development note - 2026-07-13 / R000 remote metadata convergence
+
+- PR #116 merged as `b4ffb99e84e68f33e152fa83ba05fa9529f567b7`.
+  Exact-main [CI run 29265375112](https://github.com/selinyi123/clipvault-personal/actions/runs/29265375112)
+  and [release-candidate run 29265379995](https://github.com/selinyi123/clipvault-personal/actions/runs/29265379995)
+  both passed. That merge made local clip metadata effects atomic, closed the
+  malformed outbox decoding gap, and allowed explicit Owner release of a
+  legacy public clip reclassified by the current Secret Guard.
+- This follow-up makes remote `clip_meta` apply atomic: flags, FTS, per-field
+  LWW clocks, and any deletion backup intent share one SQLite unit of work.
+  Replayed or newer same-value delete/undelete events still advance their field
+  clock but do not reactivate an already completed backup row.
+- Local metadata emission now uses a persisted second-resolution logical clock.
+  A same-second action or wall-clock rollback advances from the greatest clock
+  of every field in the patch, so later pin/unpin and delete/undelete actions
+  remain ordered without changing the existing wire timestamp format or adding
+  a migration. Event `created_at` remains the wall-clock candidate. At the
+  fixed-format maximum timestamp the wire clock saturates; a Desktop-local
+  Owner fence in the persisted field clock prevents a replayed plain maximum
+  value from undoing later local changes. Android continues consuming the wire
+  events in outbox order. Normal exact ties retain delete-wins behavior.
+- Android remains an ordered metadata consumer and does not gain a Room LWW
+  table in this slice. It strictly parses every recognized Boolean before any
+  write, distinguishes field absence from explicit `false`, and applies
+  pinned/favorite/deleted with one DAO statement. This repairs undelete and
+  prevents a malformed mixed patch from leaving partial state. Unknown fields
+  remain ignored for forward compatibility.
+- No Room or Desktop schema version, REST route, sync payload field, IME
+  behavior, analytics boundary, release authority, version metadata, or Issue
+  #36 state changes in this slice.
+
 ## Current development note - 2026-07-13 / R000 secret clip metadata boundary
 
 - PR #115 merged as `dbe172fe6e26e4de4dc7d4081c348e9944c6050c`.
@@ -43,14 +74,12 @@
   and timestamps before writing. Its standalone default path remains atomic
   and leaves no active transaction; composed callers pass keyword-only
   `commit=False` so an outer unit of work owns commit or rollback.
-- This slice adds no schema columns, REST endpoints, or sync payload fields and
-  does not change version metadata, IME behavior, release authority, or Issue
-  #36 state. It intentionally tightens PATCH flags to real JSON booleans and
-  makes legacy outbox decoding fail closed. Personal Memory and remote metadata
-  apply atomicity remain separate follow-up patches. A later metadata-ordering
-  slice must also replace second-resolution local timestamps with a monotonic
-  per-field ordering rule before claiming rapid successive same-field PATCH
-  convergence complete.
+- This slice added no schema columns, REST endpoints, or sync payload fields and
+  did not change version metadata, IME behavior, release authority, or Issue
+  #36 state. It intentionally tightened PATCH flags to real JSON booleans and
+  made legacy outbox decoding fail closed. At its merge, Personal Memory and
+  remote metadata apply atomicity remained follow-ups; the remote metadata and
+  ordering follow-up is documented above.
 
 ## Current development note - 2026-07-13 / R000 cross-platform stability hotfix
 
