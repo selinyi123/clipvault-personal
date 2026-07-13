@@ -21,25 +21,36 @@ class OutboxRepo:
 
     def list_since(self, since_seq: int, limit: int = 100) -> list[dict]:
         rows = self.conn.execute(
-            "SELECT seq, kind, payload, created_at FROM sync_outbox "
+            "SELECT seq, CAST(kind AS BLOB) AS kind, "
+            "CAST(payload AS BLOB) AS payload, "
+            "CAST(created_at AS BLOB) AS created_at FROM sync_outbox "
             "WHERE seq > ? ORDER BY seq LIMIT ?",
             (since_seq, limit),
         ).fetchall()
         events = []
         for row in rows:
+            kind = _decode_utf8(row["kind"])
+            payload_text = _decode_utf8(row["payload"])
+            created_at = _decode_utf8(row["created_at"])
             try:
-                payload = json.loads(row["payload"])
-            except (json.JSONDecodeError, TypeError, UnicodeError):
+                payload = (
+                    json.loads(payload_text)
+                    if payload_text is not None
+                    else None
+                )
+            except (json.JSONDecodeError, TypeError, UnicodeError, RecursionError):
                 # The pull boundary treats a non-dict payload as blocked and
                 # advances over it.  Do not let one corrupted legacy row crash
-                # every pull/status attempt before Gate B can run.
+                # every pull/status attempt before Gate B can run.  Text is
+                # selected as BLOB above because sqlite3 otherwise decodes it
+                # during fetchall(), before this fail-closed boundary can run.
                 payload = None
             events.append(
                 {
                     "seq": row["seq"],
-                    "kind": row["kind"],
+                    "kind": kind,
                     "payload": payload,
-                    "created_at": row["created_at"],
+                    "created_at": created_at,
                 }
             )
         return events
@@ -56,3 +67,16 @@ class OutboxRepo:
         cur = self.conn.execute("DELETE FROM sync_outbox WHERE seq <= ?", (min_acked,))
         self.conn.commit()
         return cur.rowcount
+
+
+def _decode_utf8(value: object) -> str | None:
+    """Decode one SQLite TEXT value without leaking or raising on corruption."""
+
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if isinstance(value, str):
+        return value
+    return None

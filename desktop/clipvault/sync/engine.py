@@ -683,7 +683,7 @@ def _outbox_clip_event_is_blocked(conn, event: dict) -> bool:
 def _outbox_event_is_blocked(conn, event: dict) -> bool:
     try:
         _event_wire_size(event)
-    except (TypeError, ValueError, UnicodeError):
+    except (TypeError, ValueError, UnicodeError, RecursionError):
         return True
     if not _valid_utc_timestamp(event.get("created_at")):
         return True

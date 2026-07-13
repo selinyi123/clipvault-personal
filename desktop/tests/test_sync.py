@@ -579,6 +579,58 @@ def test_h7_corrupt_json_and_unknown_outbox_kinds_fail_closed(conn):
     assert FAKE_AWS_KEY not in json.dumps(pulled, ensure_ascii=False)
 
 
+def test_h7_invalid_utf8_outbox_text_fails_closed_before_sqlite_decoding(
+    api, conn
+):
+    _pair(api)
+    invalid_payload = conn.execute(
+        "INSERT INTO sync_outbox(kind, payload, created_at) "
+        "VALUES ('clip_new', CAST(x'80' AS TEXT), '2026-06-13T10:20:00Z')"
+    )
+    invalid_kind = conn.execute(
+        "INSERT INTO sync_outbox(kind, payload, created_at) "
+        "VALUES (CAST(x'80' AS TEXT), '{}', '2026-06-13T10:21:00Z')"
+    )
+    invalid_created_at = conn.execute(
+        "INSERT INTO sync_outbox(kind, payload, created_at) "
+        "VALUES ('memory_delete', '{}', CAST(x'80' AS TEXT))"
+    )
+    conn.commit()
+
+    rows = OutboxRepo(conn).list_since(0)
+    pulled = sync_engine.build_pull(conn, 0)
+
+    assert [row["seq"] for row in rows] == [
+        invalid_payload.lastrowid,
+        invalid_kind.lastrowid,
+        invalid_created_at.lastrowid,
+    ]
+    assert rows[0]["payload"] is None
+    assert rows[1]["kind"] is None
+    assert rows[2]["created_at"] is None
+    assert pulled["events"] == []
+    assert pulled["next_seq"] == invalid_created_at.lastrowid
+    assert sync_engine.pull_blocked_summary(conn, max_bytes=1) is None
+
+
+def test_h7_excessively_nested_outbox_json_fails_closed(api, conn):
+    _pair(api)
+    nested_json = ("[" * 10_000) + "0" + ("]" * 10_000)
+    row = conn.execute(
+        "INSERT INTO sync_outbox(kind, payload, created_at) VALUES (?,?,?)",
+        ("clip_new", nested_json, "2026-06-13T10:20:00Z"),
+    )
+    conn.commit()
+
+    events = OutboxRepo(conn).list_since(0)
+    pulled = sync_engine.build_pull(conn, 0)
+
+    assert events[0]["payload"] is None
+    assert pulled["events"] == []
+    assert pulled["next_seq"] == row.lastrowid
+    assert sync_engine.pull_blocked_summary(conn, max_bytes=1) is None
+
+
 def test_h7_local_patch_rolls_back_flags_meta_outbox_and_backup_intent(
     api, conn, monkeypatch
 ):
