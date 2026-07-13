@@ -193,19 +193,52 @@ Those commands deliberately:
 - compare all eight files byte-for-byte by SHA-256;
 - save the draft Release digest set for the pre-publication recheck.
 
-Run `python tools/release_artifact_evidence.py` against the Actions artifact
-directories as shown in the pack. The helper validates the exact manifest/checksum
-set and binds captured signer evidence to the supplied Owner certificate SHA-256.
-It does not independently run `apksigner` on the downloaded APK or verify the
-GitHub run and attestations. Until those live checks are implemented and pass,
-its report is only a structural precheck and the artifact gate remains blocked.
-A green workflow run does not by itself prove the artifact contents.
+Execute `tools/release_artifact_evidence.py --require-live-final-draft` only
+through the generated Owner pack's Step E. It requires an exact clean target
+checkout, absolute trusted Git, GitHub CLI, and Python executables outside the
+repository, the Android SDK `lib/apksigner.jar`, an absolute trusted `java.exe`,
+and all three downloaded directories. Run from the exact repository root; the
+pack rejects subdirectory execution. Batch launchers, any tool path traversing a
+reparse point, UNC/device namespace paths, non-fixed drives, and workspace-local
+executables are rejected. The Git/GitHub CLI
+environment is sanitized, and each executed repository validator is checked
+before and after use against its exact target-commit blob so index flags or
+ignored bytecode cannot hide a modified verifier. Strict mode fails unless it verifies:
 
-The hardened artifact gate must also make GitHub attestation verification
-mandatory for every final binary, constrained to this repository, the release
-workflow, `refs/heads/main`, and the exact source/signer commit. A bare
-`gh attestation verify <file> --repo selinyi123/clipvault-personal` is only a
-diagnostic until those identity constraints are enforced.
+- current `main` and the exact successful `draft=true` run ID/attempt, workflow,
+  branch, source commit, event, and display title;
+- the exact two non-expired Actions bundles and their archive digests;
+- the exact eight regular, non-empty files in both Actions and draft Release
+  inventories, including Release API size/digest parity;
+- `gh attestation verify` for every Actions file with fixed repository, exact
+  workflow/ref certificate identity, OIDC issuer, `refs/heads/main`, exact
+  source/signer commit, hosted-runner, and SLSA predicate constraints;
+- at least one cryptographic certificate per file whose `runInvocationURI`
+  matches the exact run attempt;
+- a fresh independent `apksigner verify --verbose -Werr --print-certs` result
+  for the downloaded draft APK matching both captured evidence and the Owner
+  certificate trust anchor;
+- the live `release` environment `ANDROID_RELEASE_CERT_SHA256` variable matches
+  that independently supplied Owner trust anchor at both ends of collection; and
+- unchanged current-main, run, draft Release metadata, and local bytes at the
+  end of collection; and
+- the exact `refs/tags/v1.6.0` is either absent or resolves through any annotated
+  tags to the target commit, with unchanged tag state at the end of collection.
+
+The helper writes a machine JSON snapshot plus a path-free Issue comment with a
+canonical artifact binding SHA-256. The JSON is not self-authenticating and its
+status field must never be trusted by itself: readiness must rerun the live
+checks or independently cross-check the binding, current GitHub state, and the
+exact Release ID. The helper never treats workflow-controlled
+attestation predicate metadata as the run trust root. A green workflow alone
+still does not prove artifact contents, and this evidence does not replace
+manual QA, Owner publication approval, final publication, or Issue #36 closure.
+
+The GitHub release-by-tag REST endpoint returns published Releases only. Strict
+mode therefore uses the authenticated release listing, which exposes drafts
+only to users with push access, and requires exactly one matching `v1.6.0`
+draft. GitHub's Actions and Release REST schemas expose canonical `sha256:`
+digests; absence or malformed values fails closed.
 
 All final device and Windows QA in the next section must use files downloaded
 from the draft Release directory, not bytes from the `draft=false` preflight.
@@ -314,84 +347,24 @@ Before approval, record on Issue #36:
 - the validator-rendered manual QA report and its referenced evidence;
 - an Owner publication statement binding all of the above.
 
-Because draft assets are mutable, re-download them into a second fresh directory
-immediately before publication and compare the complete digest set recorded
-before QA:
+Do not reconstruct the publication commands from snippets in this runbook.
+Generate a fresh Owner pack and execute its Step H as one intact, fail-closed
+PowerShell block. That block revalidates the clean exact-target checkout, trusted
+tool paths, current `main`, workflow run, live release-environment certificate,
+all attestations, the exact release-tag state, and the Owner-approved binding;
+every draft asset ID/size/digest and the committed bytes of each executed
+validator are checked again.
+The strict verifier recomputes that binding and hands one minimal publication
+projection directly to PowerShell memory; Step H never trusts a binding field
+re-read from mutable disk JSON.
+It publishes by the verified numeric Release ID, not by a mutable tag lookup,
+then checks the same ID and re-downloads the published bytes. Run it only while
+`main` and `refs/tags/v1.6.0` are procedurally frozen. Use an Owner-exclusive Release mutation window;
+GitHub does not make branch/tag movement, draft asset
+mutation, and publication one atomic transaction. Step H therefore resolves the
+exact tag immediately before publication and again after publication, including
+annotated-tag chains.
 
-```powershell
-$ErrorActionPreference = "Stop"
-$runId = "REPLACE_WITH_DRAFT_TRUE_RUN_ID"
-$artifactRoot = ".field-test-artifacts/v1.6.0-draft-run-$runId"
-$digestReport = "$artifactRoot/draft-release-SHA256SUMS.txt"
-$prepublishRoot = ".field-test-artifacts/v1.6.0-prepublish-$runId"
-if (Test-Path $prepublishRoot) { throw "Refusing stale prepublish directory" }
-New-Item -ItemType Directory -Path $prepublishRoot | Out-Null
-
-$release = gh release view v1.6.0 `
-  --repo selinyi123/clipvault-personal `
-  --json tagName,name,isDraft,isPrerelease,targetCommitish,url,assets | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0) { throw "gh release view failed" }
-if ($release.tagName -ne "v1.6.0" -or
-    $release.name -ne "ClipVault Personal v1.6.0" -or
-    -not $release.isDraft -or $release.isPrerelease -or
-    $release.targetCommitish -ne $mainSha) {
-  throw "Draft Release metadata changed after QA"
-}
-
-gh release download v1.6.0 `
-  --repo selinyi123/clipvault-personal `
-  --dir $prepublishRoot
-if ($LASTEXITCODE -ne 0) { throw "gh release download failed" }
-$prepublishDigests = @(Get-ChildItem $prepublishRoot -File | Sort-Object Name | ForEach-Object {
-  "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(), $_.Name
-})
-if (@(Compare-Object @(Get-Content $digestReport) $prepublishDigests).Count -ne 0) {
-  throw "Draft assets changed after QA; discard approval and repeat verification"
-}
-```
-
-Only the Owner may then publish that same draft without another build:
-
-```powershell
-gh release edit v1.6.0 `
-  --repo selinyi123/clipvault-personal `
-  --draft=false
-if ($LASTEXITCODE -ne 0) { throw "GitHub Release publication failed" }
-
-$published = gh release view v1.6.0 `
-  --repo selinyi123/clipvault-personal `
-  --json tagName,name,isDraft,isPrerelease,targetCommitish,url,assets | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0) { throw "post-publication gh release view failed" }
-if ($published.tagName -ne "v1.6.0" -or
-    $published.name -ne "ClipVault Personal v1.6.0" -or
-    $published.isDraft -or $published.isPrerelease -or
-    $published.targetCommitish -ne $mainSha) {
-  throw "Published Release metadata mismatch"
-}
-$approvedAssetNames = @(Get-Content $digestReport | ForEach-Object {
-  ($_ -split '\s{2,}', 2)[1]
-} | Sort-Object)
-$publishedAssetNames = @($published.assets | ForEach-Object name | Sort-Object)
-if (@(Compare-Object $approvedAssetNames $publishedAssetNames).Count -ne 0 -or
-    @($published.assets | Where-Object size -LE 0).Count -ne 0) {
-  throw "Published Release asset inventory mismatch"
-}
-
-$postpublishRoot = ".field-test-artifacts/v1.6.0-postpublish-$runId"
-if (Test-Path $postpublishRoot) { throw "Refusing stale post-publish directory" }
-New-Item -ItemType Directory -Path $postpublishRoot | Out-Null
-gh release download v1.6.0 `
-  --repo selinyi123/clipvault-personal `
-  --dir $postpublishRoot
-if ($LASTEXITCODE -ne 0) { throw "post-publication gh release download failed" }
-$publishedDigests = @(Get-ChildItem $postpublishRoot -File | Sort-Object Name | ForEach-Object {
-  "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(), $_.Name
-})
-if (@(Compare-Object @(Get-Content $digestReport) $publishedDigests).Count -ne 0) {
-  throw "Published assets differ from the approved digest set"
-}
-```
-
-After these post-publication checks, rerun `tools/release_readiness.py`. Issue #36
-remains open unless every gate is verifiably complete; publication alone does
-not authorize closure.
+After Step H's post-publication checks, rerun `tools/release_readiness.py`.
+Issue #36 remains open unless every gate is verifiably complete; publication
+alone does not authorize closure.

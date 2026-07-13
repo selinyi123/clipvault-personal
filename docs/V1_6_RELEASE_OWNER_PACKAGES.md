@@ -93,6 +93,24 @@ particular:
   keystore material, passwords, or unredacted logs;
 - do not use QA from the `draft=false` preflight to approve assets rebuilt by
   the later `draft=true` run.
+- set `GIT_EXE_PATH`, `GH_CLI_PATH`, and `PYTHON_EXE_PATH` to absolute trusted
+  `.exe` files outside the workspace, `APKSIGNER_JAR_PATH` to Android SDK
+  `lib/apksigner.jar`, and `JAVA_EXE_PATH` to an absolute trusted `java.exe`;
+  batch launchers, UNC/device namespace paths, non-fixed drives, tool paths with
+  any reparse-point ancestor, and workspace-local tools are rejected;
+- run every generated PowerShell block from the exact repository root and clean
+  frozen target; subdirectory execution is rejected before a verifier runs, Git
+  and GitHub CLI injection variables are sanitized, and critical validator source
+  bytes are matched to the frozen commit before and after execution;
+- run `tools/release_artifact_evidence.py --require-live-final-draft`; its JSON
+  and path-free comment are evidence inputs, not self-authenticating proof, so
+  readiness must rerun or live-cross-check every security-relevant claim;
+- retain the generated artifact binding SHA-256 so manual QA and publication
+  approval can be tied to the same exact eight files; copy that binding from the
+  posted Owner approval into Step H, which recomputes it and consumes only the
+  verifier's in-memory publication projection;
+- keep both `main` and the exact `refs/tags/v1.6.0` frozen during Step H; the
+  generated block resolves direct or annotated tags before and after publication.
 
 ## 5. Closure rule
 

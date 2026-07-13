@@ -375,15 +375,18 @@ def test_release_artifact_evidence_helper_is_documented_without_release_overclai
     assert '"status": "structural_precheck_pass"' in script_text
 
     assert "python tools/release_artifact_evidence.py" in manual_qa
-    assert "python tools/release_artifact_evidence.py" in runbook
+    assert "tools/release_artifact_evidence.py --require-live-final-draft" in runbook
     assert "python tools/prepare_v1_6_release_owner_pack.py" in runbook
     assert "gh attestation verify" in runbook
-    assert "a green workflow run does not by itself prove the artifact contents" in runbook.lower()
-    assert "only a structural precheck" in runbook
-    assert "does not download artifacts, run or trigger workflows" in research
+    assert "a green workflow alone" in runbook.lower()
+    assert "still does not prove artifact contents" in runbook.lower()
+    assert "--require-live-final-draft" in runbook
+    assert "runInvocationURI" in runbook
+    assert "release-by-tag REST endpoint returns published Releases only" in runbook
+    assert "does not download artifacts, trigger workflows" in research
     assert "R85 | Downloaded release artifact evidence and provenance" in research
     assert "tools/release_artifact_evidence.py" in handoff
-    assert "green workflow run still is not artifact-content proof" in handoff
+    assert "canonical binding digest" in handoff
 
 
 def test_release_runbook_qa_uses_the_final_draft_bytes_without_rebuild():
@@ -392,18 +395,17 @@ def test_release_runbook_qa_uses_the_final_draft_bytes_without_rebuild():
     preflight = runbook.index("create_draft_release=false")
     final_draft = runbook.index("create_draft_release=true", preflight)
     manual_qa = runbook.index("## 6. Record manual QA evidence", final_draft)
-    publication = runbook.index("gh release edit v1.6.0", manual_qa)
+    publication = runbook.index("publishes by the verified numeric Release ID", manual_qa)
 
     assert preflight < final_draft < manual_qa < publication
     assert "Its bytes are not eligible" in runbook
     assert "from the draft Release directory" in runbook
-    assert "Refusing stale prepublish directory" in runbook
-    assert "Draft assets changed after QA" in runbook
-    assert "$published.isDraft" in runbook
-    assert "$published.targetCommitish -ne $mainSha" in runbook
-    assert "Refusing stale post-publish directory" in runbook
-    assert "Published assets differ from the approved digest set" in runbook
-    assert "without another build" in runbook
+    assert "execute its Step H as one intact, fail-closed" in runbook
+    assert "every draft asset ID/size/digest" in runbook
+    assert "not by a mutable tag lookup" in runbook
+    assert "Owner-exclusive Release mutation window" in runbook
+    assert "gh release edit v1.6.0" not in runbook
+    assert "\ngh release " not in runbook
     assert "Optional draft GitHub Release" not in runbook
 
 
