@@ -110,6 +110,22 @@
   REST/sync contracts, IME/privacy boundaries, and release authority remain
   unchanged. Application-command extraction is intentionally a separate PR.
 
+## Current development note - 2026-07-13 / R000 Obsidian application command
+
+- This development branch starts from the merged runtime-composition PR #100 at
+  `9837768790e37410a54035dd8de3f78930ce136b`.
+- The proposed `application/obsidian_commands.py` owns only Obsidian
+  claim/write/finalize/retry orchestration. The file writer and refusal type are
+  injected adapters; the application module cannot import service, runtime,
+  API, sync, pipeline, or the concrete writer package.
+- `runtime/obsidian_worker.py` uses the application command directly on its
+  thread-owned connection. `ClipVaultService` remains a compatibility facade
+  with the existing constructor, repositories, legacy methods, synchronous
+  fallback, and monkeypatch behavior.
+- Capture, explicit secret release, promotion, schema, REST/sync payloads,
+  config, CLI/packaging, privacy policy, Issue #36, and release authority are
+  unchanged. Those application commands are not bundled into this extraction.
+
 ## Current development note - 2026-07-04 / v1.6 release gate and v1.7 stability gates in progress
 
 - `docs/V1_7_FIELD_TEST_PACKAGES.md` now defines the v1.7 field-test package

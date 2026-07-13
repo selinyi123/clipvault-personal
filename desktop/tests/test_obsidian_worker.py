@@ -107,6 +107,56 @@ def test_worker_stop_wake_closes_owned_connection(tmp_path):
     assert closed.wait(1)
 
 
+def test_worker_reopens_connection_after_sqlite_error(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    stop = threading.Event()
+    recovered = threading.Event()
+    connections = []
+
+    class TrackingConnection(sqlite3.Connection):
+        closed = False
+
+        def close(self):
+            self.closed = True
+            super().close()
+
+    def connect(path: str) -> sqlite3.Connection:
+        conn = sqlite3.connect(path, factory=TrackingConnection)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        connections.append(conn)
+        return conn
+
+    attempts = 0
+
+    def retry_sweep(self, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("reopen")
+        recovered.set()
+        stop.set()
+        return 0
+
+    monkeypatch.setattr(
+        "clipvault.runtime.obsidian_worker.ObsidianCommands.retry_sweep",
+        retry_sweep,
+    )
+    worker = ObsidianWorker(cfg, interval_s=0.01, connect_fn=connect)
+    thread = threading.Thread(target=worker.run, args=(stop,))
+    thread.start()
+    try:
+        assert recovered.wait(5), "worker did not rebuild commands after sqlite error"
+    finally:
+        stop.set()
+        worker.notify()
+        thread.join(5)
+
+    assert not thread.is_alive()
+    assert len(connections) >= 2
+    assert all(conn.closed for conn in connections)
+
+
 def test_single_wake_drains_more_than_one_bounded_batch(tmp_path):
     cfg = _cfg(tmp_path)
     setup_conn = db.connect(cfg.db_path)

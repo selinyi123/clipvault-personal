@@ -13,11 +13,17 @@ import sqlite3
 import threading
 from collections.abc import Callable
 
+from clipvault.application.obsidian_commands import ObsidianCommands
 from clipvault.config import Config
-from clipvault.service import ClipVaultService
+from clipvault.obsidian import writer
 from clipvault.store import db
+from clipvault.store.clips_repo import ClipsRepo
+from clipvault.store.obsidian_queue_repo import ObsidianQueueRepo
 
 log = logging.getLogger("clipvault.runtime.obsidian")
+# Preserve the pre-extraction namespace for command-level write/finalize logs;
+# worker lifecycle messages continue to use the runtime namespace above.
+command_log = logging.getLogger("clipvault.service")
 
 
 class _WorkSignal:
@@ -77,22 +83,33 @@ class ObsidianWorker:
         """Run until ``stop`` is set; never share the connection across threads."""
 
         conn: sqlite3.Connection | None = None
-        service: ClipVaultService | None = None
+        commands: ObsidianCommands | None = None
         seen_generation = 0
         try:
             while not stop.is_set():
                 seen_generation = self._signal.wait(
                     seen_generation,
                     stop,
-                    self.interval_s if service is not None else min(self.interval_s, 5.0),
+                    self.interval_s if commands is not None else min(self.interval_s, 5.0),
                 )
                 if stop.is_set():
                     break
-                if service is None:
+                if commands is None:
                     try:
                         conn = self._connect(self.config.db_path)
                         db.migrate(conn)
-                        service = ClipVaultService(conn, self.config)
+                        commands = ObsidianCommands(
+                            conn,
+                            clips=ClipsRepo(conn),
+                            queue=ObsidianQueueRepo(conn),
+                            vault_path=self.config.vault_path,
+                            type_dirs=self.config.type_dirs,
+                            write_clip=lambda *args, **kwargs: writer.write_clip(
+                                *args, **kwargs
+                            ),
+                            secret_write_refused=lambda: writer.SecretWriteRefused,
+                            logger=command_log,
+                        )
                     except Exception as exc:
                         if conn is not None:
                             conn.close()
@@ -104,7 +121,7 @@ class ObsidianWorker:
                         continue
                 try:
                     while not stop.is_set():
-                        repaired = service.retry_obsidian_sweep(
+                        repaired = commands.retry_sweep(
                             limit=self.limit,
                             max_runtime_ms=self.soft_runtime_budget_ms,
                         )
@@ -113,7 +130,7 @@ class ObsidianWorker:
                         # One wake may represent more than one committed item.
                         # Drain consecutive bounded batches so coalesced signals
                         # do not leave limit+1 work waiting for the 60s fallback.
-                        if not service.has_ready_obsidian_work():
+                        if not commands.has_ready():
                             break
                 except sqlite3.Error as exc:
                     # Reopen the thread-owned connection after database errors;
@@ -125,7 +142,7 @@ class ObsidianWorker:
                     if conn is not None:
                         conn.close()
                     conn = None
-                    service = None
+                    commands = None
                 except Exception as exc:
                     # Never include exception messages: they may contain a Vault
                     # path. The durable queue makes the next wake/interval safe.
