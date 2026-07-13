@@ -7,16 +7,18 @@ It does not replace the manual Android/IME/sync/Windows clipboard QA evidence.
 
 - Do not publish `v1.6.0` until Issue #36 has all required evidence.
 - Do not commit keystores, passwords, generated `.b64` files, or release artifacts.
-- Run the workflow first with `create_draft_release=false`.
+- Run the workflow first with `create_draft_release=false` as a signed,
+  no-draft preflight; never use its bytes as final QA/publication evidence.
 - Treat `Release candidate dry run` artifacts as unsigned packaging evidence only.
 - The release-candidate dry run runs automatically on pushes to `main`; manual
   dispatch remains a fallback if the current-main run is missing, failed, or
   still queued.
 - Run `Release artifact build` only with `--ref main`; the workflow fails closed
   if manually dispatched from any other branch or tag.
-- The signed artifact pre-publication run should appear in GitHub Actions as
-  `Release artifacts v1.6.0 from main draft=false`; the optional draft-release
-  pass should appear as `Release artifacts v1.6.0 from main draft=true`.
+- The signed no-draft preflight should appear as
+  `Release artifacts v1.6.0 from main draft=false`. The final asset build must
+  appear as `Release artifacts v1.6.0 from main draft=true`; download its draft
+  Release assets before final QA and publish that same draft without rebuilding.
 
 ## 0. Run the read-only readiness report
 
@@ -96,6 +98,12 @@ ANDROID_RELEASE_KEY_ALIAS
 ANDROID_RELEASE_KEY_PASSWORD
 ```
 
+The release workflow must also enforce the non-secret environment variable
+`ANDROID_RELEASE_CERT_SHA256`, containing the 64-hex certificate SHA-256 that
+the Owner independently confirmed from the long-lived release key. Do not run a
+final signing workflow until that comparison is fail-closed; a generic valid APK
+signature or an `apksigner --print-certs` text shape is not Owner identity proof.
+
 Example CLI setup for the keystore value:
 
 ```powershell
@@ -124,11 +132,10 @@ gh secret set ANDROID_RELEASE_KEY_PASSWORD `
   --env release
 ```
 
-## 4. Run the signed artifact workflow without creating a release
+## 4. Run the signed no-draft preflight
 
-The signed release workflow must run from the current `main` ref. It also checks
-that the requested `version` matches the source-tree desktop and Android version
-metadata before building artifacts.
+The workflow must run from current `main`, and its target must equal the SHA
+selected in section 1:
 
 ```powershell
 gh workflow run "Release artifact build" `
@@ -136,85 +143,68 @@ gh workflow run "Release artifact build" `
   --ref main `
   -f version=v1.6.0 `
   -f create_draft_release=false
+if ($LASTEXITCODE -ne 0) { throw "failed to dispatch signed preflight" }
 ```
 
-The run must complete these jobs successfully:
+Require both `Windows release artifacts` and `Android signed release APK` to
+pass, and require the title
+`Release artifacts v1.6.0 from main draft=false`. This run exercises the signing
+and packaging path, but it creates no final draft. Its bytes are not eligible
+for final Android, IME, sync, Windows, publication, or Issue #36 evidence.
 
-- Windows release artifacts
-- Android signed release APK
+## 5. Build, download, and verify the final draft asset set
 
-The run title must match the requested release inputs:
-
-- `Release artifacts v1.6.0 from main draft=false` for the first signed-artifact
-  evidence run.
-- `Release artifacts v1.6.0 from main draft=true` only for the later
-  Owner-approved draft-release pass.
-
-The Android artifact must include:
-
-- `ClipVault-Android-v1.6.0-release-signed.apk`
-- `ANDROID_APKSIGNER_VERIFY.txt`
-- `SHA256SUMS.txt`
-- `RELEASE_MANIFEST.json` with `kind=release` and `signed=true`
-
-Download both artifact bundles from the completed run and validate the
-downloaded bytes before recording the signed/final artifact evidence on Issue
-#36. This is intentionally separate from workflow success: a green workflow run
-does not by itself prove the artifact contents that will be attached or cited;
-a green workflow run does not by itself prove the artifact contents.
+After the signed preflight and signer-identity gate pass, dispatch the one run
+that creates the final draft assets:
 
 ```powershell
-$runId = "RELEASE_ARTIFACT_RUN_ID"
-$mainSha = gh api repos/selinyi123/clipvault-personal/branches/main --jq ".commit.sha"
-Remove-Item release-evidence-v1.6.0 -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path release-evidence-v1.6.0 | Out-Null
-
-gh run download $runId `
+gh workflow run "Release artifact build" `
   --repo selinyi123/clipvault-personal `
-  --name clipvault-windows-release-artifacts `
-  --name clipvault-android-signed-release-artifacts `
-  --dir release-evidence-v1.6.0
-
-python tools/release_artifact_evidence.py `
-  --windows-dir release-evidence-v1.6.0/clipvault-windows-release-artifacts `
-  --android-dir release-evidence-v1.6.0/clipvault-android-signed-release-artifacts `
-  --version v1.6.0 `
-  --commit $mainSha `
-  --run-url "https://github.com/selinyi123/clipvault-personal/actions/runs/$runId" `
-  --output release-artifact-issue-comment.md
+  --ref main `
+  -f version=v1.6.0 `
+  -f create_draft_release=true
+if ($LASTEXITCODE -ne 0) { throw "failed to dispatch final draft build" }
 ```
 
-Post the rendered comment only after the helper passes against the downloaded
-artifact directories. The helper validates `RELEASE_MANIFEST.json`,
-`SHA256SUMS.txt`, required release artifact names, and Android
-`ANDROID_APKSIGNER_VERIFY.txt` shape. It does not download artifacts, call
-GitHub, post comments, sign APKs, complete manual QA, publish a Release, or
-close Issue #36.
+The selected run must be a successful `workflow_dispatch` on `main`, have
+`headSha == $mainSha`, and have the exact title
+`Release artifacts v1.6.0 from main draft=true`.
 
-Because the release workflow emits GitHub artifact attestations, optionally
-verify provenance for the primary binaries before publication, for example:
+Generate the ignored Owner pack and follow its Step E commands exactly:
 
 ```powershell
-gh attestation verify `
-  release-evidence-v1.6.0/clipvault-windows-release-artifacts/ClipVault-Desktop-v1.6.0-portable.exe `
-  --repo selinyi123/clipvault-personal
-gh attestation verify `
-  release-evidence-v1.6.0/clipvault-android-signed-release-artifacts/ClipVault-Android-v1.6.0-release-signed.apk `
-  --repo selinyi123/clipvault-personal
+python tools/prepare_v1_6_release_owner_pack.py
+if ($LASTEXITCODE -ne 0) { throw "Owner pack generation failed" }
+Get-Content .field-test-artifacts/v1.6.0-owner-pack/OWNER_RELEASE_ACTION_PACK.md
 ```
 
-## 5. Record evidence on Issue #36
+Those commands deliberately:
 
-Comment on Issue #36 with:
+- use a fresh `.field-test-artifacts/v1.6.0-draft-run-<run-id>` directory and
+  refuse stale output;
+- fail after every unsuccessful `gh` or Python command;
+- validate the run title, event, branch, head SHA, and conclusion;
+- require a draft, non-prerelease `v1.6.0` Release targeting `$mainSha`;
+- require the exact eight-asset inventory with no empty asset;
+- download both Actions artifacts and the current mutable draft Release assets;
+- compare all eight files byte-for-byte by SHA-256;
+- save the draft Release digest set for the pre-publication recheck.
 
-- workflow run URL
-- Android signed artifact name
-- `apksigner verify --print-certs` evidence file name
-- confirmation that `RELEASE_MANIFEST.json` records `signed=true`
-- the rendered `tools/release_artifact_evidence.py` report for the downloaded
-  Windows and Android release artifact directories
+Run `python tools/release_artifact_evidence.py` against the Actions artifact
+directories as shown in the pack. At present that helper validates manifest/checksum shape,
+not the GitHub run, attestation, real downloaded APK signer, or expected Owner
+certificate identity. Until those checks are implemented and pass, its report is
+only a structural precheck and the artifact gate remains blocked.
+A green workflow run does not by itself prove the artifact contents.
 
-Do not close Issue #36 until manual device QA is also recorded.
+The hardened artifact gate must also make GitHub attestation verification
+mandatory for every final binary, constrained to this repository, the release
+workflow, `refs/heads/main`, and the exact source/signer commit. A bare
+`gh attestation verify <file> --repo selinyi123/clipvault-personal` is only a
+diagnostic until those identity constraints are enforced.
+
+All final device and Windows QA in the next section must use files downloaded
+from the draft Release directory, not bytes from the `draft=false` preflight.
 
 ## 6. Record manual QA evidence on Issue #36
 
@@ -290,11 +280,18 @@ digests must differ, and the final signed APK digest must differ from all debug
 app/test APK digests. SDK-output and JUnit/result evidence within a run must
 also use different references and digests.
 
-Separately install `ClipVault-Android-v1.6.0-release-signed.apk` on a physical
-device, verify its SHA-256 against the validated release artifact report, and
-bind that run to the exact target commit and artifact-evidence reference. Use
-that physical release run ID for every passing Android, IME, and sync row.
+Separately install the copy of
+`ClipVault-Android-v1.6.0-release-signed.apk` downloaded from the draft Release
+directory on a physical device. Verify its SHA-256 against the saved draft
+digest set and bind that run to the exact target commit, draft URL, draft=true
+run, and artifact-evidence reference. Use that physical release run ID for
+every passing Android, IME, and sync row.
 Debug instrumentation evidence never substitutes for signed-release manual QA.
+Run the Windows installer/portable and clipboard privacy cases with the EXEs
+downloaded from that same draft Release. The schema-v2 manual helper does not
+independently cross-check Windows bytes, so each Windows evidence row must cite
+the draft URL plus the exact EXE name/SHA-256 from the saved digest set; this is
+still an Owner-attested observation.
 Do not record device serials, clipboard payloads, secrets, or full private
 local paths in the JSON or rendered Issue comment. Source/reference fields
 reject absolute Windows/POSIX paths, UNC paths, and `file://` URIs; use public
@@ -302,17 +299,95 @@ URLs, workflow/run references, or short relative evidence labels. Free-form
 evidence is also checked for common absolute path forms, but still requires
 Owner redaction review before posting.
 
-## 7. Optional draft GitHub Release
+## 7. Recheck and publish the existing draft
 
-Only after Owner approval, rerun the workflow with:
+Before approval, record on Issue #36:
+
+- the exact target SHA, current-main CI, and RC dry-run URLs;
+- the final `draft=true` run and draft Release URLs;
+- the exact eight-asset names, sizes, and SHA-256 digest set;
+- constrained provenance and Owner Android certificate identity evidence;
+- the validator-rendered manual QA report and its referenced evidence;
+- an Owner publication statement binding all of the above.
+
+Because draft assets are mutable, re-download them into a second fresh directory
+immediately before publication and compare the complete digest set recorded
+before QA:
 
 ```powershell
-gh workflow run "Release artifact build" `
+$ErrorActionPreference = "Stop"
+$runId = "REPLACE_WITH_DRAFT_TRUE_RUN_ID"
+$artifactRoot = ".field-test-artifacts/v1.6.0-draft-run-$runId"
+$digestReport = "$artifactRoot/draft-release-SHA256SUMS.txt"
+$prepublishRoot = ".field-test-artifacts/v1.6.0-prepublish-$runId"
+if (Test-Path $prepublishRoot) { throw "Refusing stale prepublish directory" }
+New-Item -ItemType Directory -Path $prepublishRoot | Out-Null
+
+$release = gh release view v1.6.0 `
   --repo selinyi123/clipvault-personal `
-  --ref main `
-  -f version=v1.6.0 `
-  -f create_draft_release=true
+  --json tagName,name,isDraft,isPrerelease,targetCommitish,url,assets | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw "gh release view failed" }
+if ($release.tagName -ne "v1.6.0" -or
+    $release.name -ne "ClipVault Personal v1.6.0" -or
+    -not $release.isDraft -or $release.isPrerelease -or
+    $release.targetCommitish -ne $mainSha) {
+  throw "Draft Release metadata changed after QA"
+}
+
+gh release download v1.6.0 `
+  --repo selinyi123/clipvault-personal `
+  --dir $prepublishRoot
+if ($LASTEXITCODE -ne 0) { throw "gh release download failed" }
+$prepublishDigests = @(Get-ChildItem $prepublishRoot -File | Sort-Object Name | ForEach-Object {
+  "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(), $_.Name
+})
+if (@(Compare-Object @(Get-Content $digestReport) $prepublishDigests).Count -ne 0) {
+  throw "Draft assets changed after QA; discard approval and repeat verification"
+}
 ```
 
-This creates a draft release only. Review assets and Issue #36 evidence before
-publishing the draft.
+Only the Owner may then publish that same draft without another build:
+
+```powershell
+gh release edit v1.6.0 `
+  --repo selinyi123/clipvault-personal `
+  --draft=false
+if ($LASTEXITCODE -ne 0) { throw "GitHub Release publication failed" }
+
+$published = gh release view v1.6.0 `
+  --repo selinyi123/clipvault-personal `
+  --json tagName,name,isDraft,isPrerelease,targetCommitish,url,assets | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw "post-publication gh release view failed" }
+if ($published.tagName -ne "v1.6.0" -or
+    $published.name -ne "ClipVault Personal v1.6.0" -or
+    $published.isDraft -or $published.isPrerelease -or
+    $published.targetCommitish -ne $mainSha) {
+  throw "Published Release metadata mismatch"
+}
+$approvedAssetNames = @(Get-Content $digestReport | ForEach-Object {
+  ($_ -split '\s{2,}', 2)[1]
+} | Sort-Object)
+$publishedAssetNames = @($published.assets | ForEach-Object name | Sort-Object)
+if (@(Compare-Object $approvedAssetNames $publishedAssetNames).Count -ne 0 -or
+    @($published.assets | Where-Object size -LE 0).Count -ne 0) {
+  throw "Published Release asset inventory mismatch"
+}
+
+$postpublishRoot = ".field-test-artifacts/v1.6.0-postpublish-$runId"
+if (Test-Path $postpublishRoot) { throw "Refusing stale post-publish directory" }
+New-Item -ItemType Directory -Path $postpublishRoot | Out-Null
+gh release download v1.6.0 `
+  --repo selinyi123/clipvault-personal `
+  --dir $postpublishRoot
+if ($LASTEXITCODE -ne 0) { throw "post-publication gh release download failed" }
+$publishedDigests = @(Get-ChildItem $postpublishRoot -File | Sort-Object Name | ForEach-Object {
+  "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(), $_.Name
+})
+if (@(Compare-Object @(Get-Content $digestReport) $publishedDigests).Count -ne 0) {
+  throw "Published assets differ from the approved digest set"
+}
+```
+
+After these post-publication checks, rerun `tools/release_readiness.py`. Issue #36
+remains open unless every gate is verifiably complete; publication alone does
+not authorize closure.
