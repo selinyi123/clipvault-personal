@@ -68,6 +68,8 @@ desktop/
       classifier.py  #   规则分类（合同 CLS-1）
       secret_guard.py#   密钥检测（合同 SG-1）
       suggest.py     #   评分函数（合同 SUG-1）
+    application/     # 应用命令：跨 store 与注入 adapter 的用例编排
+      obsidian_commands.py # claim/write/finalize/retry；不反向依赖 service/runtime/API
     store/           # SQLite 访问层
       db.py          #   连接、WAL、迁移执行
       migrations/    #   0001_init.sql ...
@@ -94,6 +96,7 @@ desktop/
       app.py             # composition root：线程、连接、readiness、stop/join/health
       obsidian_worker.py # 专用 Vault IO worker：durable queue + wake/周期兜底
     config.py        # config.toml 加载（合同 CFG-1）
+    service.py       # 向后兼容 facade：委派 application commands
     main.py          # 薄入口：CLI、单实例锁、signal、tray；不实现 worker
   tests/
 ```
