@@ -79,6 +79,12 @@ def test_worker_is_the_only_thread_that_performs_vault_io(tmp_path, monkeypatch)
 
 def test_worker_stop_wake_closes_owned_connection(tmp_path):
     cfg = _cfg(tmp_path)
+    # Prepare the schema before observing the worker-owned connection.  The
+    # test is about stop/wake and ownership, not first-run migration latency;
+    # signalling ``opened`` before migration made the 5s join race slow CI.
+    setup_conn = db.connect(cfg.db_path)
+    db.migrate(setup_conn)
+    setup_conn.close()
     opened = threading.Event()
     closed = threading.Event()
 
