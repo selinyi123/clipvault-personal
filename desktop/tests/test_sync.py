@@ -11,6 +11,7 @@ import os
 import pytest
 
 from clipvault.api.handlers import Api
+from clipvault.api import handlers as api_handlers
 from clipvault.api import server as api_server
 from clipvault.config import Config
 from clipvault.core import normalize
@@ -788,6 +789,325 @@ def test_h7_emit_clip_meta_default_path_joins_outer_unit_of_work(api, conn):
         (clip.content_hash,),
     ).fetchone()[0] == 0
     assert conn.in_transaction is False
+
+
+def test_h7_remote_clip_meta_rolls_back_flags_clocks_fts_and_backup(
+    api, conn, monkeypatch
+):
+    _, created = api.create_clip({"content": "remote metadata atomic rollback"})
+    clip_id = created["clip"]["id"]
+    clip = ClipsRepo(conn).get(clip_id)
+    queue = BackupQueueRepo(conn)
+    queue.mark_done(clip_id, "2026-06-13T10:00:00Z")
+    original_reenqueue = BackupQueueRepo.reenqueue
+
+    def fail_after_reenqueue(self, candidate_id, when, *, commit=True):
+        assert commit is False
+        original_reenqueue(self, candidate_id, when, commit=False)
+        raise RuntimeError("injected remote backup failure")
+
+    monkeypatch.setattr(BackupQueueRepo, "reenqueue", fail_after_reenqueue)
+
+    with pytest.raises(RuntimeError, match="remote backup failure"):
+        sync_engine._apply_clip_meta(
+            conn,
+            {
+                "content_hash": clip.content_hash,
+                "patch": {"pinned": True, "deleted": True},
+                "ts": "2026-06-13T10:20:00Z",
+            },
+        )
+
+    restored = ClipsRepo(conn).get(clip_id)
+    assert restored.pinned is False
+    assert restored.deleted is False
+    assert ClipsRepo(conn).fts_contains(clip_id)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM clip_meta_ts WHERE content_hash = ?",
+        (clip.content_hash,),
+    ).fetchone()[0] == 0
+    assert queue.state_of(clip_id) == "done"
+    assert conn.in_transaction is False
+
+
+def test_h7_remote_delete_reenqueue_requires_a_real_state_transition(api, conn):
+    _, created = api.create_clip({"content": "idempotent remote deletion"})
+    clip_id = created["clip"]["id"]
+    clip = ClipsRepo(conn).get(clip_id)
+    queue = BackupQueueRepo(conn)
+    queue.mark_done(clip_id, "2026-06-13T10:00:00Z")
+
+    def apply(value: bool, ts: str) -> None:
+        sync_engine._apply_clip_meta(
+            conn,
+            {
+                "content_hash": clip.content_hash,
+                "patch": {"deleted": value},
+                "ts": ts,
+            },
+        )
+
+    # A newer same-value update advances the field clock without waking backup.
+    apply(False, "2026-06-13T10:10:00Z")
+    assert queue.state_of(clip_id) == "done"
+    assert sync_engine._get_meta_ts(
+        conn, clip.content_hash, "deleted"
+    ) == "2026-06-13T10:10:00Z"
+
+    # At an exact tie, delete=True wins and the real state transition is backed up.
+    apply(True, "2026-06-13T10:10:00Z")
+    assert ClipsRepo(conn).get(clip_id).deleted is True
+    assert not ClipsRepo(conn).fts_contains(clip_id)
+    assert queue.state_of(clip_id) == "pending"
+
+    queue.mark_done(clip_id, "2026-06-13T10:11:00Z")
+    apply(True, "2026-06-13T10:20:00Z")
+    assert queue.state_of(clip_id) == "done"
+    assert sync_engine._get_meta_ts(
+        conn, clip.content_hash, "deleted"
+    ) == "2026-06-13T10:20:00Z"
+
+    # An exact-tie undelete loses to the existing delete.
+    apply(False, "2026-06-13T10:20:00Z")
+    assert ClipsRepo(conn).get(clip_id).deleted is True
+    assert queue.state_of(clip_id) == "done"
+
+    apply(False, "2026-06-13T10:30:00Z")
+    assert ClipsRepo(conn).get(clip_id).deleted is False
+    assert ClipsRepo(conn).fts_contains(clip_id)
+    assert queue.state_of(clip_id) == "pending"
+
+    queue.mark_done(clip_id, "2026-06-13T10:31:00Z")
+    apply(False, "2026-06-13T10:40:00Z")
+    assert queue.state_of(clip_id) == "done"
+    assert sync_engine._get_meta_ts(
+        conn, clip.content_hash, "deleted"
+    ) == "2026-06-13T10:40:00Z"
+
+
+def test_h7_local_same_second_pin_true_then_false_gets_monotonic_ts(
+    api, conn, monkeypatch
+):
+    _, created = api.create_clip({"content": "same second pin clock"})
+    clip_id = created["clip"]["id"]
+    clip = ClipsRepo(conn).get(clip_id)
+    fixed = "2026-06-13T10:20:00Z"
+    monkeypatch.setattr(api_handlers, "_now_iso", lambda: fixed)
+
+    assert api.patch_clip(clip_id, {"pinned": True})[0] == 200
+    assert api.patch_clip(clip_id, {"pinned": False})[0] == 200
+
+    events = [
+        event
+        for event in OutboxRepo(conn).list_since(0)
+        if event["kind"] == "clip_meta"
+        and event["payload"]["content_hash"] == clip.content_hash
+    ]
+    assert [event["payload"]["ts"] for event in events] == [
+        fixed,
+        "2026-06-13T10:20:01Z",
+    ]
+    assert [event["created_at"] for event in events] == [fixed, fixed]
+    assert ClipsRepo(conn).get(clip_id).pinned is False
+    assert sync_engine._get_meta_ts(
+        conn, clip.content_hash, "pinned"
+    ) == "2026-06-13T10:20:01Z"
+
+
+def test_h7_local_same_second_delete_then_restore_gets_monotonic_ts(
+    api, conn, monkeypatch
+):
+    _, created = api.create_clip({"content": "same second deletion clock"})
+    clip_id = created["clip"]["id"]
+    clip = ClipsRepo(conn).get(clip_id)
+    fixed = "2026-06-13T10:20:00Z"
+    monkeypatch.setattr(api_handlers, "_now_iso", lambda: fixed)
+
+    assert api.patch_clip(clip_id, {"deleted": True})[0] == 200
+    assert api.patch_clip(clip_id, {"deleted": False})[0] == 200
+
+    events = [
+        event
+        for event in OutboxRepo(conn).list_since(0)
+        if event["kind"] == "clip_meta"
+        and event["payload"]["content_hash"] == clip.content_hash
+    ]
+    assert [event["payload"]["ts"] for event in events] == [
+        fixed,
+        "2026-06-13T10:20:01Z",
+    ]
+    assert [event["created_at"] for event in events] == [fixed, fixed]
+    assert ClipsRepo(conn).get(clip_id).deleted is False
+    assert ClipsRepo(conn).fts_contains(clip_id)
+    assert sync_engine._get_meta_ts(
+        conn, clip.content_hash, "deleted"
+    ) == "2026-06-13T10:20:01Z"
+
+
+def test_h7_local_clock_rollback_advances_from_persisted_field_ts(
+    api, conn, monkeypatch
+):
+    _, created = api.create_clip({"content": "wall clock rollback"})
+    clip_id = created["clip"]["id"]
+    clip = ClipsRepo(conn).get(clip_id)
+    candidates = iter(
+        ("2026-06-13T10:20:00Z", "2026-06-13T09:00:00Z")
+    )
+    monkeypatch.setattr(api_handlers, "_now_iso", lambda: next(candidates))
+
+    assert api.patch_clip(clip_id, {"pinned": True})[0] == 200
+    assert api.patch_clip(clip_id, {"pinned": False})[0] == 200
+
+    events = [
+        event
+        for event in OutboxRepo(conn).list_since(0)
+        if event["kind"] == "clip_meta"
+        and event["payload"]["content_hash"] == clip.content_hash
+    ]
+    assert [event["payload"]["ts"] for event in events] == [
+        "2026-06-13T10:20:00Z",
+        "2026-06-13T10:20:01Z",
+    ]
+    assert [event["created_at"] for event in events] == [
+        "2026-06-13T10:20:00Z",
+        "2026-06-13T09:00:00Z",
+    ]
+
+
+def test_h7_metadata_clock_ceiling_saturates_without_freezing_local_actions(
+    api, conn, monkeypatch
+):
+    token = _pair(api)
+    _, created = api.create_clip({"content": "metadata ceiling recovery"})
+    clip_id = created["clip"]["id"]
+    clip = ClipsRepo(conn).get(clip_id)
+    ceiling = "9999-12-31T23:59:59Z"
+    gap_event = {
+        "origin_device": PEER,
+        "seq": 2,
+        "kind": "clip_meta",
+        "ts": "2026-06-13T10:19:00Z",
+        "data": {
+            "content_hash": clip.content_hash,
+            "patch": {"pinned": True, "deleted": True},
+            "ts": ceiling,
+        },
+    }
+    push_status, pushed = api.sync_push(token, {"events": [gap_event]})
+    assert push_status == 200 and pushed["acked_upto"] == 0
+    monkeypatch.setattr(
+        api_handlers, "_now_iso", lambda: "2026-06-13T10:20:00Z"
+    )
+
+    assert api.patch_clip(
+        clip_id, {"pinned": False, "deleted": False}
+    )[0] == 200
+
+    current = ClipsRepo(conn).get(clip_id)
+    assert current.pinned is False
+    assert current.deleted is False
+    assert ClipsRepo(conn).fts_contains(clip_id)
+    assert sync_engine._get_meta_ts(
+        conn, clip.content_hash, "deleted"
+    ) == f"{ceiling}#local"
+    event = [
+        candidate
+        for candidate in OutboxRepo(conn).list_since(0)
+        if candidate["kind"] == "clip_meta"
+    ][-1]
+    assert event["payload"]["ts"] == ceiling
+
+    # A gap event can be applied before its cursor advances and later replayed.
+    # The old maximum timestamp must not undo the later local Owner action.
+    BackupQueueRepo(conn).mark_done(clip_id, "2026-06-13T10:21:00Z")
+    replay_status, replayed = api.sync_push(token, {"events": [gap_event]})
+    assert replay_status == 200 and replayed["acked_upto"] == 0
+
+    received = ClipsRepo(conn).get(clip_id)
+    assert received.pinned is False
+    assert received.deleted is False
+    assert ClipsRepo(conn).fts_contains(clip_id)
+    assert BackupQueueRepo(conn).state_of(clip_id) == "done"
+
+
+def test_h7_local_multi_field_patch_advances_past_highest_field_clock(
+    api, conn, monkeypatch
+):
+    _, created = api.create_clip({"content": "multi field logical clock"})
+    clip_id = created["clip"]["id"]
+    clip = ClipsRepo(conn).get(clip_id)
+    candidates = iter(
+        (
+            "2026-06-13T10:20:00Z",
+            "2026-06-13T10:30:00Z",
+            "2026-06-13T10:10:00Z",
+        )
+    )
+    monkeypatch.setattr(api_handlers, "_now_iso", lambda: next(candidates))
+
+    assert api.patch_clip(clip_id, {"pinned": True})[0] == 200
+    assert api.patch_clip(clip_id, {"favorite": True})[0] == 200
+    assert api.patch_clip(
+        clip_id, {"pinned": False, "favorite": False}
+    )[0] == 200
+
+    events = [
+        event
+        for event in OutboxRepo(conn).list_since(0)
+        if event["kind"] == "clip_meta"
+        and event["payload"]["content_hash"] == clip.content_hash
+    ]
+    final = events[-1]
+    assert final["payload"]["ts"] == "2026-06-13T10:30:01Z"
+    assert final["created_at"] == "2026-06-13T10:10:00Z"
+    assert final["payload"]["patch"] == {"pinned": False, "favorite": False}
+    rows = conn.execute(
+        "SELECT field, ts FROM clip_meta_ts "
+        "WHERE content_hash = ? AND field IN ('pinned', 'favorite')",
+        (clip.content_hash,),
+    ).fetchall()
+    assert {row["field"]: row["ts"] for row in rows} == {
+        "pinned": "2026-06-13T10:30:01Z",
+        "favorite": "2026-06-13T10:30:01Z",
+    }
+
+
+def test_h7_local_logical_clock_observes_uncommitted_outer_uow(api, conn):
+    _, created = api.create_clip({"content": "outer transaction logical clock"})
+    clip = ClipsRepo(conn).get(created["clip"]["id"])
+    candidate = "2026-06-13T10:20:00Z"
+
+    with unit_of_work(conn):
+        sync_engine.emit_clip_meta(
+            conn,
+            clip.content_hash,
+            {"pinned": True},
+            candidate,
+            candidate,
+            commit=False,
+        )
+        sync_engine.emit_clip_meta(
+            conn,
+            clip.content_hash,
+            {"pinned": False},
+            candidate,
+            candidate,
+            commit=False,
+        )
+
+    events = [
+        event
+        for event in OutboxRepo(conn).list_since(0)
+        if event["kind"] == "clip_meta"
+        and event["payload"]["content_hash"] == clip.content_hash
+    ]
+    assert [event["payload"]["ts"] for event in events] == [
+        candidate,
+        "2026-06-13T10:20:01Z",
+    ]
+    assert sync_engine._get_meta_ts(
+        conn, clip.content_hash, "pinned"
+    ) == "2026-06-13T10:20:01Z"
 
 
 def test_h7_legacy_public_row_rechecks_current_secret_guard_at_sync_boundaries(

@@ -77,6 +77,22 @@ interface ClipDao {
 
     @Query("UPDATE clips SET favorite = :favorite WHERE contentHash = :hash")
     fun setFavoriteByHash(hash: String, favorite: Boolean)
+
+    /** Apply a remote metadata patch as one SQLite statement. Nullable values
+     * mean "field absent", which is distinct from an explicit false value. */
+    @Query(
+        """UPDATE clips SET
+              pinned = CASE WHEN :pinned IS NULL THEN pinned ELSE :pinned END,
+              favorite = CASE WHEN :favorite IS NULL THEN favorite ELSE :favorite END,
+              deleted = CASE WHEN :deleted IS NULL THEN deleted ELSE :deleted END
+           WHERE contentHash = :hash""",
+    )
+    fun applyMetaPatch(
+        hash: String,
+        pinned: Boolean?,
+        favorite: Boolean?,
+        deleted: Boolean?,
+    ): Int
 }
 
 @Dao

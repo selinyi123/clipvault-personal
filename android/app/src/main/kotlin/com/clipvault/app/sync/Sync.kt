@@ -94,6 +94,32 @@ internal fun readUtf8BodyBounded(input: InputStream, maxBytes: Int = MAX_SYNC_RE
     return out.toString(Charsets.UTF_8.name())
 }
 
+/** A nullable value means the recognized field was absent. Explicit false is
+ * retained so remote metadata can clear flags (including deleted). */
+internal data class ClipMetaPatch(
+    val pinned: Boolean?,
+    val favorite: Boolean?,
+    val deleted: Boolean?,
+) {
+    val isEmpty: Boolean
+        get() = pinned == null && favorite == null && deleted == null
+}
+
+/** Parse every recognized field before SyncApply performs a database write.
+ * Unknown fields are ignored for forward compatibility, while JSON null and
+ * non-Boolean values for known fields are rejected without coercion. */
+internal fun parseClipMetaPatch(patch: JSONObject): ClipMetaPatch = ClipMetaPatch(
+    pinned = patch.strictOptionalBoolean("pinned"),
+    favorite = patch.strictOptionalBoolean("favorite"),
+    deleted = patch.strictOptionalBoolean("deleted"),
+)
+
+private fun JSONObject.strictOptionalBoolean(name: String): Boolean? {
+    if (!has(name)) return null
+    return get(name) as? Boolean
+        ?: throw org.json.JSONException("$name must be a Boolean")
+}
+
 /** Keystore-backed bearer-token storage.
  *
  * The sync bearer token authorizes pull/push access to public ClipVault data, so
@@ -397,11 +423,15 @@ object SyncApply {
 
     private fun applyClipMeta(db: AppDatabase, d: JSONObject) {
         val hash = d.getString("content_hash")
-        val clip = db.clips().byHash(hash) ?: return
         val patch = d.getJSONObject("patch")
-        if (patch.has("pinned")) db.clips().setPinnedByHash(hash, patch.getBoolean("pinned"))
-        if (patch.has("favorite")) db.clips().setFavoriteByHash(hash, patch.getBoolean("favorite"))
-        if (patch.optBoolean("deleted", false)) db.clips().softDelete(clip.id)
+        val parsed = parseClipMetaPatch(patch)
+        if (parsed.isEmpty) return
+        db.clips().applyMetaPatch(
+            hash = hash,
+            pinned = parsed.pinned,
+            favorite = parsed.favorite,
+            deleted = parsed.deleted,
+        )
     }
 
     private fun applyMemoryUpsert(db: AppDatabase, d: JSONObject) {

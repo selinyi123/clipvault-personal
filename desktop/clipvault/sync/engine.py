@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from clipvault.core import normalize, secret_guard
 from clipvault.core.models import CONTENT_TYPES, MEMORY_KINDS, Clip
@@ -40,6 +40,8 @@ _MEMORY_UPSERT_PAYLOAD_FIELDS = frozenset(
     ("kind", "text", "label", "pinned", "use_count", "source")
 )
 _MEMORY_DELETE_PAYLOAD_FIELDS = frozenset(("kind", "text", "ts"))
+_MAX_META_TIMESTAMP = "9999-12-31T23:59:59Z"
+_MAX_META_LOCAL_FENCE = f"{_MAX_META_TIMESTAMP}#local"
 
 SYNC_PULL_EVENT_LIMIT = 100
 # SQLite rows are decoded before wire budgeting. Fetch a small internal page so
@@ -329,12 +331,17 @@ def _emit_clip_meta_uncommitted(
     if clip_requires_local_quarantine(clip):
         log.error("secret clip metadata blocked at sync outbox boundary")
         return None
-    for field in ("pinned", "favorite", "deleted"):
-        if field in patch:
-            _set_meta_ts(conn, content_hash, field, ts, commit=False)
+    fields = tuple(
+        field for field in ("pinned", "favorite", "deleted") if field in patch
+    )
+    effective_ts, stored_ts = _next_local_meta_ts(
+        conn, content_hash, fields, ts
+    )
+    for field in fields:
+        _set_meta_ts(conn, content_hash, field, stored_ts, commit=False)
     return OutboxRepo(conn).append(
         "clip_meta",
-        {"content_hash": content_hash, "patch": patch, "ts": ts},
+        {"content_hash": content_hash, "patch": patch, "ts": effective_ts},
         when,
         commit=False,
     )
@@ -384,6 +391,44 @@ def _get_meta_ts(conn, content_hash: str, field: str) -> str:
         (content_hash, field),
     ).fetchone()
     return row[0] if row else ""
+
+
+def _next_local_meta_ts(
+    conn,
+    content_hash: str,
+    fields: tuple[str, ...],
+    candidate_ts: str,
+) -> tuple[str, str]:
+    """Return wire and persisted logical timestamps for a local patch.
+
+    Wall-clock timestamps can repeat within one second or move backwards.  A
+    local mutation must nevertheless sort after every previously recorded
+    value for the fields it changes, otherwise a peer's per-field LWW apply can
+    discard the newer user action. One timestamp is shared by a multi-field
+    patch. Wire and persisted values are identical except at the fixed-format
+    ceiling, where the persisted local fence remains Desktop-internal.
+    """
+
+    max_ts = max(
+        (_get_meta_ts(conn, content_hash, field) for field in fields),
+        default="",
+    )
+    if not max_ts or candidate_ts > max_ts:
+        return candidate_ts, candidate_ts
+    if max_ts.startswith(_MAX_META_TIMESTAMP):
+        # The fixed-width v1 wire format has no representable successor.  Wire
+        # time saturates, while the local-only suffix is a persistent Owner
+        # fence: a replayed plain maximum timestamp sorts before it and cannot
+        # undo a later local action. Android consumes our outbox in seq order
+        # and never reads this Desktop-internal clock value.
+        return _MAX_META_TIMESTAMP, _MAX_META_LOCAL_FENCE
+    parsed = datetime.strptime(max_ts, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc
+    )
+    advanced = (parsed + timedelta(seconds=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    return advanced, advanced
 
 
 def _set_meta_ts(
@@ -581,36 +626,43 @@ def _apply_clip_meta(conn, data: dict) -> None:
     content_hash = data["content_hash"]
     ts = data["ts"]
     patch = data["patch"]
-    clips = ClipsRepo(conn)
-    row = clips.get_by_hash(content_hash)
-    if row is None:
-        return
-    if clip_requires_local_quarantine(row):
-        # A peer must never have learned this hash through a conforming
-        # implementation.  Keep the quarantined row local and avoid recording
-        # metadata timestamps or downstream intents for the untrusted event.
-        log.error("remote clip metadata blocked for quarantined local clip")
-        return
-    # Per-field LWW (v1.8): each field's newest ts wins independently, so a newer
-    # change to one field is never masked by an older change to another. On an
-    # exact ts tie a delete wins (SYNC-2 delete-wins semantics).
-    deleted_changed = False
-    for field in ("pinned", "favorite", "deleted"):
-        if field not in patch:
-            continue
-        local_ts = _get_meta_ts(conn, content_hash, field)
-        is_delete = field == "deleted" and bool(patch[field])
-        if ts < local_ts or (ts == local_ts and not is_delete):
-            continue  # stale for this field
-        clips.set_flag(row.id, field, bool(patch[field]))
-        _set_meta_ts(conn, content_hash, field, ts)
-        if field == "deleted":
-            deleted_changed = True
-    # Re-back-up only when the deletion state changed (e.g. a peer's deletion) so
-    # restore.py doesn't resurrect it (GHB-1.1). Cosmetic flags are not mirrored.
-    # Secrets are never backed up, so skip them.
-    if deleted_changed and not row.is_secret:
-        BackupQueueRepo(conn).reenqueue(row.id, ts)
+    with unit_of_work(conn):
+        # Read only after BEGIN IMMEDIATE (or the caller's savepoint) so the
+        # state comparison, LWW clocks, FTS effects, and backup intent share one
+        # writer snapshot and either all commit or all roll back.
+        clips = ClipsRepo(conn)
+        row = clips.get_by_hash(content_hash)
+        if row is None:
+            return
+        if clip_requires_local_quarantine(row):
+            # A peer must never have learned this hash through a conforming
+            # implementation.  Keep the quarantined row local and avoid
+            # recording metadata timestamps or downstream intents.
+            log.error("remote clip metadata blocked for quarantined local clip")
+            return
+
+        # Per-field LWW (v1.8): each field's newest ts wins independently, so a
+        # newer change to one field is never masked by an older change to
+        # another. On an exact ts tie a delete wins (SYNC-2 delete-wins).
+        deleted_changed = False
+        for field in ("pinned", "favorite", "deleted"):
+            if field not in patch:
+                continue
+            local_ts = _get_meta_ts(conn, content_hash, field)
+            value = bool(patch[field])
+            is_delete = field == "deleted" and value
+            if ts < local_ts or (ts == local_ts and not is_delete):
+                continue  # stale for this field
+            clips.set_flag(row.id, field, value, commit=False)
+            _set_meta_ts(conn, content_hash, field, ts, commit=False)
+            if field == "deleted" and row.deleted != value:
+                deleted_changed = True
+
+        # Re-back-up only on a real deletion-state transition. A newer replay
+        # of the same value still advances its LWW clock but must not wake a
+        # completed backup row again.
+        if deleted_changed and not row.is_secret:
+            BackupQueueRepo(conn).reenqueue(row.id, ts, commit=False)
 
 
 # --- pull side ---
