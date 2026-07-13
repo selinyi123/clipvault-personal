@@ -159,7 +159,9 @@ class ClipVaultService:
                 return False
             if not clip.deleted:
                 self.obsidian_queue.enqueue(clip.id, now, commit=False)
-                BackupQueueRepo(self.conn).enqueue(clip.id, now, commit=False)
+                # A legacy forced queue row may already be dropped_secret.
+                # Explicit Owner release must reactivate that durable intent.
+                BackupQueueRepo(self.conn).reenqueue(clip.id, now, commit=False)
                 # Explicit release must re-enter the public sync pipeline.
                 engine.emit_clip_new(self.conn, clip, now, commit=False)
         log.info("released id=%s (was quarantined)", clip.id)

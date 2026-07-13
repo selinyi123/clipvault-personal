@@ -30,12 +30,13 @@ class BackupQueueRepo:
         return cur.rowcount > 0
 
     def reenqueue(self, clip_id: str, when: str, *, commit: bool = True) -> None:
-        """Re-activate a clip for backup after its metadata changed (pin/favorite/
-        delete). Unlike enqueue(), this resets an already-'done' row back to
-        'pending' so the worker re-serializes the current state — otherwise a
-        deletion made after the first backup is never reflected in the JSONL and
-        the clip resurrects on restore (GHB-1). Gate B still applies: secrets must
-        not be backed up, so callers skip secret clips and this re-checks."""
+        """Re-activate after a deletion transition or explicit Owner release.
+
+        Unlike enqueue(), this resets an already terminal row to ``pending`` so
+        the worker serializes the new recovery-significant state. Cosmetic pin/
+        favorite changes deliberately do not call this method (GHB-1.1). Gate B
+        still applies: persisted secret clips remain ineligible.
+        """
         secret = self.conn.execute(
             "SELECT is_secret FROM clips WHERE id = ?", (clip_id,)
         ).fetchone()
@@ -62,19 +63,73 @@ class BackupQueueRepo:
         ).fetchall()
         return [r[0] for r in rows]
 
-    def mark_done(self, clip_id: str, when: str) -> None:
-        self.conn.execute(
-            "UPDATE backup_queue SET state='done', done_at=? WHERE clip_id=?",
+    def mark_done(
+        self, clip_id: str, when: str, *, commit: bool = True
+    ) -> bool:
+        """Acknowledge one pending backup row.
+
+        Returning whether a row actually transitioned lets callers distinguish
+        a durable acknowledgement from a stale/repeated claim.  The pending
+        predicate prevents a late worker from overwriting a newer terminal
+        state.  ``commit=False`` allows the queue acknowledgement and related
+        clip metadata to share one application-level transaction.
+        """
+        cur = self.conn.execute(
+            "UPDATE backup_queue SET state='done', done_at=? "
+            "WHERE clip_id=? AND state='pending'",
             (when, clip_id),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
+        return cur.rowcount > 0
 
-    def mark_dropped(self, clip_id: str, reason: str) -> None:
-        self.conn.execute(
-            "UPDATE backup_queue SET state='dropped_secret', last_error=? WHERE clip_id=?",
+    def mark_dropped(
+        self,
+        clip_id: str,
+        reason: str,
+        *,
+        commit: bool = True,
+    ) -> bool:
+        """Drop only the still-pending intent observed by the caller."""
+
+        cur = self.conn.execute(
+            "UPDATE backup_queue SET state='dropped_secret', last_error=? "
+            "WHERE clip_id=? AND state='pending'",
             (reason, clip_id),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
+        return cur.rowcount > 0
+
+    def mark_recovered_secret(
+        self,
+        clip_id: str,
+        reason: str,
+        *,
+        commit: bool = True,
+    ) -> bool:
+        """Invalidate a prior local durable ack after unpublished scrub."""
+
+        cur = self.conn.execute(
+            "UPDATE backup_queue SET state='dropped_secret', done_at=NULL, "
+            "last_error=? WHERE clip_id=? AND state IN ('pending', 'done')",
+            (reason, clip_id),
+        )
+        if commit:
+            self.conn.commit()
+        return cur.rowcount > 0
+
+    def remove_orphan(self, clip_id: str, *, commit: bool = True) -> bool:
+        """Delete a queue row only while its authoritative clip is absent."""
+
+        cur = self.conn.execute(
+            "DELETE FROM backup_queue WHERE clip_id=? "
+            "AND NOT EXISTS (SELECT 1 FROM clips WHERE id=?)",
+            (clip_id, clip_id),
+        )
+        if commit:
+            self.conn.commit()
+        return cur.rowcount > 0
 
     def record_attempt(self, clip_id: str, error: str) -> None:
         self.conn.execute(

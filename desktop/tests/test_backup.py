@@ -325,6 +325,26 @@ def test_c6_delete_reflected_in_backup_restore(conn, work_repo, tmp_path):
     assert restored.deleted is True                    # no resurrection
 
 
+def test_c6_owner_release_audit_survives_backup_restore(
+    conn,
+    work_repo,
+    tmp_path,
+):
+    repo, _ = work_repo
+    api = _api(conn, tmp_path)
+    cid = api.create_clip({"content": FAKE_AWS_KEY})[1]["clip"]["id"]
+    assert api.release_clip(cid)[0] == 200
+    released = ClipsRepo(conn).get(cid)
+    assert released.released is True and released.released_at is not None
+
+    assert BackupWorker(conn, str(repo), push_enabled=False).run_once()["written"] == 1
+    restored = _restore(repo, tmp_path / "released.db").get(cid)
+
+    assert restored.is_secret is False
+    assert restored.released is True
+    assert restored.released_at == released.released_at
+
+
 def test_c6_pin_only_patch_does_not_rebackup(conn, work_repo, tmp_path):
     # GHB-1.1 is deliberately narrow: only deletion is re-backed-up. Cosmetic
     # flags (pinned/favorite) are NOT mirrored — backup stays a recovery snapshot.

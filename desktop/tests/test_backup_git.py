@@ -54,8 +54,22 @@ def _configured_repo(tmp_path: Path) -> Path:
 def _write(repo: Path, relpath: str, content: str = "{}\n") -> Path:
     path = repo / Path(relpath)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    path.write_text(content, encoding="utf-8", newline="\n")
     return path
+
+
+def _allow_backup_line(_relpath: str, _line: str) -> bool:
+    return True
+
+
+def _authorized_push(
+    repo: Path,
+    remote: str = "origin",
+    *,
+    validator=_allow_backup_line,
+) -> git_repo.PushAuthorization:
+    candidate = git_repo.prepare_push(repo, remote)
+    return git_repo.authorize_push(candidate, validator=validator)
 
 
 def _install_hook(
@@ -127,12 +141,12 @@ def _timeout(*args, **kwargs):
     raise subprocess.TimeoutExpired(kwargs.get("args") or args[0], kwargs.get("timeout", 60))
 
 
-def test_push_timeout_raises_gitpush_error_not_timeout(monkeypatch):
-    # A hung push must become a GitPushError so BackupWorker backs off instead of
-    # the worker thread dying on an uncaught subprocess.TimeoutExpired.
+def test_push_candidate_timeout_raises_gitpush_error_not_timeout(monkeypatch):
+    # A hung remote inspection must become a GitPushError so BackupWorker backs
+    # off instead of dying on an uncaught subprocess.TimeoutExpired.
     monkeypatch.setattr(subprocess, "run", _timeout)
     with pytest.raises(git_repo.GitPushError):
-        git_repo.push("/tmp/whatever")
+        git_repo.prepare_push("/tmp/whatever")
 
 
 def test_add_timeout_raises_git_error(monkeypatch):
@@ -253,69 +267,49 @@ def test_add_history_probe_failure_fails_closed_before_add(monkeypatch, returnco
     assert SENSITIVE_DIAGNOSTIC not in str(caught.value)
 
 
-@pytest.mark.parametrize("returncode", [2, 124])
-def test_push_history_probe_failure_is_safe_push_error(monkeypatch, returncode):
-    calls = []
+def test_push_requires_a_sealed_authorization():
+    with pytest.raises(git_repo.GitPushError):
+        git_repo.push(object())
 
-    def fake_run(
-        repo, args, timeout=git_repo._TIMEOUT, *, env=None, input_bytes=None,
-    ):
-        calls.append(args)
-        if args == ["symbolic-ref", "--quiet", "HEAD"]:
-            return subprocess.CompletedProcess(["git", *args], 0, BRANCH_REF + "\n", "")
-        if args == ["rev-parse", "--verify", "-q", f"{BRANCH_REF}^{{commit}}"]:
-            return subprocess.CompletedProcess(
-                ["git", *args], returncode, "", SENSITIVE_DIAGNOSTIC,
-            )
-        raise AssertionError(f"history probe failure must stop before push: {args}")
 
-    monkeypatch.setattr(git_repo, "_run", fake_run)
+@pytest.mark.parametrize(
+    ("returncode", "stdout"),
+    [
+        (1, ""),
+        (0, f"{'a' * 40}\t{BRANCH_REF}\n{'b' * 40}\t{BRANCH_REF}\n"),
+        (0, f"{'a' * 40}\trefs/heads/other\n"),
+        (0, f"not-an-object\t{BRANCH_REF}\n"),
+    ],
+)
+def test_remote_tip_rejects_errors_ambiguity_and_wrong_ref(
+    monkeypatch,
+    returncode,
+    stdout,
+):
+    monkeypatch.setattr(
+        git_repo,
+        "_run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["git"], returncode, stdout, SENSITIVE_DIAGNOSTIC,
+        ),
+    )
 
-    with pytest.raises(git_repo.GitPushError) as caught:
-        git_repo.push("/tmp/whatever")
+    with pytest.raises(git_repo.GitError) as caught:
+        git_repo._remote_branch_tip("repo", "private-target", BRANCH_REF)
 
-    assert calls == [
-        ["symbolic-ref", "--quiet", "HEAD"],
-        ["rev-parse", "--verify", "-q", f"{BRANCH_REF}^{{commit}}"],
-    ]
-    assert caught.value.returncode == returncode
     assert SENSITIVE_DIAGNOSTIC not in str(caught.value)
 
 
-def test_push_uses_option_terminator_before_remote(monkeypatch):
-    calls = []
-    option_like_remote = "--upload-pack=PRIVATE-AKIAIOSFODNN7EXAMPLE"
-    verified_head = "a" * 40
+def test_remote_tip_allows_an_exactly_absent_branch(monkeypatch):
+    monkeypatch.setattr(
+        git_repo,
+        "_run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["git"], 0, "", "",
+        ),
+    )
 
-    def fake_run(
-        repo, args, timeout=git_repo._TIMEOUT, *, env=None, input_bytes=None,
-    ):
-        calls.append(args)
-        if args == ["symbolic-ref", "--quiet", "HEAD"]:
-            return subprocess.CompletedProcess(["git", *args], 0, BRANCH_REF + "\n", "")
-        if args == ["rev-parse", "--verify", "-q", f"{BRANCH_REF}^{{commit}}"]:
-            return subprocess.CompletedProcess(
-                ["git", *args], 0, verified_head + "\n", "",
-            )
-        if args and args[0] == "log":
-            return subprocess.CompletedProcess(["git", *args], 0, "", "")
-        if args == ["remote"]:
-            return subprocess.CompletedProcess(["git", *args], 0, "", "")
-        if args and args[0] == "push":
-            return subprocess.CompletedProcess(["git", *args], 0, "", "")
-        raise AssertionError(f"unexpected git operation: {args}")
-
-    monkeypatch.setattr(git_repo, "_run", fake_run)
-
-    git_repo.push("/tmp/whatever", option_like_remote)
-
-    push_args = calls[-1]
-    separator = push_args.index("--")
-    assert push_args[0] == "push"
-    assert push_args[separator + 1:] == [
-        option_like_remote,
-        f"{verified_head}:{BRANCH_REF}",
-    ]
+    assert git_repo._remote_branch_tip("repo", "private-target", BRANCH_REF) is None
 
 
 @pytest.mark.parametrize(
@@ -406,7 +400,11 @@ def test_add_commit_updates_snapshotted_branch_during_concurrent_checkout(
     _write(repo, ALLOWED_PATH, '{"content":"base"}\n')
     base = git_repo.add_commit(repo, "base", paths=[ALLOWED_PATH])
     _git(repo, "branch", "peer")
-    _write(repo, ALLOWED_PATH, '{"content":"next"}\n')
+    _write(
+        repo,
+        ALLOWED_PATH,
+        '{"content":"base"}\n{"content":"next"}\n',
+    )
     peer_index_before = _git_bytes(repo, "show", f":{ALLOWED_PATH}").stdout
     peer_status_before = _git(repo, "status", "--porcelain", "--", ALLOWED_PATH).stdout
     original_run = git_repo._run
@@ -587,130 +585,289 @@ def test_noop_commit_synchronizes_target_path_in_real_index(tmp_path):
     assert _git(repo, "status", "--porcelain", "--", ALLOWED_PATH).stdout == ""
 
 
-def test_push_rejects_non_backup_file_anywhere_in_history(tmp_path):
+def test_managed_preflight_preserves_complete_uncommitted_append(tmp_path):
     repo = _configured_repo(tmp_path)
-    remote = tmp_path / "remote.git"
+    target = _write(repo, ALLOWED_PATH, '{"id":"first"}\n')
+    git_repo.add_commit(repo, "initial backup", paths=[ALLOWED_PATH])
+    with target.open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write('{"id":"pending"}\n')
+    before = target.read_bytes()
+
+    git_repo.assert_managed_worktree_append_only(repo)
+
+    assert target.read_bytes() == before
+    assert _git_bytes(repo, "show", f":{ALLOWED_PATH}").stdout == b'{"id":"first"}\n'
+
+
+def test_managed_preflight_does_not_overwrite_arbitrary_rewrite(tmp_path):
+    repo = _configured_repo(tmp_path)
+    target = _write(repo, ALLOWED_PATH, '{"id":"durable"}\n')
+    git_repo.add_commit(repo, "initial backup", paths=[ALLOWED_PATH])
+    target.write_text('{"id":"manual-rewrite"}\n', encoding="utf-8", newline="\n")
+    before = target.read_bytes()
+    indexed = _git_bytes(repo, "show", f":{ALLOWED_PATH}").stdout
+
+    with pytest.raises(git_repo.GitWorktreeRecoveryRequired):
+        git_repo.assert_managed_worktree_append_only(repo)
+
+    assert target.read_bytes() == before
+    assert _git_bytes(repo, "show", f":{ALLOWED_PATH}").stdout == indexed
+
+
+def _empty_remote(tmp_path: Path, name: str = "remote.git") -> Path:
+    remote = tmp_path / name
     subprocess.run(
         ["git", "init", "--bare", "-b", "main", str(remote)],
         check=True,
         capture_output=True,
         text=True,
     )
-    _git(repo, "remote", "add", "origin", str(remote))
+    return remote
 
-    # Simulate accidentally selecting an existing unrelated repository.  The
-    # foreign file is deleted again so the current HEAD tree is clean; a check
-    # limited to the latest tree/commit would therefore miss the old secret.
-    foreign = _write(repo, "private-history.txt", SENSITIVE_DIAGNOSTIC)
-    _git(repo, "add", "--", foreign.name)
-    _git(repo, "commit", "-m", "unrelated history")
-    _git(repo, "rm", "--", foreign.name)
-    _git(repo, "commit", "-m", "remove unrelated file")
-    _write(repo, ALLOWED_PATH, '{"content":"public"}\n')
+
+def test_authorized_push_to_empty_remote_validates_every_line(tmp_path):
+    repo = _configured_repo(tmp_path)
+    remote = _empty_remote(tmp_path)
+    _git(repo, "remote", "add", "origin", str(remote))
+    line = '{"content":"public"}'
+    _write(repo, ALLOWED_PATH, line + "\n")
+    committed = git_repo.add_commit(repo, "backup", paths=[ALLOWED_PATH])
+    seen = []
+
+    candidate = git_repo.prepare_push(repo)
+    assert candidate.branch_ref == BRANCH_REF
+    assert candidate.remote_base is None
+    assert candidate.candidate_sha == committed
+    authorization = git_repo.authorize_push(
+        candidate,
+        validator=lambda path, value: not seen.append((path, value)),
+    )
+
+    assert git_repo.push(authorization) is True
+    assert seen == [(ALLOWED_PATH, line)]
+    assert _git(remote, "rev-parse", BRANCH_REF).stdout.strip() == committed
+
+    already_published = git_repo.prepare_push(repo)
+    assert already_published.remote_base == committed
+    noop = git_repo.authorize_push(
+        already_published,
+        validator=lambda _path, _line: True,
+    )
+    assert git_repo.push(noop) is False
+
+
+def test_authorization_validates_only_linear_suffix_after_published_base(tmp_path):
+    repo = _configured_repo(tmp_path)
+    remote = _empty_remote(tmp_path)
+    _git(repo, "remote", "add", "origin", str(remote))
+    first_line = '{"id":"one","content":"public"}'
+    second_line = '{"id":"two","content":"also-public"}'
+    _write(repo, ALLOWED_PATH, first_line + "\n")
+    first = git_repo.add_commit(repo, "first", paths=[ALLOWED_PATH])
+    assert git_repo.push(_authorized_push(repo)) is True
+
+    with (repo / Path(ALLOWED_PATH)).open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write(second_line + "\n")
+    second = git_repo.add_commit(repo, "second", paths=[ALLOWED_PATH])
+    candidate = git_repo.prepare_push(repo)
+    seen = []
+    authorization = git_repo.authorize_push(
+        candidate,
+        validator=lambda path, line: not seen.append((path, line)),
+    )
+
+    assert candidate.remote_base == first
+    assert candidate.candidate_sha == second
+    assert seen == [(ALLOWED_PATH, second_line)]
+    assert git_repo.push(authorization) is True
+    assert _git(remote, "rev-parse", BRANCH_REF).stdout.strip() == second
+
+
+def test_authorization_rejects_manual_secret_line(tmp_path):
+    repo = _configured_repo(tmp_path)
+    remote = _empty_remote(tmp_path)
+    _git(repo, "remote", "add", "origin", str(remote))
+    _write(repo, ALLOWED_PATH, '{"content":"MANUAL-SECRET"}\n')
     _git(repo, "add", "--", ALLOWED_PATH)
-    _git(repo, "commit", "-m", "backup")
-    assert _git(repo, "ls-tree", "-r", "--name-only", "HEAD").stdout.splitlines() == [
-        ALLOWED_PATH
-    ]
+    _git(repo, "commit", "-m", "manual line")
+    candidate = git_repo.prepare_push(repo)
 
     with pytest.raises(git_repo.GitPushError):
-        git_repo.push(repo)
+        git_repo.authorize_push(
+            candidate,
+            validator=lambda _path, line: "SECRET" not in line,
+        )
 
     assert _git(remote, "show-ref", check=False).stdout == ""
 
 
-def test_push_uses_snapshotted_branch_destination_during_concurrent_checkout(
-    tmp_path,
-    monkeypatch,
-):
+def test_prepare_rejects_foreign_path_even_when_it_is_in_published_base(tmp_path):
     repo = _configured_repo(tmp_path)
-    remote = tmp_path / "remote.git"
-    subprocess.run(
-        ["git", "init", "--bare", "-b", "main", str(remote)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    remote = _empty_remote(tmp_path)
     _git(repo, "remote", "add", "origin", str(remote))
+    foreign = _write(repo, "private-history.txt", SENSITIVE_DIAGNOSTIC)
+    _git(repo, "add", "--", foreign.name)
+    _git(repo, "commit", "-m", "foreign published base")
+    published_base = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "push", "origin", f"{published_base}:{BRANCH_REF}")
+    _git(repo, "rm", "--", foreign.name)
     _write(repo, ALLOWED_PATH, '{"content":"public"}\n')
-    committed = git_repo.add_commit(repo, "backup", paths=[ALLOWED_PATH])
-    _git(repo, "branch", "peer")
-    original_run = git_repo._run
-    switched = False
+    _git(repo, "add", "--", ALLOWED_PATH)
+    _git(repo, "commit", "-m", "hide foreign path")
 
-    def switch_after_audit(repo_arg, args, timeout=git_repo._TIMEOUT, **kwargs):
-        nonlocal switched
-        result = original_run(repo_arg, args, timeout, **kwargs)
-        if args and args[0] == "log" and not switched:
-            _git(repo, "checkout", "--quiet", "peer")
-            switched = True
-        return result
+    with pytest.raises(git_repo.GitPushError) as caught:
+        git_repo.prepare_push(repo)
 
-    monkeypatch.setattr(git_repo, "_run", switch_after_audit)
-
-    git_repo.push(repo)
-
-    assert switched
-    assert _git(remote, "rev-parse", "refs/heads/main").stdout.strip() == committed
-    assert _git(remote, "show-ref", "--verify", "refs/heads/peer", check=False).returncode != 0
+    assert SENSITIVE_DIAGNOSTIC not in str(caught.value)
+    assert _git(remote, "rev-parse", BRANCH_REF).stdout.strip() == published_base
 
 
-def test_push_rejects_foreign_path_introduced_only_by_merge_result(tmp_path):
+def test_intermediate_secret_then_delete_is_still_rejected(tmp_path):
     repo = _configured_repo(tmp_path)
-    remote = tmp_path / "remote.git"
-    subprocess.run(
-        ["git", "init", "--bare", "-b", "main", str(remote)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    remote = _empty_remote(tmp_path)
     _git(repo, "remote", "add", "origin", str(remote))
+    secret_line = '{"content":"INTERMEDIATE-SECRET"}'
+    _write(repo, ALLOWED_PATH, secret_line + "\n")
+    _git(repo, "add", "--", ALLOWED_PATH)
+    _git(repo, "commit", "-m", "secret intermediate")
+    _git(repo, "rm", "--", ALLOWED_PATH)
+    _git(repo, "commit", "-m", "hide intermediate")
+    assert _git(repo, "ls-tree", "-r", "--name-only", "HEAD").stdout == ""
+    seen = []
 
+    with pytest.raises(git_repo.GitPushError):
+        git_repo.authorize_push(
+            git_repo.prepare_push(repo),
+            validator=lambda _path, line: not seen.append(line) and "SECRET" not in line,
+        )
+
+    assert seen == [secret_line]
+    assert _git(remote, "show-ref", check=False).stdout == ""
+
+
+def test_authorization_rejects_non_append_rewrite(tmp_path):
+    repo = _configured_repo(tmp_path)
+    remote = _empty_remote(tmp_path)
+    _git(repo, "remote", "add", "origin", str(remote))
+    _write(repo, ALLOWED_PATH, '{"content":"first"}\n')
+    _git(repo, "add", "--", ALLOWED_PATH)
+    _git(repo, "commit", "-m", "first")
+    _write(repo, ALLOWED_PATH, '{"content":"rewritten"}\n')
+    _git(repo, "add", "--", ALLOWED_PATH)
+    _git(repo, "commit", "-m", "rewrite")
+
+    with pytest.raises(git_repo.GitPushError):
+        git_repo.authorize_push(
+            git_repo.prepare_push(repo),
+            validator=_allow_backup_line,
+        )
+
+
+def test_authorization_rejects_merge_even_when_paths_are_backup_jsonl(tmp_path):
+    repo = _configured_repo(tmp_path)
+    remote = _empty_remote(tmp_path)
+    _git(repo, "remote", "add", "origin", str(remote))
     _write(repo, ALLOWED_PATH, '{"content":"base"}\n')
     git_repo.add_commit(repo, "base", paths=[ALLOWED_PATH])
     _git(repo, "checkout", "-b", "peer")
     peer_path = "clips/2026/06/2026-06-14.jsonl"
     _write(repo, peer_path, '{"content":"peer"}\n')
     _git(repo, "add", "--", peer_path)
-    _git(repo, "commit", "-m", "peer backup")
+    _git(repo, "commit", "-m", "peer")
     _git(repo, "checkout", "main")
     main_path = "clips/2026/06/2026-06-15.jsonl"
     _write(repo, main_path, '{"content":"main"}\n')
-    git_repo.add_commit(repo, "main backup", paths=[main_path])
-
-    _git(repo, "merge", "--no-commit", "--no-ff", "peer")
-    foreign = _write(repo, "merge-only-private.txt", SENSITIVE_DIAGNOSTIC)
-    _git(repo, "add", "--", foreign.name)
-    _git(repo, "commit", "-m", "merge peer")
-    parents = _git(repo, "show", "-s", "--format=%P", "HEAD").stdout.split()
-    assert len(parents) == 2
-    for parent in parents:
-        assert foreign.name not in _git(
-            repo, "ls-tree", "-r", "--name-only", parent
-        ).stdout.splitlines()
-    assert foreign.name in _git(
-        repo, "ls-tree", "-r", "--name-only", "HEAD"
-    ).stdout.splitlines()
+    git_repo.add_commit(repo, "main", paths=[main_path])
+    _git(repo, "merge", "--no-ff", "peer", "-m", "merge")
 
     with pytest.raises(git_repo.GitPushError):
-        git_repo.push(repo)
+        git_repo.authorize_push(
+            git_repo.prepare_push(repo),
+            validator=_allow_backup_line,
+        )
 
-    assert _git(remote, "show-ref", check=False).stdout == ""
 
-
-def test_push_ignores_remote_mirror_and_sends_only_current_branch(tmp_path):
+def test_push_rejects_remote_concurrency_after_authorization(tmp_path):
     repo = _configured_repo(tmp_path)
-    remote = tmp_path / "remote.git"
+    remote = _empty_remote(tmp_path)
+    _git(repo, "remote", "add", "origin", str(remote))
+    _write(repo, ALLOWED_PATH, '{"content":"base"}\n')
+    git_repo.add_commit(repo, "base", paths=[ALLOWED_PATH])
+    assert git_repo.push(_authorized_push(repo)) is True
+
+    with (repo / Path(ALLOWED_PATH)).open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write('{"content":"candidate"}\n')
+    git_repo.add_commit(repo, "candidate", paths=[ALLOWED_PATH])
+    authorization = _authorized_push(repo)
+
+    peer = tmp_path / "peer"
     subprocess.run(
-        ["git", "init", "--bare", "-b", "main", str(remote)],
+        ["git", "clone", "--branch", "main", str(remote), str(peer)],
         check=True,
         capture_output=True,
         text=True,
     )
+    _git(peer, "config", "user.name", "Peer")
+    _git(peer, "config", "user.email", "peer@example.com")
+    peer_path = "clips/2026/06/2026-06-14.jsonl"
+    _write(peer, peer_path, '{"content":"peer"}\n')
+    _git(peer, "add", "--", peer_path)
+    _git(peer, "commit", "-m", "peer wins race")
+    _git(peer, "push", "origin", "main")
+    remote_tip = _git(remote, "rev-parse", BRANCH_REF).stdout.strip()
+
+    with pytest.raises(git_repo.GitPushError):
+        git_repo.push(authorization)
+
+    assert _git(remote, "rev-parse", BRANCH_REF).stdout.strip() == remote_tip
+
+
+def test_push_rejects_local_branch_movement_after_authorization(tmp_path):
+    repo = _configured_repo(tmp_path)
+    remote = _empty_remote(tmp_path)
+    _git(repo, "remote", "add", "origin", str(remote))
+    _write(repo, ALLOWED_PATH, '{"content":"authorized"}\n')
+    git_repo.add_commit(repo, "authorized", paths=[ALLOWED_PATH])
+    authorization = _authorized_push(repo)
+    with (repo / Path(ALLOWED_PATH)).open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write('{"content":"moved"}\n')
+    git_repo.add_commit(repo, "moved", paths=[ALLOWED_PATH])
+
+    with pytest.raises(git_repo.GitPushError):
+        git_repo.push(authorization)
+
+    assert _git(remote, "show-ref", check=False).stdout == ""
+
+
+def test_push_runs_final_validator_after_remote_preflight(tmp_path):
+    repo = _configured_repo(tmp_path)
+    remote = _empty_remote(tmp_path)
+    _git(repo, "remote", "add", "origin", str(remote))
+    _write(repo, ALLOWED_PATH, '{"content":"authorized"}\n')
+    git_repo.add_commit(repo, "authorized", paths=[ALLOWED_PATH])
+    authorization = _authorized_push(repo)
+    seen = []
+
+    with pytest.raises(git_repo.GitPushError, match="final validation"):
+        git_repo.push(
+            authorization,
+            final_validator=lambda candidate: not seen.append(
+                candidate.candidate_sha
+            ) and False,
+        )
+
+    assert seen == [authorization.candidate.candidate_sha]
+    assert _git(remote, "show-ref", check=False).stdout == ""
+
+
+def test_push_ignores_remote_mirror_and_sends_only_authorized_branch(tmp_path):
+    repo = _configured_repo(tmp_path)
+    remote = _empty_remote(tmp_path)
     _git(repo, "remote", "add", "origin", str(remote))
     _git(repo, "config", "remote.origin.mirror", "true")
     _write(repo, ALLOWED_PATH, '{"content":"main"}\n')
     git_repo.add_commit(repo, "main backup", paths=[ALLOWED_PATH])
+    authorization = _authorized_push(repo)
 
     _git(repo, "checkout", "-b", "private-branch")
     private = _write(repo, "private-branch-secret.txt", SENSITIVE_DIAGNOSTIC)
@@ -719,7 +876,7 @@ def test_push_ignores_remote_mirror_and_sends_only_current_branch(tmp_path):
     _git(repo, "tag", "private-tag")
     _git(repo, "checkout", "main")
 
-    git_repo.push(repo)
+    assert git_repo.push(authorization) is True
 
     refs = _git(remote, "for-each-ref", "--format=%(refname)").stdout.splitlines()
     assert refs == ["refs/heads/main"]
@@ -742,7 +899,7 @@ def test_push_rejects_configured_remote_with_multiple_push_urls(tmp_path):
     git_repo.add_commit(repo, "backup", paths=[ALLOWED_PATH])
 
     with pytest.raises(git_repo.GitPushError):
-        git_repo.push(repo)
+        git_repo.prepare_push(repo)
 
     for remote in remotes:
         assert _git(remote, "show-ref", check=False).stdout == ""
@@ -773,12 +930,13 @@ def test_push_disables_pre_push_hook(tmp_path):
     _git(repo, "remote", "add", "origin", str(remote))
     _write(repo, ALLOWED_PATH)
     git_repo.add_commit(repo, "backup", paths=[ALLOWED_PATH])
+    authorization = _authorized_push(repo)
     marker = repo / "push-hook-ran.txt"
     hooks_dir = repo / "configured-hooks"
     _git(repo, "config", "core.hooksPath", str(hooks_dir))
     _install_hook(repo, "pre-push", marker.name, exit_code=1, hooks_dir=hooks_dir)
 
-    git_repo.push(repo)
+    assert git_repo.push(authorization) is True
 
     assert not marker.exists()
     assert _git(remote, "show-ref", "--verify", "refs/heads/main").returncode == 0
@@ -791,7 +949,7 @@ def test_push_error_does_not_expose_raw_git_stderr(tmp_path):
     missing_remote = tmp_path / SENSITIVE_DIAGNOSTIC
 
     with pytest.raises(git_repo.GitPushError) as caught:
-        git_repo.push(repo, str(missing_remote))
+        git_repo.prepare_push(repo, str(missing_remote))
 
     assert SENSITIVE_DIAGNOSTIC not in str(caught.value)
     assert str(missing_remote) not in str(caught.value)
