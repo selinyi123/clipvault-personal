@@ -77,7 +77,7 @@
 
 ## 当前状态锚点（保持更新）
 
-- 版本：`__version__` = **1.6.0**（2026-06-28，未对外发版；最新已发布二进制 v1.5.10）。schema 版本 = **8**。
+- 版本：`__version__` = **1.6.0**（2026-06-28，未对外发版；最新已发布二进制 v1.5.10）。schema 版本 = **9**。
 - v1.5 gate（Issue #3）：**已关闭**（2026-06-26）。
 - 桌面测试：以当前 `cd desktop; python -m pytest -q` 输出和 GitHub CI 为准；不要把旧的固定测试数量写成发布证据。
 - v1.6 release gate（Issue #36）：自动化 CI/unsigned dry-run 证据持续更新；signed artifacts、Owner/manual QA、最终 GitHub Release 发布前不得关闭。

@@ -12,6 +12,7 @@ from clipvault.config import Config
 from clipvault.runtime import app as runtime_app
 from clipvault.runtime.app import ClipVaultRuntime, RuntimeAdapters, RuntimeStopRequested
 from clipvault.store import db
+from clipvault.store.clips_repo import ClipsRepo
 
 
 def _cfg(tmp_path, *, backup_enabled: bool = False) -> Config:
@@ -89,6 +90,27 @@ def test_runtime_start_stop_join_are_idempotent_and_content_free(tmp_path):
     assert runtime.join(0) == []
     assert all(not row["alive"] for row in runtime.health().values())
     assert all(row["error_class"] is None for row in runtime.health().values())
+
+
+def test_runtime_capture_does_not_repeat_full_search_index_audit(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    conn = db.connect(cfg.db_path)
+    try:
+        db.migrate(conn)
+    finally:
+        conn.close()
+
+    def fail_if_called(_self):
+        raise AssertionError("capture path repeated startup search-index audit")
+
+    monkeypatch.setattr(ClipsRepo, "repair_search_index", fail_if_called)
+    runtime = ClipVaultRuntime(cfg, adapters=_adapters())
+    runtime._obsidian_worker = _FakeObsidianWorker(cfg, interval_s=60)
+
+    outcome = runtime._handle_clipboard_text("runtime capture remains bounded", None)
+
+    assert outcome.status == "new"
+    assert runtime._obsidian_worker.notify_count == 1
 
 
 def test_runtime_terminal_worker_error_requests_coordinated_shutdown(tmp_path, caplog):

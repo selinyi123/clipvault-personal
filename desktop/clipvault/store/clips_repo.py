@@ -2,10 +2,13 @@
 rows with is_secret=1 or deleted=1 never enter clips_fts (GATES G1).
 """
 
+from contextlib import contextmanager
 import json
 import sqlite3
+from typing import Iterator
 
 from clipvault.core.models import Clip
+from clipvault.store.unit_of_work import unit_of_work
 
 _COLUMNS = (
     "id, content, content_hash, content_type, is_secret, secret_level, "
@@ -13,12 +16,41 @@ _COLUMNS = (
     "created_at, last_seen_at, times_seen, pinned, favorite, deleted, "
     "obsidian_path, backed_up_at"
 )
+_COLUMN_NAMES = tuple(_COLUMNS.split(", "))
 
 # The clips_fts trigram tokenizer (migration 0005) indexes 3-char sequences, so
 # it can only match queries of length >= 3. Shorter queries (common for CJK, e.g.
 # 2-char words like "天气") fall back to a LIKE scan, which is fine at personal
 # scale and the only option for secret-view search (secrets are never in FTS).
 _FTS_MIN_LEN = 3
+_FTS_RECENT_PROBE_SIZE = 256
+_FTS_COMMON_MATCH_THRESHOLD = 4_096
+
+
+def _qualified_columns(alias: str) -> str:
+    return ", ".join(f"{alias}.{name} AS {name}" for name in _COLUMN_NAMES)
+
+
+@contextmanager
+def _read_snapshot(conn: sqlite3.Connection) -> Iterator[None]:
+    """Keep multi-statement adaptive searches on one SQLite snapshot."""
+
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN")
+    try:
+        yield
+    except BaseException:
+        if owns_transaction:
+            conn.rollback()
+        raise
+    else:
+        if owns_transaction:
+            try:
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
 
 
 def _fts_match(query: str) -> str:
@@ -63,39 +95,137 @@ class ClipsRepo:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def insert(self, clip: Clip, *, commit: bool = True) -> None:
+    def _index_public_clip(self, clip_id: str, content: str) -> None:
+        """Create or repair the stable map + FTS row for one public clip."""
+
         self.conn.execute(
-            f"INSERT INTO clips ({_COLUMNS}) VALUES "
-            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                clip.id,
-                clip.content,
-                clip.content_hash,
-                clip.content_type,
-                int(clip.is_secret),
-                clip.secret_level,
-                json.dumps(clip.secret_reasons, ensure_ascii=False),
-                int(clip.released),
-                clip.released_at,
-                clip.source_device,
-                clip.source_app,
-                clip.created_at,
-                clip.last_seen_at,
-                clip.times_seen,
-                int(clip.pinned),
-                int(clip.favorite),
-                int(clip.deleted),
-                clip.obsidian_path,
-                clip.backed_up_at,
-            ),
+            "INSERT OR IGNORE INTO clip_search_map(clip_id) VALUES (?)",
+            (clip_id,),
         )
-        if not clip.is_secret and not clip.deleted:
+        row = self.conn.execute(
+            "SELECT search_id FROM clip_search_map WHERE clip_id = ?",
+            (clip_id,),
+        ).fetchone()
+        if row is None:
+            raise sqlite3.IntegrityError("search map row was not created")
+        search_id = int(row[0])
+        # Normal lifecycle calls have at most this one stable rowid.  Replacing
+        # it also repairs an interrupted legacy/manual index entry atomically.
+        self.conn.execute("DELETE FROM clips_fts WHERE rowid = ?", (search_id,))
+        self.conn.execute(
+            "INSERT INTO clips_fts(rowid, id, content) VALUES (?, ?, ?)",
+            (search_id, clip_id, content),
+        )
+
+    def _unindex_clip(self, clip_id: str) -> None:
+        row = self.conn.execute(
+            "SELECT search_id FROM clip_search_map WHERE clip_id = ?",
+            (clip_id,),
+        ).fetchone()
+        if row is None:
+            # Defensive cleanup for a pre-schema-9 drifted database.  This is
+            # intentionally off the normal hot path because id is UNINDEXED.
+            self.conn.execute("DELETE FROM clips_fts WHERE id = ?", (clip_id,))
+            return
+        # Schema 9 owns physical/soft-delete cleanup through the map trigger.
+        # It deletes by stable rowid; full startup repair owns any legacy
+        # orphan/duplicate cleanup so normal deletes never scan UNINDEXED id.
+        self.conn.execute("DELETE FROM clip_search_map WHERE clip_id = ?", (clip_id,))
+
+    def _search_index_drifted(self) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM ("
+            "SELECT c.id FROM clips AS c "
+            "LEFT JOIN clip_search_map AS m ON m.clip_id=c.id "
+            "LEFT JOIN clips_fts ON clips_fts.rowid=m.search_id "
+            "AND clips_fts.id=m.clip_id "
+            "WHERE c.is_secret=0 AND c.deleted=0 "
+            "AND (m.clip_id IS NULL OR clips_fts.rowid IS NULL "
+            "OR clips_fts.content IS NOT c.content) "
+            "UNION ALL "
+            "SELECT m.clip_id FROM clip_search_map AS m "
+            "LEFT JOIN clips AS c ON c.id=m.clip_id "
+            "WHERE c.id IS NULL OR c.is_secret=1 OR c.deleted=1 "
+            "UNION ALL "
+            "SELECT clips_fts.id FROM clips_fts "
+            "LEFT JOIN clip_search_map AS m "
+            "ON m.search_id=clips_fts.rowid AND m.clip_id=clips_fts.id "
+            "WHERE m.search_id IS NULL"
+            ") LIMIT 1"
+        ).fetchone()
+        return row is not None
+
+    def repair_search_index(self) -> bool:
+        """Repair drift left by legacy writers after a schema-9 upgrade.
+
+        Schema-8 binaries do not know about ``clip_search_map``.  If one is
+        accidentally used against the upgraded database, the next current
+        service start rebuilds the complete map/FTS bijection before serving.
+        """
+
+        if not self._search_index_drifted():
+            return False
+        with unit_of_work(self.conn):
+            # A complete rebuild follows.  Clear FTS first so map-delete
+            # triggers never repeat work while stale mappings are removed.
+            self.conn.execute("DELETE FROM clips_fts")
             self.conn.execute(
-                "INSERT INTO clips_fts(id, content) VALUES (?, ?)",
-                (clip.id, clip.content),
+                "DELETE FROM clip_search_map "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM clips WHERE clips.id=clip_search_map.clip_id "
+                "AND clips.is_secret=0 AND clips.deleted=0"
+                ")"
             )
-        if commit:
-            self.conn.commit()
+            self.conn.execute(
+                "INSERT OR IGNORE INTO clip_search_map(clip_id) "
+                "SELECT clips.id FROM clips "
+                "LEFT JOIN clip_search_map ON clip_search_map.clip_id=clips.id "
+                "WHERE clips.is_secret=0 AND clips.deleted=0 "
+                "AND clip_search_map.clip_id IS NULL ORDER BY clips.id"
+            )
+            self.conn.execute(
+                "INSERT INTO clips_fts(rowid,id,content) "
+                "SELECT m.search_id,c.id,c.content "
+                "FROM clip_search_map AS m "
+                "JOIN clips AS c ON c.id=m.clip_id"
+            )
+        return True
+
+    def insert(self, clip: Clip, *, commit: bool = True) -> None:
+        try:
+            self.conn.execute(
+                f"INSERT INTO clips ({_COLUMNS}) VALUES "
+                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    clip.id,
+                    clip.content,
+                    clip.content_hash,
+                    clip.content_type,
+                    int(clip.is_secret),
+                    clip.secret_level,
+                    json.dumps(clip.secret_reasons, ensure_ascii=False),
+                    int(clip.released),
+                    clip.released_at,
+                    clip.source_device,
+                    clip.source_app,
+                    clip.created_at,
+                    clip.last_seen_at,
+                    clip.times_seen,
+                    int(clip.pinned),
+                    int(clip.favorite),
+                    int(clip.deleted),
+                    clip.obsidian_path,
+                    clip.backed_up_at,
+                ),
+            )
+            if not clip.is_secret and not clip.deleted:
+                self._index_public_clip(clip.id, clip.content)
+            if commit:
+                self.conn.commit()
+        except BaseException:
+            if commit:
+                self.conn.rollback()
+            raise
 
     def get(self, clip_id: str) -> Clip | None:
         row = self.conn.execute(
@@ -138,17 +268,164 @@ class ClipsRepo:
         ).fetchall()
         return [_row_to_clip(r) for r in rows]
 
+    @staticmethod
+    def _public_filters(
+        alias: str,
+        *,
+        content_type: str | None,
+        before_id: str | None,
+    ) -> tuple[list[str], list]:
+        where = [f"{alias}.is_secret = 0", f"{alias}.deleted = 0"]
+        params: list = []
+        if content_type:
+            where.append(f"{alias}.content_type = ?")
+            params.append(content_type)
+        if before_id:
+            where.append(f"{alias}.id < ?")
+            params.append(before_id)
+        return where, params
+
+    def _fts_fallback_rows(
+        self,
+        query: str,
+        *,
+        content_type: str | None,
+        before_id: str | None,
+        limit: int,
+        api_order: bool,
+    ) -> list[sqlite3.Row]:
+        where, params = self._public_filters(
+            "c", content_type=content_type, before_id=before_id
+        )
+        where.extend(
+            [
+                "clips_fts MATCH ?",
+                "clips_fts.id = clip_search_map.clip_id",
+            ]
+        )
+        params.extend((_fts_match(query), limit))
+        order = (
+            "c.pinned DESC, c.last_seen_at DESC, c.id DESC"
+            if api_order
+            else "c.last_seen_at DESC, c.id DESC"
+        )
+        return self.conn.execute(
+            f"SELECT {_qualified_columns('c')} "
+            "FROM clips_fts "
+            "JOIN clip_search_map "
+            "ON clip_search_map.search_id = clips_fts.rowid "
+            "JOIN clips AS c ON c.id = clip_search_map.clip_id "
+            f"WHERE {' AND '.join(where)} "
+            f"ORDER BY {order} LIMIT ?",
+            params,
+        ).fetchall()
+
+    def _fts_recent_probe_rows(
+        self,
+        query: str,
+        *,
+        content_type: str | None,
+        before_id: str | None,
+        limit: int,
+        probe_size: int,
+        api_order: bool,
+    ) -> list[sqlite3.Row]:
+        where, params = self._public_filters(
+            "c", content_type=content_type, before_id=before_id
+        )
+        inner_order = (
+            "c.pinned DESC, c.last_seen_at DESC, c.id DESC"
+            if api_order
+            else "c.last_seen_at DESC, c.id DESC"
+        )
+        outer_order = (
+            "recent.pinned DESC, recent.last_seen_at DESC, recent.id DESC"
+            if api_order
+            else "recent.last_seen_at DESC, recent.id DESC"
+        )
+        params.extend((probe_size, _fts_match(query), limit))
+        return self.conn.execute(
+            f"SELECT {_qualified_columns('recent')} FROM ("
+            f"SELECT {_qualified_columns('c')} FROM clips AS c "
+            f"WHERE {' AND '.join(where)} "
+            f"ORDER BY {inner_order} LIMIT ?"
+            ") AS recent "
+            "JOIN clip_search_map ON clip_search_map.clip_id = recent.id "
+            "WHERE EXISTS ("
+            "SELECT 1 FROM clips_fts "
+            "WHERE clips_fts.rowid = clip_search_map.search_id "
+            "AND clips_fts.id = recent.id AND clips_fts MATCH ?"
+            ") "
+            f"ORDER BY {outer_order} LIMIT ?",
+            params,
+        ).fetchall()
+
+    def _public_fts_rows(
+        self,
+        query: str,
+        *,
+        content_type: str | None = None,
+        before_id: str | None = None,
+        limit: int = 50,
+        api_order: bool,
+    ) -> list[sqlite3.Row]:
+        """Exact adaptive FTS search over one read snapshot.
+
+        Rare match sets use the normal FTS-first integer-map join.  For a
+        common term, a bounded candidate prefix is checked in final result
+        order.  The prefix is returned only when it already contains the full
+        requested page; otherwise the exact fallback is used.
+        """
+
+        with _read_snapshot(self.conn):
+            # Filters can make SQLite select/sort an unbounded type/id range
+            # before applying LIMIT.  Keep the recent probe strictly to the
+            # unfiltered API hot path and use the exact FTS-first join for all
+            # filtered or non-API-sized repository requests.
+            if (
+                limit < 1
+                or limit > _FTS_RECENT_PROBE_SIZE
+                or content_type is not None
+                or before_id is not None
+            ):
+                return self._fts_fallback_rows(
+                    query,
+                    content_type=content_type,
+                    before_id=before_id,
+                    limit=limit,
+                    api_order=api_order,
+                )
+            probe_size = _FTS_RECENT_PROBE_SIZE
+            common = self.conn.execute(
+                "SELECT 1 FROM clips_fts WHERE clips_fts MATCH ? "
+                "LIMIT 1 OFFSET ?",
+                (_fts_match(query), _FTS_COMMON_MATCH_THRESHOLD),
+            ).fetchone()
+            if common is not None:
+                recent = self._fts_recent_probe_rows(
+                    query,
+                    content_type=content_type,
+                    before_id=before_id,
+                    limit=limit,
+                    probe_size=probe_size,
+                    api_order=api_order,
+                )
+                if len(recent) >= limit:
+                    return recent
+            return self._fts_fallback_rows(
+                query,
+                content_type=content_type,
+                before_id=before_id,
+                limit=limit,
+                api_order=api_order,
+            )
+
     def search_fts(self, query: str, limit: int = 50) -> list[Clip]:
         q = query.strip()
         if not q:
             return []
         if len(q) >= _FTS_MIN_LEN:
-            rows = self.conn.execute(
-                f"SELECT {_COLUMNS} FROM clips "
-                "WHERE id IN (SELECT id FROM clips_fts WHERE clips_fts MATCH ?) "
-                "ORDER BY last_seen_at DESC LIMIT ?",
-                (_fts_match(q), limit),
-            ).fetchall()
+            rows = self._public_fts_rows(q, limit=limit, api_order=False)
         else:
             # Short query (e.g. a 2-char CJK word): trigram cannot match < 3 chars,
             # so scan with LIKE. Filter is_secret/deleted explicitly here because we
@@ -156,14 +433,18 @@ class ClipsRepo:
             rows = self.conn.execute(
                 f"SELECT {_COLUMNS} FROM clips "
                 "WHERE is_secret = 0 AND deleted = 0 AND content LIKE ? ESCAPE '\\' "
-                "ORDER BY last_seen_at DESC LIMIT ?",
+                "ORDER BY last_seen_at DESC, id DESC LIMIT ?",
                 (_like_term(q), limit),
             ).fetchall()
         return [_row_to_clip(r) for r in rows]
 
     def fts_contains(self, clip_id: str) -> bool:
         row = self.conn.execute(
-            "SELECT 1 FROM clips_fts WHERE id = ?", (clip_id,)
+            "SELECT 1 FROM clip_search_map "
+            "JOIN clips_fts ON clips_fts.rowid = clip_search_map.search_id "
+            "WHERE clip_search_map.clip_id = ? "
+            "AND clips_fts.id = clip_search_map.clip_id",
+            (clip_id,),
         ).fetchone()
         return row is not None
 
@@ -189,28 +470,57 @@ class ClipsRepo:
             # otherwise LIKE — secrets are never in clips_fts, and trigram can't
             # match < 3 chars (common for CJK).
             if not secret and len(q) >= _FTS_MIN_LEN:
-                where.append("id IN (SELECT id FROM clips_fts WHERE clips_fts MATCH ?)")
-                params.append(_fts_match(q))
+                rows = self._public_fts_rows(
+                    q,
+                    content_type=content_type,
+                    before_id=before_id,
+                    limit=limit,
+                    api_order=True,
+                )
+                return [_row_to_clip(r) for r in rows]
             else:
                 where.append("content LIKE ? ESCAPE '\\'")
                 params.append(_like_term(q))
         sql = (f"SELECT {_COLUMNS} FROM clips WHERE " + " AND ".join(where)
-               + " ORDER BY pinned DESC, last_seen_at DESC LIMIT ?")
+               + " ORDER BY pinned DESC, last_seen_at DESC, id DESC LIMIT ?")
         params.append(limit)
         rows = self.conn.execute(sql, params).fetchall()
         return [_row_to_clip(r) for r in rows]
 
-    def set_flag(self, clip_id: str, field: str, value: bool) -> bool:
+    def set_flag(
+        self,
+        clip_id: str,
+        field: str,
+        value: bool,
+        *,
+        commit: bool = True,
+    ) -> bool:
         if field not in ("pinned", "favorite", "deleted"):
             raise ValueError(f"not a settable flag: {field}")
-        cur = self.conn.execute(
-            f"UPDATE clips SET {field} = ? WHERE id = ?", (int(value), clip_id)
-        )
-        # Deleting removes the row from the FTS index (G1 invariant).
-        if field == "deleted" and value:
-            self.conn.execute("DELETE FROM clips_fts WHERE id = ?", (clip_id,))
-        self.conn.commit()
-        return cur.rowcount > 0
+        previous = self.get(clip_id) if field == "deleted" else None
+        try:
+            cur = self.conn.execute(
+                f"UPDATE clips SET {field} = ? WHERE id = ?", (int(value), clip_id)
+            )
+            if (
+                field == "deleted"
+                and cur.rowcount > 0
+                and previous is not None
+                and previous.deleted != value
+            ):
+                if value:
+                    self._unindex_clip(clip_id)
+                else:
+                    clip = self.get(clip_id)
+                    if clip is not None and not clip.is_secret:
+                        self._index_public_clip(clip.id, clip.content)
+            if commit:
+                self.conn.commit()
+            return cur.rowcount > 0
+        except BaseException:
+            if commit:
+                self.conn.rollback()
+            raise
 
     def release_secret(
         self, clip_id: str, when: str, *, commit: bool = True
@@ -219,25 +529,28 @@ class ClipsRepo:
         clip = self.get(clip_id)
         if clip is None or not clip.is_secret:
             return None
-        self.conn.execute(
-            "UPDATE clips SET is_secret = 0, secret_level = NULL, secret_reasons = '[]', "
-            "released = 1, released_at = ? WHERE id = ?",
-            (when, clip_id),
-        )
-        if not clip.deleted:
+        try:
             self.conn.execute(
-                "INSERT INTO clips_fts(id, content) VALUES (?, ?)",
-                (clip_id, clip.content),
+                "UPDATE clips SET is_secret = 0, secret_level = NULL, "
+                "secret_reasons = '[]', released = 1, released_at = ? "
+                "WHERE id = ?",
+                (when, clip_id),
             )
-        if commit:
-            self.conn.commit()
-        return self.get(clip_id)
+            if not clip.deleted:
+                self._index_public_clip(clip_id, clip.content)
+            if commit:
+                self.conn.commit()
+            return self.get(clip_id)
+        except BaseException:
+            if commit:
+                self.conn.rollback()
+            raise
 
     def suggest_candidates(self, since_iso: str, limit: int = 200) -> list[Clip]:
         """High-use recent clips eligible as suggestion candidates (SUG-1):
         non-secret, non-deleted, favorite OR times_seen>=3, seen since `since_iso`."""
         rows = self.conn.execute(
-            f"SELECT {_COLUMNS} FROM clips "
+            f"SELECT {_COLUMNS} FROM clips INDEXED BY idx_clips_suggest_recent "
             "WHERE is_secret = 0 AND deleted = 0 AND last_seen_at >= ? "
             "AND (favorite = 1 OR times_seen >= 3) "
             "ORDER BY last_seen_at DESC, id DESC LIMIT ?",

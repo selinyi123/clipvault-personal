@@ -358,6 +358,17 @@ def build_server(
     return HTTPServer((host, port), make_handler(api, read_timeout_s))
 
 
+def _prepare_database(conn) -> None:
+    """Migrate and repair search drift once at the API readiness gate."""
+
+    from clipvault.store import db
+    from clipvault.store.clips_repo import ClipsRepo
+
+    db.migrate(conn)
+    if ClipsRepo(conn).repair_search_index():
+        log.warning("repaired legacy search-index drift")
+
+
 def serve(
     config,
     stop: threading.Event,
@@ -373,7 +384,11 @@ def serve(
     conn = db.connect(config.db_path)
     httpd = None
     try:
-        db.migrate(conn)  # idempotent; self-sufficient regardless of caller order
+        # Idempotent and self-sufficient regardless of caller order.
+        # The API readiness gate runs before the runtime starts its clipboard
+        # watcher.  Repair legacy schema-8 writer drift once here rather than
+        # turning every short-lived capture service into an O(N) index audit.
+        _prepare_database(conn)
         api = Api(
             ClipVaultService(conn, config, obsidian_notify=obsidian_notify),
             pairing=pairing,

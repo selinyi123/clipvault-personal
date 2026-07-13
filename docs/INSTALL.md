@@ -99,6 +99,14 @@ python tools\restore.py D:\clipvault-backup D:\restored.db
 # 从全部 JSONL 重建一个新库（不覆盖现有库）
 ```
 
+### 7.1 数据库升级与应用回退
+
+schema 9 首次启动会修复并重建 Desktop FTS 映射。升级前先完全停止 ClipVault，保存
+SQLite 数据库及同目录的 `-wal` / `-shm` 文件（若存在）的一致性副本，并预留额外磁盘
+空间。不要用旧 ClipVault EXE/Python 版本打开已经升级的原数据库：旧版本没有只读模式，
+仍可能写入它不认识的新 schema。需要回退应用时，停止服务并恢复升级前的整套数据库
+副本。只读诊断应针对副本使用 SQLite URI `mode=ro` 或外部只读工具。
+
 ## 8. 隐私须知
 
 - 建议开启 BitLocker 全盘加密（SQLite 明文落盘）。

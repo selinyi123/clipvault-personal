@@ -36,10 +36,9 @@ if str(DESKTOP_ROOT) not in sys.path:
 
 from clipvault.api.handlers import Api
 from clipvault.config import Config
-from clipvault.pipeline.ingest import STATUS_NEW, ingest
+from clipvault.pipeline.ingest import STATUS_NEW
 from clipvault.service import ClipVaultService
 from clipvault.store import db
-from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.outbox_repo import OutboxRepo
 from clipvault.sync import engine as sync_engine
 
@@ -56,9 +55,12 @@ _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 # They catch order-of-magnitude regressions while tolerating shared-runner
 # scheduling noise.  They are not the product budgets from ARCHITECTURE.md.
 CI_REGRESSION_CEILINGS_MS = {
-    "search_cjk_1_char": 250.0,
-    "search_cjk_2_char": 250.0,
-    "search_cjk_3_char_common": 300.0,
+    "api_search_cjk_1_char": 250.0,
+    "api_search_cjk_2_char": 250.0,
+    "api_search_cjk_3_char_common": 300.0,
+    "api_search_trigram_medium": 300.0,
+    "api_search_trigram_rare": 300.0,
+    "api_search_trigram_none": 300.0,
     "suggest_request": 300.0,
     "ingest_new": 500.0,
     "sync_pull_100_events": 1_000.0,
@@ -146,7 +148,8 @@ def _measure(operation: Callable[[], None], iterations: int) -> dict:
 
 def _clip_seed_row(index: int, *, seen: str, created: str) -> tuple[tuple, tuple]:
     clip_id = f"P{index:025d}"
-    content = f"记录 {index:06d} 服务器部署文档 alpha beta"
+    medium_token = " medium-fallback-token" if index % 250 == 0 else ""
+    content = f"记录 {index:06d} 服务器部署文档 alpha beta{medium_token}"
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
     # New clips start with times_seen=1 in production. Keep the suggestion
     # population deliberately sparse so a recency-only index cannot hide an
@@ -193,26 +196,41 @@ def _seed_dataset(conn: sqlite3.Connection, rows: int) -> None:
         "obsidian_path, backed_up_at"
         ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
     )
-    insert_fts = "INSERT INTO clips_fts(id, content) VALUES (?, ?)"
+    insert_map = "INSERT INTO clip_search_map(clip_id) VALUES (?)"
     reference_now = datetime.now(timezone.utc).replace(microsecond=0)
     seen_values = [
         (reference_now - timedelta(days=day)).strftime("%Y-%m-%dT%H:%M:%SZ")
         for day in range(28)
     ]
     created = (reference_now - timedelta(days=28)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    last_search_id = int(
+        conn.execute("SELECT COALESCE(MAX(search_id), 0) FROM clip_search_map")
+        .fetchone()[0]
+    )
     for start in range(0, rows, _SEED_BATCH_SIZE):
         clips = []
-        fts_rows = []
+        map_rows = []
         for index in range(start, min(rows, start + _SEED_BATCH_SIZE)):
-            clip, fts = _clip_seed_row(
+            clip, _fts = _clip_seed_row(
                 index,
                 seen=seen_values[index % len(seen_values)],
                 created=created,
             )
             clips.append(clip)
-            fts_rows.append(fts)
+            map_rows.append((clip[0],))
         conn.executemany(insert_clip, clips)
-        conn.executemany(insert_fts, fts_rows)
+        conn.executemany(insert_map, map_rows)
+        conn.execute(
+            "INSERT INTO clips_fts(rowid, id, content) "
+            "SELECT clip_search_map.search_id, clips.id, clips.content "
+            "FROM clip_search_map "
+            "JOIN clips ON clips.id = clip_search_map.clip_id "
+            "WHERE clip_search_map.search_id > ?",
+            (last_search_id,),
+        )
+        last_search_id = int(
+            conn.execute("SELECT MAX(search_id) FROM clip_search_map").fetchone()[0]
+        )
 
     # /suggest is deliberately capped at 500 Memory rows.  Populate that cap so
     # the request benchmark includes Secret Guard defence-in-depth scanning and
@@ -243,17 +261,20 @@ def _seed_dataset(conn: sqlite3.Connection, rows: int) -> None:
     conn.commit()
 
 
-def _expect_result_count(operation: Callable[[], list], expected: int) -> None:
-    result = operation()
-    if len(result) != expected:
-        raise RuntimeError(f"benchmark correctness check failed: {len(result)} != {expected}")
+def _api_search(api: Api, query: str, expected: int) -> None:
+    status, body = api.list_clips({"q": query, "limit": "50"})
+    clips = body.get("clips") if isinstance(body, dict) else None
+    if status != 200 or not isinstance(clips, list) or len(clips) != expected:
+        actual = len(clips) if isinstance(clips, list) else "invalid"
+        raise RuntimeError(
+            f"API search benchmark expected {expected} results, got {actual}"
+        )
 
 
-def _measure_ingest(conn: sqlite3.Connection, rows: int, samples: int) -> dict:
-    warmup = ingest(
-        conn,
+def _measure_ingest(service: ClipVaultService, rows: int, samples: int) -> dict:
+    warmup = service.handle_clipboard_text(
         f"performance baseline new item rows {rows} warmup",
-        source_device="performance-baseline",
+        "performance-baseline",
     )
     if warmup.status != STATUS_NEW:
         raise RuntimeError(f"ingest benchmark warm-up expected new, got {warmup.status}")
@@ -261,7 +282,7 @@ def _measure_ingest(conn: sqlite3.Connection, rows: int, samples: int) -> dict:
     for index in range(samples):
         text = f"performance baseline new item rows {rows} sample {index}"
         started = time.perf_counter_ns()
-        outcome = ingest(conn, text, source_device="performance-baseline")
+        outcome = service.handle_clipboard_text(text, "performance-baseline")
         timings.append((time.perf_counter_ns() - started) / 1_000_000.0)
         if outcome.status != STATUS_NEW:
             raise RuntimeError(f"ingest benchmark expected new, got {outcome.status}")
@@ -346,13 +367,6 @@ def run_benchmark(
         _seed_dataset(conn, rows)
         setup_seconds = (time.perf_counter_ns() - setup_started) / 1_000_000_000.0
 
-        repo = ClipsRepo(conn)
-        search_1 = lambda: repo.search_fts("部")
-        search_2 = lambda: repo.search_fts("部署")
-        search_3 = lambda: repo.search_fts("服务器")
-        for operation in (search_1, search_2, search_3):
-            _expect_result_count(operation, min(rows, 50))
-
         config = Config(
             device_id="performance-baseline",
             device_name="performance-baseline",
@@ -361,17 +375,44 @@ def run_benchmark(
             poll_ms=500,
             vault_path=str((database_path.parent if database_path else Path(tempfile.gettempdir())) / "vault"),
         )
-        api = Api(ClipVaultService(conn, config))
+        service = ClipVaultService(conn, config, obsidian_notify=lambda: None)
+        api = Api(service)
+        common_count = min(rows, 50)
+        search_1 = lambda: _api_search(api, "部", common_count)
+        search_2 = lambda: _api_search(api, "部署", common_count)
+        search_3_common = lambda: _api_search(api, "服务器", common_count)
+        medium_count = min(50, ((rows - 1) // 250) + 1)
+        search_medium = lambda: _api_search(
+            api, "medium-fallback-token", medium_count
+        )
+        search_rare = lambda: _api_search(api, f"{rows - 1:06d}", 1)
+        search_none = lambda: _api_search(api, "clipvault-no-match", 0)
+        for operation in (
+            search_1,
+            search_2,
+            search_3_common,
+            search_medium,
+            search_rare,
+            search_none,
+        ):
+            operation()
 
         metrics = {
-            "search_cjk_1_char": _measure(search_1, iterations),
-            "search_cjk_2_char": _measure(search_2, iterations),
-            "search_cjk_3_char_common": _measure(search_3, iterations),
+            "api_search_cjk_1_char": _measure(search_1, iterations),
+            "api_search_cjk_2_char": _measure(search_2, iterations),
+            "api_search_cjk_3_char_common": _measure(
+                search_3_common, iterations
+            ),
+            "api_search_trigram_medium": _measure(
+                search_medium, iterations
+            ),
+            "api_search_trigram_rare": _measure(search_rare, iterations),
+            "api_search_trigram_none": _measure(search_none, iterations),
             "suggest_request": _measure(
                 lambda: _suggest_request(api),
                 iterations,
             ),
-            "ingest_new": _measure_ingest(conn, rows, ingest_samples),
+            "ingest_new": _measure_ingest(service, rows, ingest_samples),
         }
 
         sync_start_seq = _seed_sync_events(conn)
@@ -380,7 +421,7 @@ def run_benchmark(
         )
 
         return {
-            "report_schema_version": 1,
+            "report_schema_version": 2,
             "source_revision": _source_revision(),
             "source_tree_state": _source_tree_state(),
             "schema_version": db.schema_version(conn),

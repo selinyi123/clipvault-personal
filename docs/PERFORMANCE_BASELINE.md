@@ -1,8 +1,9 @@
 # Desktop performance baseline
 
 This document defines the regression measurements added during the R000
-stability refactor. It does not change product behaviour, storage schemas, API
-contracts, or the performance budgets in `docs/ARCHITECTURE.md`.
+stability refactor. Schema and API contracts remain governed by
+`docs/CONTRACTS.md`; this file does not redefine the performance budgets in
+`docs/ARCHITECTURE.md`.
 
 ## Two different kinds of evidence
 
@@ -34,27 +35,37 @@ Do not relabel CI regression ceilings as these budgets.
 
 `desktop/tests/perf/test_perf_smoke.py` constructs 10,000 public clips and 500
 Memory candidates in an in-memory migrated database. Dataset construction is
-not timed. Direct seed inserts populate both `clips` and `clips_fts`; measured
-ingests still use the production pipeline. Most synthetic clips retain the
+not timed. Direct seed inserts populate `clips`, `clip_search_map`, and
+`clips_fts` with the same stable-rowid invariant as production; measured ingests
+call the production `ClipVaultService.handle_clipboard_text` boundary with a
+no-op worker notification, so they include queue/orchestration work without
+performing Vault file I/O. Most synthetic clips retain the
 production-default `times_seen=1`, while fewer than 0.5% are suggestion-
 eligible. This sparse shape prevents a recency-only index from hiding a large
 residual eligibility scan. Seed timestamps are anchored to the benchmark start
 and spread across the preceding 28 days, so `/suggest` always exercises its
 real recent-candidate path instead of becoming an empty fast path as a fixed
-fixture date ages.
+fixture date ages. Every 250th clip also contains a distributed medium-density
+trigram token. At 100k rows this produces 400 matches and therefore measures
+the exact map fallback between the common-probe and rare/no-match extremes.
 
 Each repeated operation gets one untimed warm-up. Seven measured iterations
 produce median, nearest-rank p95, and maximum values. New ingest uses one
 untimed unique warm-up followed by 20 unique measured samples so its p95 is
-meaningful. The suggestion measurement also verifies a successful ten-result
-response before accepting a sample. CI asserts the median except for ingest
-p95.
+meaningful. Search measurements call the real `Api.list_clips` handler and
+validate status/result count before accepting a sample; they are handler
+measurements, not HTTP/network timings. The suggestion measurement similarly
+verifies a successful ten-result response. CI asserts the median except for
+ingest p95.
 
 | Metric | CI regression ceiling |
 |---|---:|
-| one-character CJK `LIKE` fallback | 250ms median |
-| two-character CJK `LIKE` fallback | 250ms median |
-| common three-character trigram query | 300ms median |
+| one-character CJK API `LIKE` fallback | 250ms median |
+| two-character CJK API `LIKE` fallback | 250ms median |
+| common three-character API trigram query | 300ms median |
+| medium-density trigram query | 300ms median |
+| rare trigram API query | 300ms median |
+| no-match trigram API query | 300ms median |
 | full Desktop `/suggest` request | 300ms median |
 | one new ingest on the populated database | 500ms p95 |
 | local pagination/serialization of 100 small sync events | 1000ms median |
@@ -87,7 +98,9 @@ creates a fresh SQLite/WAL database under a private `TemporaryDirectory`, closes
 it, deletes it, and prints no temporary path. It cannot open or overwrite a
 user's ClipVault database.
 
-The versioned JSON separates `setup_seconds_excluded` from operation latencies
+Report schema version 2 names search metrics as `api_search_*` because version 1
+measured only the repo helper and did not exercise the Web UI/API path. The
+versioned JSON separates `setup_seconds_excluded` from operation latencies
 and records the Git HEAD revision when available, plus a path-free
 `source_tree_state` (`clean`, `dirty`, or `unknown`) and the Python, SQLite, and
 platform versions. A revision with `dirty` state is not an exact reproducible
@@ -106,11 +119,19 @@ reviewable PR with before/after output from this tool.
 
 ## Known risks this baseline makes visible
 
-- One- and two-character substring search uses leading-wildcard `LIKE`, which is
-  necessarily linear in clip count.
-- A common trigram can return a large FTS row-id set; the current query then
-  resolves clips and sorts by `last_seen_at`, so three-character FTS is not
-  automatically faster for high-frequency terms.
+- One- and two-character substring search uses leading-wildcard `LIKE`. Schema 9
+  can scan the public result-order index and stop after a full page for common
+  terms, but a rare or absent short substring can still inspect the full set.
+- Schema 9 gives public FTS rows stable integer IDs. Terms with more than 4096
+  matches can use a bounded 256-candidate exact probe; medium/rare/no-match
+  terms and any probe that cannot fill the requested page use the exact
+  FTS-first fallback. Both paths
+  retain explicit Secret Guard filters and one read snapshot. Type/cursor-
+  filtered and oversized repo requests skip the probe so filtering cannot hide
+  an unbounded pre-sort behind its candidate limit. A high-frequency term whose
+  matches are concentrated in much older records can fail to fill the recent
+  probe and then pay the exact fallback sort; this adversarial distribution is
+  a known manual-benchmark case, not hidden by the hosted-CI ceiling.
 - Suggestion output is bounded, and schema v8 uses a partial index containing
   only eligible, non-secret, non-deleted clips in deterministic recency order.
   Memory ordering has no matching composite index; legacy-secret defence can
