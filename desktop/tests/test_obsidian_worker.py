@@ -163,7 +163,7 @@ def test_worker_reopens_connection_after_sqlite_error(tmp_path, monkeypatch):
     assert all(conn.closed for conn in connections)
 
 
-def test_single_wake_drains_more_than_one_bounded_batch(tmp_path):
+def test_single_wake_drains_more_than_one_bounded_batch(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     setup_conn = db.connect(cfg.db_path)
     db.migrate(setup_conn)
@@ -173,6 +173,19 @@ def test_single_wake_drains_more_than_one_bounded_batch(tmp_path):
             f"worker backlog {index}",
             source_device="worker-test",
         )
+
+    # This is a wake/coalescing integration test, not a filesystem throughput
+    # benchmark. The real writer's collision-recovery probes intentionally do
+    # extra metadata IO and can exceed five seconds on a loaded Windows runner.
+    # Keep the real queue, worker thread, and SQLite finalization while making
+    # only the unrelated Vault write deterministic and side-effect free.
+    written_ids: list[str] = []
+
+    def fast_write(clip, *_args, **_kwargs):
+        written_ids.append(clip.id)
+        return tmp_path / "vault" / f"{clip.id}.md"
+
+    monkeypatch.setattr(writer, "write_clip", fast_write)
 
     stop = threading.Event()
     worker = ObsidianWorker(cfg, interval_s=60, limit=50)
@@ -191,6 +204,8 @@ def test_single_wake_drains_more_than_one_bounded_batch(tmp_path):
         assert setup_conn.execute(
             "SELECT COUNT(*) FROM clips WHERE obsidian_path IS NOT NULL"
         ).fetchone()[0] == 51
+        assert len(written_ids) == 51
+        assert len(set(written_ids)) == 51
     finally:
         setup_conn.close()
         stop.set()
