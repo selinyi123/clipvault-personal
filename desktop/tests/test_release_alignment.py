@@ -364,6 +364,7 @@ def test_release_artifact_evidence_helper_is_documented_without_release_overclai
     runbook = _read("docs/RELEASE_RUNBOOK_V1_6_0.md")
     research = _read("docs/RESEARCH_AND_ROADMAP.md")
     handoff = _read("docs/HANDOFF.md")
+    workflows = _read("docs/AGENT_WORKFLOWS_ISSUE_36.md")
 
     assert script.exists()
     script_text = script.read_text(encoding="utf-8")
@@ -373,6 +374,7 @@ def test_release_artifact_evidence_helper_is_documented_without_release_overclai
     assert "ANDROID_APKSIGNER_VERIFY.txt" in script_text
     assert "--expected-android-cert-sha256" in script_text
     assert '"status": "structural_precheck_pass"' in script_text
+    assert "--require-live-published-release" in script_text
 
     assert "python tools/release_artifact_evidence.py" in manual_qa
     assert "tools/release_artifact_evidence.py --require-live-final-draft" in runbook
@@ -381,12 +383,20 @@ def test_release_artifact_evidence_helper_is_documented_without_release_overclai
     assert "a green workflow alone" in runbook.lower()
     assert "still does not prove artifact contents" in runbook.lower()
     assert "--require-live-final-draft" in runbook
+    assert "--require-live-published-release" in runbook
+    assert "Post-publication recovery" in runbook
+    assert "Do not rebuild" in runbook
     assert "runInvocationURI" in runbook
     assert "release-by-tag REST endpoint returns published Releases only" in runbook
     assert "does not download artifacts, trigger workflows" in research
     assert "R85 | Downloaded release artifact evidence and provenance" in research
     assert "tools/release_artifact_evidence.py" in handoff
     assert "canonical binding digest" in handoff
+    assert "--require-live-final-draft" in handoff
+    assert "--require-live-published-release" in handoff
+    assert "publication-closure binding" in handoff
+    assert "--require-live-published-release" in workflows
+    assert "without treating either JSON as closure" in workflows
 
 
 def test_release_runbook_qa_uses_the_final_draft_bytes_without_rebuild():

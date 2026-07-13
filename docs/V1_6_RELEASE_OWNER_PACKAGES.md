@@ -110,11 +110,18 @@ particular:
   posted Owner approval into Step H, which recomputes it and consumes only the
   verifier's in-memory publication projection;
 - keep both `main` and the exact `refs/tags/v1.6.0` frozen during Step H; the
-  generated block resolves direct or annotated tags before and after publication.
+  generated block resolves direct or annotated tags before and after publication;
+- after publication, re-download with the trusted GitHub CLI, then run the same
+  tracked verifier against that fresh directory to revalidate the exact
+  published Release, tag object, eight asset identities and bytes,
+  attestations, run attempt, current `main`, and Owner signer. Retain its separate
+  publication-closure binding and path-free comment draft for final gate review.
 
 ## 5. Closure rule
 
 A green workflow alone is not artifact evidence. A filled coordination template
 alone is not QA evidence. Issue #36 remains open until verified artifact and
 manual-QA reports, an Owner publication statement, and the final published
-Release all bind the same current-main commit and exact asset digest set.
+Release all bind the same current-main commit and exact asset digest set. The
+publication-closure binding is evidence of that linkage; it is not permission to
+complete the gate by itself.

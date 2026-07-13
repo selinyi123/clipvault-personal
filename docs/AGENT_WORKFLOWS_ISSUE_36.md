@@ -76,6 +76,11 @@ Treat the JSON as a non-self-authenticating snapshot; readiness must rerun or
 independently live-cross-check it rather than trusting its status field.
 Require `refs/tags/v1.6.0` to be absent or resolve to the target commit, freeze
 that ref during publication, and recheck it after publication.
+After Owner-controlled publication, the evidence coordinator must use the
+read-only `--require-live-published-release` mode against a fresh Release
+download. It must reproduce the approved pre-publication binding and record the
+separate publication-closure binding without treating either JSON as closure
+authorization.
 Do not publish a release.
 ```
 

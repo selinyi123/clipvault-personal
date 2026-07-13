@@ -254,7 +254,8 @@
   rows, sign artifacts, publish a Release, or close Issue #36, and the rendered
   report explicitly does not replace signed-artifact/final-release evidence.
 - `tools/release_artifact_evidence.py` retains its compatible local structural
-  precheck and adds an explicit fail-closed `--require-live-final-draft` mode.
+  precheck and adds explicit fail-closed `--require-live-final-draft` and
+  `--require-live-published-release` modes.
   Strict mode reads GitHub state without mutating it, binds current `main` to the
   exact successful `draft=true` run/attempt, verifies all eight downloaded files
   with strong attestation identity flags and certificate `runInvocationURI`,
@@ -264,10 +265,15 @@
   `apksigner.jar` plus Java against the Owner certificate. The generated Owner
   flow also pins a clean exact-target checkout. Git, GitHub CLI, Python, Java,
   and signer paths are explicit, absolute, non-batch, and outside the workspace.
-  It emits a path-free machine snapshot and an Issue comment with a canonical binding digest.
+  The published mode revalidates the same exact run, bytes, signer, Release ID,
+  asset IDs, and exact tag object after Owner publication, reconstructs the
+  approved pre-publication binding from live state, and emits a separate
+  publication-closure binding. It emits path-free machine snapshots and Issue
+  comments with canonical binding digests.
   The snapshot is not self-authenticating; readiness must rerun
   or independently live-cross-check it. It does not download
-  artifacts, trigger workflows, publish, run manual QA, or close Issue #36.
+  artifacts, trigger workflows, publish, run manual QA, or authorize completion
+  of Issue #36.
 - `test_webui_security.py` now runs `node --check` when Node is available so the
   packaged Web UI cannot regress to syntactically invalid JavaScript unnoticed.
 - `test_webui_security.py` now also guards the local Web UI against additional
