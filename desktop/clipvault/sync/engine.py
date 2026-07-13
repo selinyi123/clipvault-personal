@@ -27,12 +27,28 @@ _KNOWN_EVENT_KINDS = frozenset(
 )
 _MEMORY_SOURCES = frozenset(("manual", "derived", "obsidian_import", "github_import"))
 _MAX_MEMORY_LABEL_BYTES = 4 * 1024
+_CLIP_NEW_PAYLOAD_FIELDS = frozenset(
+    (
+        "id", "content", "content_hash", "content_type", "is_secret",
+        "secret_level", "secret_reasons", "source_device", "source_app",
+        "created_at", "last_seen_at", "times_seen", "pinned", "favorite",
+        "deleted",
+    )
+)
+_CLIP_META_PAYLOAD_FIELDS = frozenset(("content_hash", "patch", "ts"))
+_MEMORY_UPSERT_PAYLOAD_FIELDS = frozenset(
+    ("kind", "text", "label", "pinned", "use_count", "source")
+)
+_MEMORY_DELETE_PAYLOAD_FIELDS = frozenset(("kind", "text", "ts"))
 
 SYNC_PULL_EVENT_LIMIT = 100
 # SQLite rows are decoded before wire budgeting. Fetch a small internal page so
 # several near-limit escaped payloads cannot be materialised at once; repeated
 # pull pages still preserve the public <=100-event protocol contract.
 SYNC_PULL_FETCH_LIMIT = 8
+# Status diagnostics may skip legacy quarantined events, but must remain
+# bounded even if an outbox contains a long run of rows that cannot be sent.
+SYNC_PULL_STATUS_SCAN_LIMIT = 64
 # Android accepts at most 7 MiB for the complete pull response. Reserve 64 KiB
 # for the response envelope, commas, cursor fields, and bounded event metadata.
 # The remaining page/event budget still covers a valid 1 MiB clip whose every
@@ -239,21 +255,88 @@ def clip_to_data(clip: Clip) -> dict:
     }
 
 
+def clip_requires_local_quarantine(clip: Clip) -> bool:
+    """Return whether a clip must remain behind Secret Guard Gate B.
+
+    Persisted ``is_secret`` is not sufficient for rows created by an older
+    detector.  Re-scan those rows under the current rules, except when the
+    Owner explicitly released the clip from quarantine.
+    """
+
+    return clip.is_secret or (
+        not clip.released and secret_guard.scan(clip.content).is_secret
+    )
+
+
 # --- local emission (called by ingest / patch) ---
 
 def emit_clip_new(conn, clip: Clip, when: str, *, commit: bool = True) -> int | None:
     """Publish a locally-created public clip. Gate B: secrets never emitted."""
-    if clip.is_secret:
+    if clip_requires_local_quarantine(clip):
         return None
     return OutboxRepo(conn).append("clip_new", clip_to_data(clip), when, commit=commit)
 
 
-def emit_clip_meta(conn, content_hash: str, patch: dict, ts: str, when: str) -> int:
+def emit_clip_meta(
+    conn,
+    content_hash: str,
+    patch: dict,
+    ts: str,
+    when: str,
+    *,
+    commit: bool = True,
+) -> int | None:
+    """Publish metadata for an existing public clip.
+
+    Gate B is re-checked here so a caller cannot leak the hash or state of a
+    quarantined clip.  The default path keeps timestamp bookkeeping and the
+    outbox append atomic; callers that already own a unit of work pass
+    ``commit=False``.
+    """
+
+    try:
+        _validate_clip_meta(
+            {"content_hash": content_hash, "patch": patch, "ts": ts}
+        )
+    except MalformedSyncEvent as exc:
+        raise ValueError(str(exc)) from exc
+    if not _valid_utc_timestamp(when):
+        raise ValueError("invalid clip metadata event timestamp")
+
+    if commit:
+        with unit_of_work(conn):
+            return _emit_clip_meta_uncommitted(
+                conn, content_hash, dict(patch), ts, when
+            )
+    return _emit_clip_meta_uncommitted(
+        conn, content_hash, dict(patch), ts, when
+    )
+
+
+def _emit_clip_meta_uncommitted(
+    conn,
+    content_hash: str,
+    patch: dict,
+    ts: str,
+    when: str,
+) -> int | None:
+    """Apply the validated local metadata event inside the caller's UoW."""
+
+    clip = ClipsRepo(conn).get_by_hash(content_hash)
+    if clip is None:
+        log.error("clip metadata sync blocked for missing local clip")
+        return None
+    if clip_requires_local_quarantine(clip):
+        log.error("secret clip metadata blocked at sync outbox boundary")
+        return None
     for field in ("pinned", "favorite", "deleted"):
         if field in patch:
-            _set_meta_ts(conn, content_hash, field, ts)
+            _set_meta_ts(conn, content_hash, field, ts, commit=False)
     return OutboxRepo(conn).append(
-        "clip_meta", {"content_hash": content_hash, "patch": patch, "ts": ts}, when
+        "clip_meta",
+        {"content_hash": content_hash, "patch": patch, "ts": ts},
+        when,
+        commit=False,
     )
 
 
@@ -303,14 +386,22 @@ def _get_meta_ts(conn, content_hash: str, field: str) -> str:
     return row[0] if row else ""
 
 
-def _set_meta_ts(conn, content_hash: str, field: str, ts: str) -> None:
+def _set_meta_ts(
+    conn,
+    content_hash: str,
+    field: str,
+    ts: str,
+    *,
+    commit: bool = True,
+) -> None:
     conn.execute(
         "INSERT INTO clip_meta_ts(content_hash, field, ts) VALUES (?,?,?) "
         "ON CONFLICT(content_hash, field) DO UPDATE SET ts=excluded.ts "
         "WHERE excluded.ts >= clip_meta_ts.ts",
         (content_hash, field, ts),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def _get_mem_ts(conn, kind: str, text: str) -> str:
@@ -494,6 +585,12 @@ def _apply_clip_meta(conn, data: dict) -> None:
     row = clips.get_by_hash(content_hash)
     if row is None:
         return
+    if clip_requires_local_quarantine(row):
+        # A peer must never have learned this hash through a conforming
+        # implementation.  Keep the quarantined row local and avoid recording
+        # metadata timestamps or downstream intents for the untrusted event.
+        log.error("remote clip metadata blocked for quarantined local clip")
+        return
     # Per-field LWW (v1.8): each field's newest ts wins independently, so a newer
     # change to one field is never masked by an older change to another. On an
     # exact ts tie a delete wins (SYNC-2 delete-wins semantics).
@@ -522,6 +619,125 @@ def _event_wire_size(event: dict) -> int:
     return len(json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
+def _outbox_clip_event_is_blocked(conn, event: dict) -> bool:
+    """Fail closed for legacy or malformed clip events at the Gate B boundary.
+
+    A locally released row is the one exception to content re-scanning: release
+    is an explicit Owner action that intentionally re-enters the public sync
+    path even when the original text still resembles a secret.
+    """
+
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return True
+    if event.get("kind") == "clip_new":
+        if set(payload) != _CLIP_NEW_PAYLOAD_FIELDS:
+            return True
+        if payload.get("is_secret") is not False:
+            return True
+        if payload.get("secret_level") is not None:
+            return True
+        if payload.get("secret_reasons") != []:
+            return True
+        content = payload.get("content")
+        if not isinstance(content, str):
+            return True
+        try:
+            # Outgoing size is enforced separately by build_pull.  Use the
+            # actual payload size here so a structurally valid legacy event is
+            # checked for identity and secrecy before byte-budget handling.
+            validation_max_bytes = max(
+                normalize.DEFAULT_MAX_CLIP_BYTES,
+                len(content.encode("utf-8")),
+            )
+            candidate = _validated_remote_clip(
+                payload, max_bytes=validation_max_bytes
+            )
+        except (MalformedSyncEvent, UnicodeError):
+            return True
+
+        local = ClipsRepo(conn).get_by_hash(candidate.content_hash)
+        if local is not None:
+            if local.id != candidate.id or local.content != candidate.content:
+                return True
+            if local.is_secret:
+                return True
+            if local.released:
+                # Release is an explicit Owner decision, but only the new
+                # exact public snapshot receives that exception.
+                return False
+        return candidate.is_secret
+    if event.get("kind") == "clip_meta":
+        if set(payload) != _CLIP_META_PAYLOAD_FIELDS:
+            return True
+        try:
+            _validate_clip_meta(payload)
+        except MalformedSyncEvent:
+            return True
+        content_hash = payload["content_hash"]
+        clip = ClipsRepo(conn).get_by_hash(content_hash)
+        return clip is None or clip_requires_local_quarantine(clip)
+    return True
+
+
+def _outbox_event_is_blocked(conn, event: dict) -> bool:
+    try:
+        _event_wire_size(event)
+    except (TypeError, ValueError, UnicodeError, RecursionError):
+        return True
+    if not _valid_utc_timestamp(event.get("created_at")):
+        return True
+    kind = event.get("kind")
+    if kind in ("clip_new", "clip_meta"):
+        return _outbox_clip_event_is_blocked(conn, event)
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return True
+    try:
+        if kind == "memory_upsert":
+            if not set(payload).issubset(_MEMORY_UPSERT_PAYLOAD_FIELDS):
+                return True
+            _validate_memory_upsert(payload)
+            return _memory_data_is_secret(payload)
+        if kind == "memory_delete":
+            if set(payload) != _MEMORY_DELETE_PAYLOAD_FIELDS:
+                return True
+            _validate_memory_delete(payload)
+            return _memory_data_is_secret(payload)
+    except MalformedSyncEvent:
+        return True
+    # A downgraded or corrupted writer must not turn an unknown payload shape
+    # into an implicit extension of the sync protocol.
+    return True
+
+
+def _first_sendable_outbox_event(
+    conn,
+    outbox: OutboxRepo,
+    since_seq: int,
+    *,
+    scan_limit: int = SYNC_PULL_STATUS_SCAN_LIMIT,
+) -> dict | None:
+    """Find the next sendable event without an unbounded status scan."""
+
+    cursor = since_seq
+    remaining = scan_limit
+    while remaining > 0:
+        page_limit = min(SYNC_PULL_FETCH_LIMIT, remaining)
+        page = outbox.list_since(cursor, page_limit)
+        if not page:
+            return None
+        for event in page:
+            cursor = int(event["seq"])
+            remaining -= 1
+            if _outbox_event_is_blocked(conn, event):
+                continue
+            return event
+        if len(page) < page_limit:
+            return None
+    return None
+
+
 def build_pull(conn, since_seq: int, limit: int = SYNC_PULL_EVENT_LIMIT,
                max_bytes: int = SYNC_PULL_RESPONSE_BYTES) -> dict:
     fetch_limit = min(limit, SYNC_PULL_FETCH_LIMIT)
@@ -531,11 +747,20 @@ def build_pull(conn, since_seq: int, limit: int = SYNC_PULL_EVENT_LIMIT,
     used_bytes = 0
     stopped_by_budget = False
     for event in raw_events:
-        if event["kind"] in ("memory_upsert", "memory_delete") and _memory_data_is_secret(event["payload"]):
-            # Legacy rows may predate the Memory SG-1 gate. Do not send them,
-            # but advance next_seq over the quarantined event so peers do not
-            # request it forever.
-            log.error("legacy secret memory blocked at sync pull seq=%s", event["seq"])
+        if _outbox_event_is_blocked(conn, event):
+            # Legacy rows may predate the current Gate B checks. Advance over
+            # the quarantined event without logging payload fields or hashes.
+            kind = event.get("kind")
+            subject = (
+                "clip" if kind in ("clip_new", "clip_meta")
+                else "memory" if kind in ("memory_upsert", "memory_delete")
+                else "unknown"
+            )
+            log.error(
+                "legacy secret or malformed %s event blocked at sync pull seq=%s",
+                subject,
+                event["seq"],
+            )
             next_seq = event["seq"]
             continue
         event_bytes = _event_wire_size(event)
@@ -574,16 +799,18 @@ def pull_blocked_summary(conn, max_bytes: int = SYNC_PULL_RESPONSE_BYTES) -> dic
     blocked = []
     outbox = OutboxRepo(conn)
     for row in peer_rows:
-        for event in outbox.list_since(int(row["my_acked_seq"]), SYNC_PULL_FETCH_LIMIT):
-            if event["kind"] in ("memory_upsert", "memory_delete") and _memory_data_is_secret(event["payload"]):
-                continue
+        event = _first_sendable_outbox_event(
+            conn,
+            outbox,
+            int(row["my_acked_seq"]),
+        )
+        if event is not None:
             event_bytes = _event_wire_size(event)
             if event_bytes > max_bytes:
                 blocked.append({
                     "seq": event["seq"],
                     "event_bytes": event_bytes,
                 })
-            break
 
     if not blocked:
         return None

@@ -310,12 +310,26 @@ def _suggest_request(api: Api) -> None:
 
 def _seed_sync_events(conn: sqlite3.Connection) -> int:
     start_seq = OutboxRepo(conn).max_seq()
+    # A conforming clip_meta event must resolve to a local public clip.  Reuse
+    # the deterministic dataset rather than benchmarking orphan hashes that the
+    # Gate B pull boundary correctly rejects.  Small supported datasets cycle
+    # through their available rows; setup remains outside measured latency.
+    content_hashes = [
+        row[0]
+        for row in conn.execute(
+            "SELECT content_hash FROM clips "
+            "WHERE is_secret = 0 AND deleted = 0 ORDER BY id LIMIT ?",
+            (SYNC_EVENT_COUNT,),
+        ).fetchall()
+    ]
+    if not content_hashes:
+        raise RuntimeError("sync benchmark requires at least one public clip")
     rows = [
         (
             "clip_meta",
             json.dumps(
                 {
-                    "content_hash": hashlib.sha256(f"sync-{index}".encode()).hexdigest(),
+                    "content_hash": content_hashes[index % len(content_hashes)],
                     "patch": {"pinned": True},
                     "ts": "2026-06-01T12:00:00Z",
                 },

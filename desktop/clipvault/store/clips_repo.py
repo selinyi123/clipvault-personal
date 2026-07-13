@@ -7,6 +7,7 @@ import json
 import sqlite3
 from typing import Iterator
 
+from clipvault.core import secret_guard
 from clipvault.core.models import Clip
 from clipvault.store.unit_of_work import unit_of_work
 
@@ -132,6 +133,20 @@ class ClipsRepo:
         # It deletes by stable rowid; full startup repair owns any legacy
         # orphan/duplicate cleanup so normal deletes never scan UNINDEXED id.
         self.conn.execute("DELETE FROM clip_search_map WHERE clip_id = ?", (clip_id,))
+
+    def remove_from_search_index(
+        self, clip_id: str, *, commit: bool = True
+    ) -> None:
+        """Enforce Gate C for a row reclassified by a newer Secret Guard."""
+
+        try:
+            self._unindex_clip(clip_id)
+            if commit:
+                self.conn.commit()
+        except BaseException:
+            if commit:
+                self.conn.rollback()
+            raise
 
     def _search_index_drifted(self) -> bool:
         row = self.conn.execute(
@@ -574,9 +589,11 @@ class ClipsRepo:
     def release_secret(
         self, clip_id: str, when: str, *, commit: bool = True
     ) -> Clip | None:
-        """Mark a quarantined clip as not-secret and re-index it (DB-1 §4.3)."""
+        """Release a persisted or newly reclassified quarantine (DB-1 §4.3)."""
         clip = self.get(clip_id)
-        if clip is None or not clip.is_secret:
+        if clip is None or clip.released:
+            return None
+        if not clip.is_secret and not secret_guard.scan(clip.content).is_secret:
             return None
         try:
             self.conn.execute(

@@ -18,6 +18,40 @@
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-13 |
 
+## Current development note - 2026-07-13 / R000 secret clip metadata boundary
+
+- PR #115 merged as `dbe172fe6e26e4de4dc7d4081c348e9944c6050c`.
+  Current-main [CI run 29254408777](https://github.com/selinyi123/clipvault-personal/actions/runs/29254408777)
+  and [release-candidate run 29254409091](https://github.com/selinyi123/clipvault-personal/actions/runs/29254409091)
+  both passed for that exact SHA. The merge binds manual QA structure to the
+  exact final-draft workflow attempt, draft Release identity, and signed APK
+  snapshot; it does not replace live revalidation or Owner observations.
+- This stability patch keeps quarantined clip flag changes local-only.
+  The local PATCH, `clip_meta` emission, remote metadata apply, and legacy pull
+  filter share one release-aware Gate B predicate: persisted quarantine or a
+  current Secret Guard match stays local, while an explicit Owner release is
+  eligible for sync. Pull advances `next_seq` over blocked legacy rows; status
+  ignores them while scanning a bounded prefix. Neither path logs content or
+  content hashes. At the outbox/pull boundary, known event kinds enforce their
+  payload field whitelist and validators; malformed JSON, extra fields, and
+  unknown kinds fail closed.
+- A local public clip patch now commits all requested flags, FTS changes,
+  per-field metadata timestamps, the sync outbox event, and any deletion backup
+  intent in one SQLite unit of work. Inputs must be actual JSON booleans, and
+  the deletion-state comparison is taken after the writer lock is acquired.
+  `emit_clip_meta()` also validates its own hash, boolean-only field whitelist,
+  and timestamps before writing. Its standalone default path remains atomic
+  and leaves no active transaction; composed callers pass keyword-only
+  `commit=False` so an outer unit of work owns commit or rollback.
+- This slice adds no schema columns, REST endpoints, or sync payload fields and
+  does not change version metadata, IME behavior, release authority, or Issue
+  #36 state. It intentionally tightens PATCH flags to real JSON booleans and
+  makes legacy outbox decoding fail closed. Personal Memory and remote metadata
+  apply atomicity remain separate follow-up patches. A later metadata-ordering
+  slice must also replace second-resolution local timestamps with a monotonic
+  per-field ordering rule before claiming rapid successive same-field PATCH
+  convergence complete.
+
 ## Current development note - 2026-07-13 / R000 cross-platform stability hotfix
 
 - The current-main baseline at `a509006034b6777b8f80f76b466b761f4c151b4f`

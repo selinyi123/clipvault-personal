@@ -29,7 +29,7 @@ class BackupQueueRepo:
             self.conn.commit()
         return cur.rowcount > 0
 
-    def reenqueue(self, clip_id: str, when: str) -> None:
+    def reenqueue(self, clip_id: str, when: str, *, commit: bool = True) -> None:
         """Re-activate a clip for backup after its metadata changed (pin/favorite/
         delete). Unlike enqueue(), this resets an already-'done' row back to
         'pending' so the worker re-serializes the current state — otherwise a
@@ -46,7 +46,8 @@ class BackupQueueRepo:
             "ON CONFLICT(clip_id) DO UPDATE SET state='pending', done_at=NULL",
             (clip_id, when),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def pending_clip_ids(self) -> list[str]:
         rows = self.conn.execute(

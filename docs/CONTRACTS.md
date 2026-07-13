@@ -445,8 +445,8 @@ Base：`http://{host}:{port}/api`，仅本机与配对设备使用。除 `/pair`
 | POST | `/pair` | §5.3 |
 | GET | `/clips?q=&type=&secret=&limit=50&before_id=` | 列表/全文搜索（q≥3 字走 FTS trigram，<3 字或 secret 视图走 LIKE，见 DB-1.1；密钥项只在 secret=1 时返回且内容脱敏） |
 | POST | `/clips` | `{content, source_app?}` 手动添加，走完整 ingest 管线 |
-| PATCH | `/clips/{id}` | `{pinned?|favorite?|deleted?}` → 产生 clip_meta 事件 |
-| POST | `/clips/{id}/release` | 释放隔离（§4.3） |
+| PATCH | `/clips/{id}` | `{pinned?: boolean, favorite?: boolean, deleted?: boolean}` → 仅 sync-eligible、非隔离的 public clip 产生 `clip_meta`；secret 或被当前 Secret Guard 重新判定为敏感的 legacy clip 仅本地修改、不进入 outbox，并保持在 FTS 外；非 boolean 值返回 `400 bad_request`。一次 PATCH 的 flags、FTS、meta timestamps、outbox 与 deletion backup intent 在同一 SQLite 事务内提交或回滚 |
+| POST | `/clips/{id}/release` | 显式释放隔离（§4.3），包括被当前 Secret Guard 重新判定敏感的 legacy public clip |
 | GET | `/memory?kind=&q=` | memory 列表 |
 | POST | `/memory` | upsert MemoryItem |
 | DELETE | `/memory/{id}` | 软删 |

@@ -18,6 +18,7 @@ from clipvault.store.memory_repo import (
     SecretMemoryError,
 )
 from clipvault.store.peers_repo import PeersRepo
+from clipvault.store.unit_of_work import unit_of_work
 from clipvault.sync import engine as sync_engine
 from clipvault.sync.pairing import Pairing, hash_token
 
@@ -152,22 +153,56 @@ class Api:
         clip = self.clips.get(clip_id)
         if clip is None:
             return 404, {"error": {"code": "not_found", "message": clip_id}}
-        applied = {}
+        applied: dict[str, bool] = {}
         for field in ("pinned", "favorite", "deleted"):
             if field in body:
-                self.clips.set_flag(clip_id, field, bool(body[field]))
-                applied[field] = bool(body[field])
+                value = body[field]
+                if not isinstance(value, bool):
+                    return 400, {
+                        "error": {
+                            "code": "bad_request",
+                            "message": f"{field} must be boolean",
+                        }
+                    }
+                applied[field] = value
         if not applied:
             return 400, {"error": {"code": "bad_request", "message": "no settable flag"}}
-        # Emit a clip_meta event so the change propagates to paired devices (SYNC-2).
         now = _now_iso()
-        sync_engine.emit_clip_meta(self.conn, clip.content_hash, applied, now, now)
-        # Re-back-up only when the deletion state changed, so restore.py reflects
-        # the deletion and never resurrects deleted content (GHB-1.1). Cosmetic
-        # flags (pinned/favorite) are NOT re-backed-up — backup stays a recovery
-        # snapshot, not a full mirror. Secrets are never backed up.
-        if "deleted" in applied and not clip.is_secret:
-            BackupQueueRepo(self.conn).reenqueue(clip_id, now)
+        with unit_of_work(self.conn):
+            # Re-read after acquiring the writer lock.  The pre-check above
+            # preserves the existing cheap 404 path, while this snapshot owns
+            # the state comparison and all effects of the command.
+            current = self.clips.get(clip_id)
+            if current is None:
+                return 404, {"error": {"code": "not_found", "message": clip_id}}
+            deletion_changed = (
+                "deleted" in applied
+                and current.deleted != applied["deleted"]
+            )
+            quarantined = sync_engine.clip_requires_local_quarantine(current)
+            for field, value in applied.items():
+                self.clips.set_flag(clip_id, field, value, commit=False)
+            if quarantined:
+                # Gate C: a legacy is_secret=0 row may match newer Secret Guard
+                # rules.  In particular, undelete must not reintroduce it into
+                # FTS before the Owner explicitly releases it.
+                self.clips.remove_from_search_index(clip_id, commit=False)
+            else:
+                # Emit metadata and its field timestamps in this same command.
+                # Gate B keeps every secret flag mutation local-only.
+                sync_engine.emit_clip_meta(
+                    self.conn,
+                    current.content_hash,
+                    applied,
+                    now,
+                    now,
+                    commit=False,
+                )
+                # Backup is a recovery snapshot, not a cosmetic flag mirror.
+                if deletion_changed:
+                    BackupQueueRepo(self.conn).reenqueue(
+                        clip_id, now, commit=False
+                    )
         return 200, {"id": clip_id, "applied": applied}
 
     def release_clip(self, clip_id: str) -> tuple[int, dict]:
