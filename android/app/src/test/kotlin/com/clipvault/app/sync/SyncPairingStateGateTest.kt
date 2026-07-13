@@ -37,7 +37,7 @@ class SyncPairingStateGateTest {
             }
             assertTrue(replacementPaused.await(2, TimeUnit.SECONDS))
 
-            val reader = executor.submit {
+            val reader = executor.submit<SyncRequestSnapshot> {
                 readerAttempted.countDown()
                 readerGate.snapshot { revision, endpointRevision ->
                     request(host, token, revision, endpointRevision)
@@ -74,7 +74,7 @@ class SyncPairingStateGateTest {
         var token: String? = "old-token"
 
         try {
-            val request = executor.submit {
+            val request = executor.submit<SyncRequestSnapshot> {
                 val snapshot = requestGate.snapshot { revision, endpointRevision ->
                     request(host, token, revision, endpointRevision)
                 }
