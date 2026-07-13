@@ -14,9 +14,12 @@ from clipvault.api.handlers import Api
 from clipvault.api import server as api_server
 from clipvault.config import Config
 from clipvault.core import normalize
+from clipvault.core.models import Clip
 from clipvault.service import ClipVaultService
+from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.outbox_repo import OutboxRepo
+from clipvault.store.unit_of_work import unit_of_work
 from clipvault.sync import engine as sync_engine
 from clipvault.sync.pairing import Pairing, hash_token
 
@@ -55,6 +58,27 @@ def _clip_new_event(seq, content, **kw):
     }
     return {"origin_device": PEER, "seq": seq, "kind": "clip_new",
             "ts": "2026-06-13T10:00:00Z", "data": data}
+
+
+def _outbox_clip_payload(content: str, *, is_secret: bool = False) -> dict:
+    content_hash = normalize.content_hash(content)
+    return {
+        "id": f"01OUTBOX{content_hash[:18]}",
+        "content": content,
+        "content_hash": content_hash,
+        "content_type": "text",
+        "is_secret": is_secret,
+        "secret_level": "hard" if is_secret else None,
+        "secret_reasons": ["TEST"] if is_secret else [],
+        "source_device": "desktop-test",
+        "source_app": None,
+        "created_at": "2026-06-13T10:00:00Z",
+        "last_seen_at": "2026-06-13T10:00:00Z",
+        "times_seen": 1,
+        "pinned": False,
+        "favorite": False,
+        "deleted": False,
+    }
 
 
 def test_h1_pairing(api):
@@ -352,6 +376,442 @@ def test_h7_local_patch_emits_clip_meta_for_pull(api, conn):
     assert payload["patch"].get("favorite") is True
 
 
+def test_h7_secret_patch_stays_local_and_legacy_clip_events_are_filtered(
+    api, conn, caplog
+):
+    token = _pair(api)
+    _, created = api.create_clip({"content": FAKE_AWS_KEY})
+    clip_id = created["clip"]["id"]
+    clip = ClipsRepo(conn).get(clip_id)
+    assert clip is not None and clip.is_secret is True
+
+    status, body = api.patch_clip(clip_id, {"pinned": True})
+
+    assert status == 200 and body["applied"] == {"pinned": True}
+    assert ClipsRepo(conn).get(clip_id).pinned is True
+    assert sync_engine.emit_clip_meta(
+        conn,
+        clip.content_hash,
+        {"favorite": True},
+        "2026-06-13T10:20:00Z",
+        "2026-06-13T10:20:00Z",
+    ) is None
+    assert conn.execute(
+        "SELECT COUNT(*) FROM clip_meta_ts WHERE content_hash = ?",
+        (clip.content_hash,),
+    ).fetchone()[0] == 0
+    assert OutboxRepo(conn).max_seq() == 0
+    assert BackupQueueRepo(conn).state_of(clip_id) is None
+
+    remote_meta = {
+        "origin_device": PEER,
+        "seq": 1,
+        "kind": "clip_meta",
+        "ts": "2026-06-13T10:20:00Z",
+        "data": {
+            "content_hash": clip.content_hash,
+            "patch": {"favorite": True},
+            "ts": "2026-06-13T10:20:00Z",
+        },
+    }
+    caplog.clear()
+    with caplog.at_level("ERROR", logger="clipvault.sync"):
+        push_status, pushed = api.sync_push(token, {"events": [remote_meta]})
+    assert push_status == 200 and pushed["acked_upto"] == 1
+    assert ClipsRepo(conn).get(clip_id).favorite is False
+    assert clip.content_hash not in caplog.text
+
+    # Defence in depth for rows written by a pre-gate version: neither a full
+    # secret clip nor its hash-only metadata may leave through pull.
+    outbox = OutboxRepo(conn)
+    outbox.append(
+        "clip_new",
+        sync_engine.clip_to_data(clip),
+        "2026-06-13T10:21:00Z",
+    )
+    outbox.append(
+        "clip_meta",
+        {
+            "content_hash": clip.content_hash,
+            "patch": {"pinned": True},
+            "ts": "2026-06-13T10:22:00Z",
+        },
+        "2026-06-13T10:22:00Z",
+    )
+    final_seq = outbox.append(
+        "clip_meta",
+        {},
+        "2026-06-13T10:23:00Z",
+    )
+    caplog.clear()
+    with caplog.at_level("ERROR", logger="clipvault.sync"):
+        pull_status, pulled = api.sync_pull(token, {"since_seq": "0"})
+
+    assert pull_status == 200
+    assert pulled["events"] == []
+    assert pulled["next_seq"] == final_seq
+    assert sync_engine.pull_blocked_summary(conn, max_bytes=1) is None
+    assert FAKE_AWS_KEY not in caplog.text
+    assert clip.content_hash not in caplog.text
+
+    # Release is an explicit Owner decision.  Its new public event must not be
+    # silently discarded merely because the original text still scans as a
+    # secret-shaped value.
+    assert api.release_clip(clip_id)[0] == 200
+    release_status, released = api.sync_pull(
+        token, {"since_seq": str(final_seq)}
+    )
+    assert release_status == 200
+    assert len(released["events"]) == 1
+    assert released["events"][0]["kind"] == "clip_new"
+    assert released["events"][0]["payload"]["id"] == clip_id
+    assert released["events"][0]["payload"]["is_secret"] is False
+    assert released["events"][0]["payload"]["content"] == FAKE_AWS_KEY
+
+
+def test_h7_release_does_not_retroactively_publish_old_secret_snapshot(api, conn):
+    _, created = api.create_clip({"content": FAKE_AWS_KEY})
+    clip_id = created["clip"]["id"]
+    secret = ClipsRepo(conn).get(clip_id)
+    outbox = OutboxRepo(conn)
+    old_secret_seq = outbox.append(
+        "clip_new",
+        sync_engine.clip_to_data(secret),
+        "2026-06-13T10:10:00Z",
+    )
+
+    assert api.release_clip(clip_id)[0] == 200
+    release_seq = outbox.max_seq()
+    assert release_seq > old_secret_seq
+
+    pulled = sync_engine.build_pull(conn, 0)
+    assert [event["seq"] for event in pulled["events"]] == [release_seq]
+    assert pulled["events"][0]["payload"]["is_secret"] is False
+    assert pulled["events"][0]["payload"]["id"] == clip_id
+    assert pulled["next_seq"] == release_seq
+
+
+def test_h7_legacy_clip_new_cannot_borrow_public_hash_for_secret_payload(
+    api, conn
+):
+    _, created = api.create_clip({"content": "safe local identity"})
+    public = ClipsRepo(conn).get(created["clip"]["id"])
+    legitimate_seq = OutboxRepo(conn).max_seq()
+    malicious = _outbox_clip_payload(FAKE_AWS_KEY)
+    malicious["content_hash"] = public.content_hash
+    malicious["id"] = public.id
+    malicious_seq = OutboxRepo(conn).append(
+        "clip_new", malicious, "2026-06-13T10:20:00Z"
+    )
+
+    pulled = sync_engine.build_pull(conn, legitimate_seq)
+
+    assert pulled["events"] == []
+    assert pulled["next_seq"] == malicious_seq
+    assert FAKE_AWS_KEY not in json.dumps(pulled, ensure_ascii=False)
+
+
+def test_h7_malformed_clip_events_cannot_hide_secret_extra_fields(api, conn):
+    _, created = api.create_clip({"content": "strict outbox payload"})
+    public = ClipsRepo(conn).get(created["clip"]["id"])
+    legitimate_seq = OutboxRepo(conn).max_seq()
+
+    clip_new = sync_engine.clip_to_data(public)
+    clip_new["secret_dump"] = FAKE_AWS_KEY
+    extra_field_seq = OutboxRepo(conn).append(
+        "clip_new", clip_new, "2026-06-13T10:20:00Z"
+    )
+    malformed_meta_seq = OutboxRepo(conn).append(
+        "clip_meta",
+        {
+            "content_hash": public.content_hash,
+            "patch": {"pinned": FAKE_AWS_KEY},
+            "ts": "2026-06-13T10:21:00Z",
+        },
+        "2026-06-13T10:21:00Z",
+    )
+
+    pulled = sync_engine.build_pull(conn, legitimate_seq)
+
+    assert pulled["events"] == []
+    assert pulled["next_seq"] == malformed_meta_seq
+    assert extra_field_seq < malformed_meta_seq
+    assert FAKE_AWS_KEY not in json.dumps(pulled, ensure_ascii=False)
+
+
+def test_h7_corrupt_json_and_unknown_outbox_kinds_fail_closed(conn):
+    conn.execute(
+        "INSERT INTO sync_outbox(kind, payload, created_at) VALUES (?,?,?)",
+        ("clip_new", "{not-json", "2026-06-13T10:20:00Z"),
+    )
+    final_seq = OutboxRepo(conn).append(
+        "future_kind",
+        {"secret_dump": FAKE_AWS_KEY},
+        "2026-06-13T10:21:00Z",
+    )
+    envelope_seq = OutboxRepo(conn).append(
+        "memory_delete",
+        {
+            "kind": "term",
+            "text": "safe term",
+            "ts": "2026-06-13T10:22:00Z",
+        },
+        FAKE_AWS_KEY,
+    )
+    surrogate = conn.execute(
+        "INSERT INTO sync_outbox(kind, payload, created_at) VALUES (?,?,?)",
+        (
+            "memory_upsert",
+            '{"kind":"term","text":"\\ud800","label":null,'
+            '"pinned":false,"use_count":0,"source":"manual"}',
+            "2026-06-13T10:22:00Z",
+        ),
+    )
+    surrogate_seq = surrogate.lastrowid
+    conn.commit()
+
+    pulled = sync_engine.build_pull(conn, 0)
+
+    assert pulled["events"] == []
+    assert final_seq < envelope_seq
+    assert envelope_seq < surrogate_seq
+    assert pulled["next_seq"] == surrogate_seq
+    assert FAKE_AWS_KEY not in json.dumps(pulled, ensure_ascii=False)
+
+
+def test_h7_local_patch_rolls_back_flags_meta_outbox_and_backup_intent(
+    api, conn, monkeypatch
+):
+    _, created = api.create_clip({"content": "atomic local metadata patch"})
+    clip_id = created["clip"]["id"]
+    clip = ClipsRepo(conn).get(clip_id)
+    queue = BackupQueueRepo(conn)
+    queue.mark_done(clip_id, "2026-06-13T10:00:00Z")
+    outbox_before = OutboxRepo(conn).max_seq()
+    original_reenqueue = BackupQueueRepo.reenqueue
+
+    def fail_after_reenqueue(self, candidate_id, when, *, commit=True):
+        assert commit is False
+        original_reenqueue(self, candidate_id, when, commit=False)
+        raise RuntimeError("injected backup intent failure")
+
+    monkeypatch.setattr(BackupQueueRepo, "reenqueue", fail_after_reenqueue)
+
+    with pytest.raises(RuntimeError, match="backup intent failure"):
+        api.patch_clip(
+            clip_id,
+            {"pinned": True, "favorite": True, "deleted": True},
+        )
+
+    restored = ClipsRepo(conn).get(clip_id)
+    assert restored.pinned is False
+    assert restored.favorite is False
+    assert restored.deleted is False
+    assert ClipsRepo(conn).fts_contains(clip_id)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM clip_meta_ts WHERE content_hash = ?",
+        (clip.content_hash,),
+    ).fetchone()[0] == 0
+    assert OutboxRepo(conn).max_seq() == outbox_before
+    assert queue.state_of(clip_id) == "done"
+    assert conn.in_transaction is False
+
+
+def test_h7_emit_clip_meta_default_path_is_atomic(conn, monkeypatch):
+    outcome = Clip(
+        id="01ATOMICMETA00000000000001",
+        content="direct metadata emission",
+        content_hash=normalize.content_hash("direct metadata emission"),
+        content_type="text",
+        is_secret=False,
+        secret_level=None,
+        secret_reasons=[],
+        source_device="desktop",
+        source_app=None,
+        created_at="2026-06-13T10:00:00Z",
+        last_seen_at="2026-06-13T10:00:00Z",
+    )
+    ClipsRepo(conn).insert(outcome)
+    original_append = OutboxRepo.append
+
+    def fail_after_append(self, kind, payload, when, *, commit=True):
+        assert kind == "clip_meta"
+        assert commit is False
+        original_append(self, kind, payload, when, commit=False)
+        raise RuntimeError("injected outbox failure")
+
+    monkeypatch.setattr(OutboxRepo, "append", fail_after_append)
+
+    with pytest.raises(RuntimeError, match="outbox failure"):
+        sync_engine.emit_clip_meta(
+            conn,
+            outcome.content_hash,
+            {"pinned": True},
+            "2026-06-13T10:20:00Z",
+            "2026-06-13T10:20:00Z",
+        )
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM clip_meta_ts WHERE content_hash = ?",
+        (outcome.content_hash,),
+    ).fetchone()[0] == 0
+    assert OutboxRepo(conn).max_seq() == 0
+    assert conn.in_transaction is False
+
+
+@pytest.mark.parametrize(
+    "invalid_patch",
+    [
+        {},
+        {"pinned": FAKE_AWS_KEY},
+        {"unknown": True},
+        {"favorite": True, "unknown": False},
+    ],
+)
+def test_h7_emit_clip_meta_rejects_invalid_patch_without_side_effects(
+    api, conn, invalid_patch
+):
+    _, created = api.create_clip({"content": "validated metadata emission"})
+    clip = ClipsRepo(conn).get(created["clip"]["id"])
+    outbox_before = OutboxRepo(conn).max_seq()
+
+    with pytest.raises(ValueError, match="invalid clip metadata"):
+        sync_engine.emit_clip_meta(
+            conn,
+            clip.content_hash,
+            invalid_patch,
+            "2026-06-13T10:20:00Z",
+            "2026-06-13T10:20:00Z",
+        )
+
+    assert OutboxRepo(conn).max_seq() == outbox_before
+    assert conn.execute(
+        "SELECT COUNT(*) FROM clip_meta_ts WHERE content_hash = ?",
+        (clip.content_hash,),
+    ).fetchone()[0] == 0
+    assert conn.in_transaction is False
+
+
+def test_h7_emit_clip_meta_standalone_success_commits_atomically(api, conn):
+    _, created = api.create_clip({"content": "standalone metadata emission"})
+    clip = ClipsRepo(conn).get(created["clip"]["id"])
+
+    seq = sync_engine.emit_clip_meta(
+        conn,
+        clip.content_hash,
+        {"pinned": True},
+        "2026-06-13T10:20:00Z",
+        "2026-06-13T10:20:00Z",
+    )
+
+    assert isinstance(seq, int)
+    assert OutboxRepo(conn).max_seq() == seq
+    assert conn.execute(
+        "SELECT ts FROM clip_meta_ts WHERE content_hash = ? AND field = 'pinned'",
+        (clip.content_hash,),
+    ).fetchone()[0] == "2026-06-13T10:20:00Z"
+    assert conn.in_transaction is False
+
+
+def test_h7_emit_clip_meta_default_path_joins_outer_unit_of_work(api, conn):
+    _, created = api.create_clip({"content": "nested metadata emission"})
+    clip = ClipsRepo(conn).get(created["clip"]["id"])
+    outbox_before = OutboxRepo(conn).max_seq()
+
+    with pytest.raises(RuntimeError, match="outer rollback"):
+        with unit_of_work(conn):
+            sync_engine.emit_clip_meta(
+                conn,
+                clip.content_hash,
+                {"favorite": True},
+                "2026-06-13T10:20:00Z",
+                "2026-06-13T10:20:00Z",
+            )
+            assert conn.in_transaction is True
+            raise RuntimeError("outer rollback")
+
+    assert OutboxRepo(conn).max_seq() == outbox_before
+    assert conn.execute(
+        "SELECT COUNT(*) FROM clip_meta_ts WHERE content_hash = ?",
+        (clip.content_hash,),
+    ).fetchone()[0] == 0
+    assert conn.in_transaction is False
+
+
+def test_h7_legacy_public_row_rechecks_current_secret_guard_at_sync_boundaries(
+    api, conn
+):
+    content = "AKIAIOSFODNN7EXAMPLF"
+    legacy = Clip(
+        id="01LEGACYSECRETMETA00000001",
+        content=content,
+        content_hash=normalize.content_hash(content),
+        content_type="text",
+        is_secret=False,
+        secret_level=None,
+        secret_reasons=[],
+        source_device="desktop",
+        source_app=None,
+        created_at="2026-06-13T10:00:00Z",
+        last_seen_at="2026-06-13T10:00:00Z",
+        deleted=True,
+    )
+    ClipsRepo(conn).insert(legacy)
+    assert ClipsRepo(conn).fts_contains(legacy.id) is False
+    assert sync_engine.emit_clip_new(
+        conn, legacy, "2026-06-13T10:10:00Z"
+    ) is None
+
+    status, _ = api.patch_clip(
+        legacy.id, {"pinned": True, "deleted": False}
+    )
+
+    assert status == 200
+    assert ClipsRepo(conn).get(legacy.id).pinned is True
+    assert ClipsRepo(conn).get(legacy.id).deleted is False
+    assert ClipsRepo(conn).fts_contains(legacy.id) is False
+    assert OutboxRepo(conn).max_seq() == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM clip_meta_ts WHERE content_hash = ?",
+        (legacy.content_hash,),
+    ).fetchone()[0] == 0
+
+    token = _pair(api)
+    remote_status, remote_body = api.sync_push(
+        token,
+        {
+            "events": [
+                {
+                    "origin_device": PEER,
+                    "seq": 1,
+                    "kind": "clip_meta",
+                    "ts": "2026-06-13T10:15:00Z",
+                    "data": {
+                        "content_hash": legacy.content_hash,
+                        "patch": {"favorite": True},
+                        "ts": "2026-06-13T10:15:00Z",
+                    },
+                }
+            ]
+        },
+    )
+    assert remote_status == 200 and remote_body["acked_upto"] == 1
+    assert ClipsRepo(conn).get(legacy.id).favorite is False
+
+    legacy_seq = OutboxRepo(conn).append(
+        "clip_meta",
+        {
+            "content_hash": legacy.content_hash,
+            "patch": {"pinned": True},
+            "ts": "2026-06-13T10:20:00Z",
+        },
+        "2026-06-13T10:20:00Z",
+    )
+    pulled = sync_engine.build_pull(conn, 0)
+    assert pulled["events"] == []
+    assert pulled["next_seq"] == legacy_seq
+
+
 def test_h7_clip_meta_per_field_lww(api, conn):
     # v1.8: a newer change to one field must not be masked by an older change to a
     # different field that happened to bump a shared timestamp.
@@ -391,8 +851,8 @@ def test_h8_cursor_resume(api, conn):
 def test_h8_pull_response_byte_budget_pages_without_skipping(conn):
     outbox = OutboxRepo(conn)
     when = "2026-06-13T10:00:00Z"
-    first_seq = outbox.append("clip_new", {"content": "a" * 200, "content_hash": "pull-budget-1"}, when)
-    second_seq = outbox.append("clip_new", {"content": "b" * 200, "content_hash": "pull-budget-2"}, when)
+    first_seq = outbox.append("clip_new", _outbox_clip_payload("a" * 200), when)
+    second_seq = outbox.append("clip_new", _outbox_clip_payload("b" * 200), when)
 
     first_event_size = sync_engine._event_wire_size(outbox.list_since(0, limit=1)[0])
     first = sync_engine.build_pull(conn, since_seq=0, max_bytes=first_event_size)
@@ -415,7 +875,7 @@ def test_h8_pull_continues_across_bounded_sqlite_fetch_pages(conn):
         expected.append(
             outbox.append(
                 "clip_new",
-                {"content": f"page-row-{index}", "content_hash": f"page-hash-{index}"},
+                _outbox_clip_payload(f"page-row-{index}"),
                 "2026-07-13T00:00:00Z",
             )
         )
@@ -439,7 +899,9 @@ def test_h8_pull_continues_across_bounded_sqlite_fetch_pages(conn):
 def test_h8_pull_single_event_over_response_budget_fails_without_skipping(conn, caplog):
     outbox = OutboxRepo(conn)
     when = "2026-06-13T10:00:00Z"
-    seq = outbox.append("clip_new", {"content": "oversized-content", "content_hash": "pull-too-big"}, when)
+    seq = outbox.append(
+        "clip_new", _outbox_clip_payload("oversized-content"), when
+    )
 
     with pytest.raises(sync_engine.SyncPullEventTooLarge) as exc_info:
         sync_engine.build_pull(conn, since_seq=0, max_bytes=10)
@@ -454,23 +916,7 @@ def test_h8_pull_accepts_max_clip_with_worst_case_json_escaping(conn):
     outbox = OutboxRepo(conn)
     seq = outbox.append(
         "clip_new",
-        {
-            "id": "01J00000000000000000000000",
-            "content": content,
-            "content_hash": "a" * 64,
-            "content_type": "text",
-            "is_secret": False,
-            "secret_level": None,
-            "secret_reasons": [],
-            "source_device": "desktop-test",
-            "source_app": None,
-            "created_at": "2026-07-13T00:00:00Z",
-            "last_seen_at": "2026-07-13T00:00:00Z",
-            "times_seen": 1,
-            "pinned": False,
-            "favorite": False,
-            "deleted": False,
-        },
+        _outbox_clip_payload(content),
         "2026-07-13T00:00:00Z",
     )
     event = outbox.list_since(0, limit=1)[0]
@@ -495,7 +941,7 @@ def test_h8_pull_single_event_over_response_budget_returns_413(api, conn):
     when = "2026-06-13T10:00:00Z"
     seq = outbox.append(
         "clip_new",
-        {"content": "x" * sync_engine.SYNC_PULL_HTTP_RESPONSE_BYTES, "content_hash": "pull-api-too-big"},
+        _outbox_clip_payload("x" * sync_engine.SYNC_PULL_HTTP_RESPONSE_BYTES),
         when,
     )
     assert sync_engine._event_wire_size(outbox.list_since(0, limit=1)[0]) > (
@@ -556,7 +1002,7 @@ def test_status_reports_oversized_pull_block_without_content(api, conn):
     oversized_content = secret_text + ("x" * sync_engine.SYNC_PULL_HTTP_RESPONSE_BYTES)
     seq = outbox.append(
         "clip_new",
-        {"content": oversized_content, "content_hash": "blocked-status"},
+        _outbox_clip_payload(oversized_content),
         "2026-06-13T10:00:00Z",
     )
 
@@ -573,6 +1019,38 @@ def test_status_reports_oversized_pull_block_without_content(api, conn):
     assert status["sync"]["blocked_pull"]["code"] == "sync_event_too_large"
     assert status["sync"]["blocked_pull"]["first_seq"] == seq
     assert secret_text not in json.dumps(status, ensure_ascii=False)
+
+
+def test_status_scans_past_one_page_of_filtered_secret_clip_events(api, conn):
+    _pair(api)
+    _, created = api.create_clip({"content": FAKE_AWS_KEY})
+    secret = ClipsRepo(conn).get(created["clip"]["id"])
+    outbox = OutboxRepo(conn)
+    last_secret_seq = 0
+    for index in range(sync_engine.SYNC_PULL_FETCH_LIMIT):
+        last_secret_seq = outbox.append(
+            "clip_new",
+            sync_engine.clip_to_data(secret),
+            f"2026-06-13T10:00:{index:02d}Z",
+        )
+    public_content = "sendable event behind a filtered internal page"
+    public_seq = outbox.append(
+        "clip_new",
+        _outbox_clip_payload(public_content),
+        "2026-06-13T10:01:00Z",
+    )
+
+    first_page = sync_engine.build_pull(conn, 0)
+    assert first_page["events"] == []
+    assert first_page["next_seq"] == last_secret_seq
+    assert first_page["has_more"] is True
+    second_page = sync_engine.build_pull(conn, last_secret_seq)
+    assert [event["seq"] for event in second_page["events"]] == [public_seq]
+
+    blocked = sync_engine.pull_blocked_summary(conn, max_bytes=1)
+    assert blocked is not None
+    assert blocked["first_seq"] == public_seq
+    assert blocked["blocked_devices"] == 1
 
 
 def test_unpair_revokes_device_access(api):

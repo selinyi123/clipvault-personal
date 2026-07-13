@@ -133,6 +133,20 @@ class ClipsRepo:
         # orphan/duplicate cleanup so normal deletes never scan UNINDEXED id.
         self.conn.execute("DELETE FROM clip_search_map WHERE clip_id = ?", (clip_id,))
 
+    def remove_from_search_index(
+        self, clip_id: str, *, commit: bool = True
+    ) -> None:
+        """Enforce Gate C for a row reclassified by a newer Secret Guard."""
+
+        try:
+            self._unindex_clip(clip_id)
+            if commit:
+                self.conn.commit()
+        except BaseException:
+            if commit:
+                self.conn.rollback()
+            raise
+
     def _search_index_drifted(self) -> bool:
         row = self.conn.execute(
             "SELECT 1 FROM ("

@@ -1,5 +1,6 @@
 """S008 gates K1-K6, K8: memory events emitted/applied + pulled."""
 
+import json
 import logging
 
 import pytest
@@ -172,3 +173,25 @@ def test_k9_pull_filters_legacy_secret_memory_event_and_advances_cursor(conn, ca
     assert pulled["next_seq"] == 1
     assert pulled["has_more"] is False
     assert FAKE_AWS_KEY not in caplog.text
+
+
+def test_k9_pull_rejects_unknown_memory_payload_fields(conn):
+    final_seq = OutboxRepo(conn).append(
+        "memory_upsert",
+        {
+            "kind": "term",
+            "text": "safe public term",
+            "label": None,
+            "pinned": False,
+            "use_count": 0,
+            "source": "manual",
+            "secret_dump": FAKE_AWS_KEY,
+        },
+        "2026-06-13T10:00:00Z",
+    )
+
+    pulled = engine.build_pull(conn, since_seq=0)
+
+    assert pulled["events"] == []
+    assert pulled["next_seq"] == final_seq
+    assert FAKE_AWS_KEY not in json.dumps(pulled, ensure_ascii=False)

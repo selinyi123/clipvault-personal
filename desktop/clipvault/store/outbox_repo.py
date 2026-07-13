@@ -25,11 +25,24 @@ class OutboxRepo:
             "WHERE seq > ? ORDER BY seq LIMIT ?",
             (since_seq, limit),
         ).fetchall()
-        return [
-            {"seq": r["seq"], "kind": r["kind"],
-             "payload": json.loads(r["payload"]), "created_at": r["created_at"]}
-            for r in rows
-        ]
+        events = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError, UnicodeError):
+                # The pull boundary treats a non-dict payload as blocked and
+                # advances over it.  Do not let one corrupted legacy row crash
+                # every pull/status attempt before Gate B can run.
+                payload = None
+            events.append(
+                {
+                    "seq": row["seq"],
+                    "kind": row["kind"],
+                    "payload": payload,
+                    "created_at": row["created_at"],
+                }
+            )
+        return events
 
     def max_seq(self) -> int:
         row = self.conn.execute("SELECT COALESCE(MAX(seq), 0) FROM sync_outbox").fetchone()

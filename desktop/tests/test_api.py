@@ -147,6 +147,29 @@ def test_d5_patch_flags_and_delete_removes_from_fts(api, conn):
     assert found["clips"] == []
 
 
+@pytest.mark.parametrize("invalid_value", ["false", 0, 1, None])
+def test_d5_patch_rejects_non_boolean_flags_without_side_effects(
+    api, conn, invalid_value
+):
+    _, obj = api.create_clip({"content": "strict boolean patch"})
+    cid = obj["clip"]["id"]
+    clip = ClipsRepo(conn).get(cid)
+    outbox_before = OutboxRepo(conn).max_seq()
+
+    code, body = api.patch_clip(cid, {"deleted": invalid_value})
+
+    assert code == 400
+    assert body["error"]["code"] == "bad_request"
+    current = ClipsRepo(conn).get(cid)
+    assert current.deleted is False
+    assert ClipsRepo(conn).fts_contains(cid)
+    assert OutboxRepo(conn).max_seq() == outbox_before
+    assert conn.execute(
+        "SELECT COUNT(*) FROM clip_meta_ts WHERE content_hash = ?",
+        (clip.content_hash,),
+    ).fetchone()[0] == 0
+
+
 def test_d6_release_runs_pipeline(api, conn, tmp_path):
     _, obj = api.create_clip({"content": FAKE_AWS_KEY})
     cid = obj["clip"]["id"]
