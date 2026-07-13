@@ -83,6 +83,7 @@ def _verify_platform_dir(
     version: str,
     commit: str,
     require_signed: bool = False,
+    expected_android_cert_sha256: str | None = None,
 ) -> dict[str, Any]:
     manifest = verify_release_manifest.verify_manifest(
         artifact_dir,
@@ -90,6 +91,7 @@ def _verify_platform_dir(
         version=version,
         commit=commit,
         require_signed=require_signed,
+        expected_android_cert_sha256=expected_android_cert_sha256,
     )
     if manifest.get("kind") != "release":
         raise ValueError(f"{platform} artifacts must have manifest kind=release")
@@ -105,11 +107,15 @@ def validate_evidence(
     version: str = DEFAULT_VERSION,
     commit: str,
     run_url: str,
+    expected_android_cert_sha256: str,
     repo: str = DEFAULT_REPO,
 ) -> dict[str, Any]:
     numeric = numeric_version(version)
     commit = validate_commit(commit)
     run_url = validate_run_url(run_url, repo)
+    owner_cert_sha256 = verify_release_manifest.normalize_android_cert_sha256(
+        expected_android_cert_sha256
+    )
 
     windows_manifest = _verify_platform_dir(
         windows_dir,
@@ -123,24 +129,27 @@ def validate_evidence(
         version=numeric,
         commit=commit,
         require_signed=True,
+        expected_android_cert_sha256=owner_cert_sha256,
     )
 
     return {
-        "status": "pass",
+        "status": "structural_precheck_pass",
         "repo": repo,
         "issue": ISSUE_NUMBER,
         "version": version,
         "numeric_version": numeric,
         "commit": commit,
         "run_url": run_url,
+        "android_owner_cert_sha256": owner_cert_sha256,
         "windows_dir": str(windows_dir),
         "android_dir": str(android_dir),
         "windows_artifacts": _artifact_names(windows_manifest),
         "android_artifacts": _artifact_names(android_manifest),
         "scope_note": (
-            "This report validates downloaded artifact directories only. It does "
-            "not replace manual QA evidence, release environment/secrets evidence, "
-            "Owner approval, or final GitHub Release publication."
+            "This structural precheck validates downloaded artifact directories and "
+            "binds captured signer evidence to the supplied Owner certificate. It does "
+            "not verify GitHub run provenance. It does not replace manual QA evidence, "
+            "release environment policy, Owner approval, or final GitHub Release publication."
         ),
     }
 
@@ -153,6 +162,7 @@ def render_issue_comment(report: dict[str, Any]) -> str:
         f"- Version: `{report['version']}`",
         f"- Target commit: `{report['commit']}`",
         f"- Release artifact workflow run: {report['run_url']}",
+        f"- Expected Owner Android certificate SHA-256: `{report['android_owner_cert_sha256']}`",
         "",
         "Validated downloaded artifact directories:",
         "",
@@ -175,16 +185,18 @@ def render_issue_comment(report: dict[str, Any]) -> str:
         f"  --android-dir \"{report['android_dir']}\" `",
         f"  --version {report['version']} `",
         f"  --commit {report['commit']} `",
-        f"  --run-url {report['run_url']}",
+        f"  --run-url {report['run_url']} `",
+        "  --expected-android-cert-sha256 $env:ANDROID_RELEASE_CERT_SHA256",
         "```",
         "",
         "The helper verified `RELEASE_MANIFEST.json`, `SHA256SUMS.txt`, exact",
-        "required release artifact names, and Android `ANDROID_APKSIGNER_VERIFY.txt`",
-        "shape for downloaded artifacts.",
+        "required release artifact names, and the sole Android signer certificate",
+        "in `ANDROID_APKSIGNER_VERIFY.txt` against the supplied Owner SHA-256",
+        "for downloaded artifacts.",
         "",
-        "Optional provenance follow-up: because the release workflow emits GitHub",
-        "artifact attestations, verify the primary binaries with `gh attestation",
-        f"verify ... --repo {report['repo']}` before publishing.",
+        "Mandatory provenance follow-up: validate the exact GitHub run metadata and",
+        "run `gh attestation verify` for every final binary with repository, workflow, branch, and",
+        "exact source/signer commit constraints before this can satisfy Issue #36.",
         "",
         str(report["scope_note"]),
     ])
@@ -200,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", default=DEFAULT_VERSION)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--run-url", required=True)
+    parser.add_argument("--expected-android-cert-sha256", required=True)
     parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     parser.add_argument("--output", type=Path, help="write the rendered Markdown comment to a UTF-8 file")
@@ -217,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
             version=args.version,
             commit=args.commit,
             run_url=args.run_url,
+            expected_android_cert_sha256=args.expected_android_cert_sha256,
             repo=args.repo,
         )
     except ValueError as exc:

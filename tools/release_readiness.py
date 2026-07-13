@@ -26,6 +26,8 @@ REQUIRED_RELEASE_ENV_SECRETS = {
     "ANDROID_RELEASE_KEY_ALIAS",
     "ANDROID_RELEASE_KEY_PASSWORD",
 }
+REQUIRED_RELEASE_ENV_VARIABLE = "ANDROID_RELEASE_CERT_SHA256"
+ANDROID_CERT_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 CHECKLIST_ITEM_RE = re.compile(r"(?m)^\s*[-*]\s+\[(?P<mark>[ xX])\]\s+(?P<text>.+?)\s*$")
 
 READ_ONLY_GH_SUBCOMMANDS = {
@@ -34,6 +36,7 @@ READ_ONLY_GH_SUBCOMMANDS = {
     ("release", "view"),
     ("run", "list"),
     ("secret", "list"),
+    ("variable", "list"),
 }
 WRITE_CAPABLE_GH_API_FLAGS = {
     "-X",
@@ -381,6 +384,73 @@ def check_release_environment_secrets(runner: Runner, repo: str, env_exists: boo
     )
 
 
+def check_release_environment_signer_variable(
+    runner: Runner,
+    repo: str,
+    env_exists: bool,
+) -> Gate:
+    gate_name = "release environment Owner certificate"
+    if not env_exists:
+        return _blocked(
+            gate_name,
+            "Skipped because GitHub environment `release` is missing.",
+            next_step=(
+                "Create the `release` environment, then configure the non-secret "
+                f"{REQUIRED_RELEASE_ENV_VARIABLE} trust anchor."
+            ),
+        )
+    try:
+        data = _run_json(
+            runner,
+            [
+                "gh",
+                "variable",
+                "list",
+                "--repo",
+                repo,
+                "--env",
+                "release",
+                "--json",
+                "name,value,updatedAt",
+            ],
+            gate_name,
+        )
+    except ValueError as exc:
+        return _blocked(
+            gate_name,
+            "Could not list `release` environment variables.",
+            evidence=str(exc),
+            next_step="Owner must confirm release-environment variable visibility and configuration.",
+        )
+    rows = [
+        item
+        for item in data
+        if isinstance(item, dict) and item.get("name") == REQUIRED_RELEASE_ENV_VARIABLE
+    ] if isinstance(data, list) else []
+    if len(rows) != 1:
+        return _blocked(
+            gate_name,
+            f"Required non-secret environment variable {REQUIRED_RELEASE_ENV_VARIABLE} is missing.",
+            next_step=(
+                "Owner must independently confirm the long-lived Android release certificate "
+                "and configure its canonical SHA-256 in the `release` environment."
+            ),
+        )
+    value = rows[0].get("value")
+    if not isinstance(value, str) or ANDROID_CERT_SHA256_RE.fullmatch(value) is None:
+        return _blocked(
+            gate_name,
+            f"{REQUIRED_RELEASE_ENV_VARIABLE} is present but is not canonical 64-character lowercase hex.",
+            next_step="Owner must correct the public certificate trust anchor before any signed release run.",
+            metadata={"updated_at": str(rows[0].get("updatedAt") or "")},
+        )
+    return _pass(
+        gate_name,
+        "The Owner certificate trust-anchor variable is present and canonically formatted; its value is not printed.",
+        metadata={"updated_at": str(rows[0].get("updatedAt") or "")},
+    )
+
+
 def check_release_artifact_run(
     runner: Runner,
     *,
@@ -612,6 +682,7 @@ def build_report(
     env_exists, env_gate = check_release_environment(runner, repo)
     gates.append(env_gate)
     gates.append(check_release_environment_secrets(runner, repo, env_exists))
+    gates.append(check_release_environment_signer_variable(runner, repo, env_exists))
     gates.append(check_release_artifact_run(runner, repo=repo, branch=branch, version=version, sha=main_sha))
     gates.append(check_release_publication(runner, repo, version))
     gates.append(check_issue_state(runner, repo))

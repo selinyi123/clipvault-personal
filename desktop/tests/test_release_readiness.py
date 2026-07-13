@@ -58,6 +58,20 @@ def _run_list_command(workflow):
     )
 
 
+def _variable_list_command():
+    return (
+        "gh",
+        "variable",
+        "list",
+        "--repo",
+        "owner/repo",
+        "--env",
+        "release",
+        "--json",
+        "name,value,updatedAt",
+    )
+
+
 def _base_responses(*, sha="a" * 40, environments=None, issue_body="- [ ] missing\n"):
     success_run = [{
         "databaseId": 123,
@@ -69,7 +83,7 @@ def _base_responses(*, sha="a" * 40, environments=None, issue_body="- [ ] missin
         "createdAt": "2026-07-04T00:00:00Z",
         "displayTitle": "CI fixture",
     }]
-    return {
+    responses = {
         (
             "gh",
             "api",
@@ -112,6 +126,30 @@ def _base_responses(*, sha="a" * 40, environments=None, issue_body="- [ ] missin
             "body": issue_body,
         })),
     }
+    if any(
+        isinstance(environment, dict) and environment.get("name") == "release"
+        for environment in (environments or [])
+    ):
+        responses[(
+            "gh",
+            "secret",
+            "list",
+            "--repo",
+            "owner/repo",
+            "--env",
+            "release",
+            "--json",
+            "name,updatedAt",
+        )] = _success(_json([
+            {"name": name, "updatedAt": "2026-07-04T00:00:00Z"}
+            for name in sorted(release_readiness.REQUIRED_RELEASE_ENV_SECRETS)
+        ]))
+        responses[_variable_list_command()] = _success(_json([{
+            "name": release_readiness.REQUIRED_RELEASE_ENV_VARIABLE,
+            "value": "ab" * 32,
+            "updatedAt": "2026-07-04T00:00:00Z",
+        }]))
+    return responses
 
 
 def test_report_blocks_missing_owner_controlled_release_evidence():
@@ -131,11 +169,13 @@ def test_report_blocks_missing_owner_controlled_release_evidence():
     assert gates["Release candidate dry run"]["status"] == "pass"
     assert gates["release environment"]["status"] == "blocked"
     assert gates["release environment secrets"]["status"] == "blocked"
+    assert gates["release environment Owner certificate"]["status"] == "blocked"
     assert gates["signed release artifact workflow"]["status"] == "blocked"
     assert gates["GitHub Release publication"]["status"] == "blocked"
     assert gates["Issue #36"]["status"] == "blocked"
     assert gates["Issue #36"]["metadata"]["unchecked_items"] == ["missing"]
     assert "does not trigger workflows" in report["scope_note"]
+    assert _variable_list_command() not in fake.commands
 
 
 def test_issue_checklist_parser_returns_checked_and_unchecked_items():
@@ -195,6 +235,78 @@ def test_release_environment_secret_names_are_checked_without_values():
     assert "ANDROID_RELEASE_KEY_PASSWORD" in gate["detail"]
     assert "ANDROID_RELEASE_KEYSTORE_B64=" not in gate["detail"]
     assert "ANDROID_RELEASE_KEYSTORE_PASSWORD=" not in gate["detail"]
+
+
+@pytest.mark.parametrize(
+    "variables,expected_text",
+    [
+        ([], "is missing"),
+        ([{"name": "OTHER", "value": "ab" * 32}], "is missing"),
+        ([{"name": "ANDROID_RELEASE_CERT_SHA256", "value": ""}], "not canonical"),
+        ([{"name": "ANDROID_RELEASE_CERT_SHA256", "value": "AB" * 32}], "not canonical"),
+        ([{"name": "ANDROID_RELEASE_CERT_SHA256", "value": "ab:" * 31 + "ab"}], "not canonical"),
+        ([{"name": "ANDROID_RELEASE_CERT_SHA256", "value": "a" * 63}], "not canonical"),
+    ],
+)
+def test_release_environment_owner_certificate_variable_fails_closed(
+    variables,
+    expected_text,
+):
+    responses = _base_responses(environments=[{"name": "release"}])
+    responses[_variable_list_command()] = _success(_json(variables))
+    fake = FakeGh(responses)
+
+    report = release_readiness.build_report(
+        runner=fake,
+        repo="owner/repo",
+        version="v1.6.0",
+        branch="main",
+    )
+
+    gate = {gate["name"]: gate for gate in report["gates"]}[
+        "release environment Owner certificate"
+    ]
+    assert gate["status"] == "blocked"
+    assert expected_text in gate["detail"]
+    assert "ab" * 32 not in gate["detail"]
+
+
+def test_release_environment_owner_certificate_variable_can_pass_without_echoing_value():
+    responses = _base_responses(environments=[{"name": "release"}])
+    fake = FakeGh(responses)
+
+    report = release_readiness.build_report(
+        runner=fake,
+        repo="owner/repo",
+        version="v1.6.0",
+        branch="main",
+    )
+
+    gate = {gate["name"]: gate for gate in report["gates"]}[
+        "release environment Owner certificate"
+    ]
+    assert gate["status"] == "pass"
+    assert "ab" * 32 not in gate["detail"]
+    assert gate["metadata"]["updated_at"] == "2026-07-04T00:00:00Z"
+
+
+def test_release_environment_owner_certificate_variable_command_failure_blocks():
+    responses = _base_responses(environments=[{"name": "release"}])
+    responses[_variable_list_command()] = _failure("forbidden")
+    fake = FakeGh(responses)
+
+    report = release_readiness.build_report(
+        runner=fake,
+        repo="owner/repo",
+        version="v1.6.0",
+        branch="main",
+    )
+
+    gate = {gate["name"]: gate for gate in report["gates"]}[
+        "release environment Owner certificate"
+    ]
+    assert gate["status"] == "blocked"
+    assert "Could not list" in gate["detail"]
 
 
 def test_successful_release_artifact_run_with_matching_dispatch_title_is_warning_until_artifacts_are_inspected():
@@ -322,6 +434,8 @@ def test_workflow_success_must_match_current_main_sha():
     ["gh", "workflow", "run", "Release artifact build"],
     ["gh", "release", "create", "v1.6.0"],
     ["gh", "secret", "set", "ANDROID_RELEASE_KEYSTORE_B64"],
+    ["gh", "variable", "set", "ANDROID_RELEASE_CERT_SHA256"],
+    ["gh", "variable", "delete", "ANDROID_RELEASE_CERT_SHA256"],
     ["gh", "issue", "close", "36"],
 ])
 def test_gh_command_guard_rejects_write_operations(args):
@@ -346,6 +460,7 @@ def test_gh_command_guard_rejects_write_capable_api_flags(args):
 @pytest.mark.parametrize("args", [
     ["gh", "api", "repos/owner/repo/branches/main", "--jq", ".commit.sha"],
     ["gh", "api", "repos/owner/repo/actions/runs?per_page=10"],
+    ["gh", "variable", "list", "--repo", "owner/repo", "--env", "release"],
 ])
 def test_gh_command_guard_allows_release_readiness_api_reads(args):
     release_readiness._assert_read_only_gh(args)

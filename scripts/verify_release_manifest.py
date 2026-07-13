@@ -2,9 +2,10 @@
 """Verify staged release artifact checksums and manifest metadata.
 
 This is an evidence-integrity gate. It proves that the files in a staged
-artifact directory match the generated manifest and SHA256SUMS file. It does
-not prove platform signing by itself; signed release verification remains a
-separate owner-controlled gate.
+artifact directory match the generated manifest and SHA256SUMS file. For a
+signed Android release it strictly parses the captured apksigner certificate
+and can bind it to an Owner-provided trust anchor. It does not independently
+run apksigner or prove where downloaded bytes came from.
 """
 
 from __future__ import annotations
@@ -12,14 +13,69 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
 
 EXCLUDED_NAMES = {"SHA256SUMS.txt", "RELEASE_MANIFEST.json"}
 ANDROID_APKSIGNER_EVIDENCE = "ANDROID_APKSIGNER_VERIFY.txt"
+MAX_ANDROID_APKSIGNER_EVIDENCE_BYTES = 64 * 1024
+ANDROID_CERT_SHA256_RE = re.compile(r"[0-9A-Fa-f]{64}")
+ANDROID_SIGNER_CERT_LINE_RE = re.compile(
+    r"Signer #(?P<index>[1-9][0-9]*) certificate SHA-256 digest: "
+    r"(?P<digest>[0-9A-Fa-f]{64})"
+)
 KINDS = {"release-candidate-dry-run", "release"}
 PLATFORMS = {"windows", "android"}
+
+
+def normalize_android_cert_sha256(value: str) -> str:
+    """Return a canonical Owner certificate digest or reject ambiguous input."""
+
+    if ANDROID_CERT_SHA256_RE.fullmatch(value) is None:
+        raise ValueError(
+            "expected Android certificate SHA-256 must be exactly 64 unseparated hex characters"
+        )
+    return value.lower()
+
+
+def parse_android_signer_cert_sha256(text: str) -> str:
+    """Return the sole Signer #1 certificate SHA-256 digest from apksigner."""
+
+    if len(text.encode("utf-8")) > MAX_ANDROID_APKSIGNER_EVIDENCE_BYTES:
+        raise ValueError(
+            f"{ANDROID_APKSIGNER_EVIDENCE} exceeds "
+            f"{MAX_ANDROID_APKSIGNER_EVIDENCE_BYTES} bytes"
+        )
+
+    digests: list[str] = []
+    for line in text.splitlines():
+        match = ANDROID_SIGNER_CERT_LINE_RE.fullmatch(line)
+        looks_like_target = (
+            "signer #" in line.lower()
+            and "certificate" in line.lower()
+            and "sha-256" in line.lower()
+            and "digest" in line.lower()
+        )
+        if match is None:
+            if looks_like_target:
+                raise ValueError(
+                    f"{ANDROID_APKSIGNER_EVIDENCE} contains a malformed signer certificate SHA-256 line"
+                )
+            continue
+        if match.group("index") != "1":
+            raise ValueError(
+                f"{ANDROID_APKSIGNER_EVIDENCE} must contain exactly one Signer #1 certificate"
+            )
+        digests.append(normalize_android_cert_sha256(match.group("digest")))
+
+    if len(digests) != 1:
+        raise ValueError(
+            f"{ANDROID_APKSIGNER_EVIDENCE} must contain exactly one "
+            "Signer #1 certificate SHA-256 digest"
+        )
+    return digests[0]
 
 
 def _validate_artifact_name(name: str) -> None:
@@ -153,16 +209,20 @@ def _verify_expected_artifacts(
     actual: dict[str, dict[str, str | int]],
 ) -> None:
     expected = _expected_artifact_names(manifest)
-    missing = sorted(expected - set(actual))
+    actual_names = set(actual)
+    missing = sorted(expected - actual_names)
     if missing:
         raise ValueError(f"missing expected artifact(s): {missing!r}")
+    unexpected = sorted(actual_names - expected)
+    if unexpected:
+        raise ValueError(f"unexpected release artifact(s): {unexpected!r}")
 
 
 def _verify_android_signed_evidence(
     artifact_dir: Path,
     actual: dict[str, dict[str, str | int]],
     version: str,
-) -> None:
+) -> str:
     signed_apk = f"ClipVault-Android-v{version}-release-signed.apk"
     if signed_apk not in actual:
         raise ValueError(f"signed Android manifest must include {signed_apk}")
@@ -171,20 +231,22 @@ def _verify_android_signed_evidence(
         raise ValueError(
             f"signed Android manifest must include {ANDROID_APKSIGNER_EVIDENCE}"
         )
-    if int(evidence["bytes"]) <= 0:
+    evidence_bytes = int(evidence["bytes"])
+    if evidence_bytes <= 0:
         raise ValueError(f"{ANDROID_APKSIGNER_EVIDENCE} must not be empty")
-    evidence_text = (artifact_dir / ANDROID_APKSIGNER_EVIDENCE).read_text(
-        encoding="utf-8",
-        errors="replace",
-    ).lower()
-    required_fragments = ("signer #", "certificate", "sha-256")
-    missing_fragments = [
-        fragment for fragment in required_fragments if fragment not in evidence_text
-    ]
-    if missing_fragments:
+    if evidence_bytes > MAX_ANDROID_APKSIGNER_EVIDENCE_BYTES:
         raise ValueError(
-            f"{ANDROID_APKSIGNER_EVIDENCE} does not look like apksigner --print-certs output"
+            f"{ANDROID_APKSIGNER_EVIDENCE} exceeds "
+            f"{MAX_ANDROID_APKSIGNER_EVIDENCE_BYTES} bytes"
         )
+    raw_evidence = (artifact_dir / ANDROID_APKSIGNER_EVIDENCE).read_bytes()
+    try:
+        evidence_text = raw_evidence.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"{ANDROID_APKSIGNER_EVIDENCE} must be valid UTF-8"
+        ) from exc
+    return parse_android_signer_cert_sha256(evidence_text)
 
 
 def verify_manifest(
@@ -196,6 +258,7 @@ def verify_manifest(
     expect_dry_run: bool = False,
     require_signed: bool = False,
     require_published: bool = False,
+    expected_android_cert_sha256: str | None = None,
 ) -> dict[str, Any]:
     artifact_dir = artifact_dir.resolve()
     if not artifact_dir.is_dir():
@@ -209,6 +272,14 @@ def verify_manifest(
         raise ValueError(f"manifest kind must be one of {sorted(KINDS)!r}")
     if manifest.get("platform") not in PLATFORMS:
         raise ValueError(f"manifest platform must be one of {sorted(PLATFORMS)!r}")
+    if (
+        manifest.get("platform") == "android"
+        and kind == "release"
+        and expected_android_cert_sha256 is None
+    ):
+        raise ValueError(
+            "Android release verification requires expected_android_cert_sha256"
+        )
     if platform is not None and manifest.get("platform") != platform:
         raise ValueError(f"manifest platform mismatch: expected {platform!r}, got {manifest.get('platform')!r}")
     if version is not None and manifest.get("version") != version:
@@ -248,7 +319,20 @@ def verify_manifest(
 
     if manifest.get("platform") == "android" and (kind == "release" or require_signed):
         assert isinstance(manifest.get("version"), str)
-        _verify_android_signed_evidence(artifact_dir, actual, manifest["version"])
+        actual_cert_sha256 = _verify_android_signed_evidence(
+            artifact_dir, actual, manifest["version"]
+        )
+        if expected_android_cert_sha256 is None:
+            raise ValueError(
+                "signed Android verification requires expected_android_cert_sha256"
+            )
+        expected_cert_sha256 = normalize_android_cert_sha256(
+            expected_android_cert_sha256
+        )
+        if actual_cert_sha256 != expected_cert_sha256:
+            raise ValueError(
+                "Android signer certificate SHA-256 does not match the Owner trust anchor"
+            )
 
     _verify_checksums(artifact_dir, rows)
     return manifest
@@ -263,9 +347,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expect-dry-run", action="store_true")
     parser.add_argument("--require-signed", action="store_true")
     parser.add_argument("--require-published", action="store_true")
+    parser.add_argument("--expected-android-cert-sha256")
     args = parser.parse_args(argv)
 
     try:
+        if args.require_signed and args.expected_android_cert_sha256 is None:
+            raise ValueError(
+                "--require-signed requires --expected-android-cert-sha256"
+            )
         manifest = verify_manifest(
             args.artifact_dir,
             platform=args.platform,
@@ -274,6 +363,7 @@ def main(argv: list[str] | None = None) -> int:
             expect_dry_run=args.expect_dry_run,
             require_signed=args.require_signed,
             require_published=args.require_published,
+            expected_android_cert_sha256=args.expected_android_cert_sha256,
         )
     except ValueError as exc:
         print(f"release manifest verification failed: {exc}", file=sys.stderr)

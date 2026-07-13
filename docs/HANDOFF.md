@@ -237,7 +237,8 @@
   the `main` ref; `test_release_alignment.py` guards this so signed release
   evidence cannot be prepared from a stale branch or tag by accident.
 - `tools/release_readiness.py` is a read-only Issue #36 readiness report. It
-  checks current-main CI/dry-run evidence, release environment/secret names,
+  checks current-main CI/dry-run evidence, release environment/secret names and
+  the public Owner Android certificate trust-anchor variable,
   signed-artifact workflow status, displayed manual-dispatch inputs, GitHub
   Release state, and the Issue #36 checklist without triggering workflows, setting secrets, creating releases, uploading artifacts, completing manual QA, or closing the issue.
 - The same readiness report now parses Issue #36 task-list rows and prints the

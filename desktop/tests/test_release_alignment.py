@@ -248,8 +248,14 @@ def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
     assert "ANDROID_RELEASE_KEYSTORE_PASSWORD" in workflow
     assert "ANDROID_RELEASE_KEY_ALIAS" in workflow
     assert "ANDROID_RELEASE_KEY_PASSWORD" in workflow
+    assert "vars.ANDROID_RELEASE_CERT_SHA256" in workflow
+    assert "secrets.ANDROID_RELEASE_CERT_SHA256" not in workflow
+    assert "ANDROID_RELEASE_CERT_SHA256 must be exactly 64 lowercase hex characters" in workflow
     assert "apksigner" in workflow
-    assert "verify --print-certs" in workflow
+    assert "verify --verbose -Werr --print-certs" in workflow
+    assert workflow.count("--expected-android-cert-sha256") == 2
+    assert 'mapfile -t release_apks' in workflow
+    assert '[[ "${#release_apks[@]}" -ne 1 ]]' in workflow
     assert "trap 'rm -f \"${keystore:-}\"' EXIT" in workflow
     assert "umask 077" in workflow
     assert "actions/attest-build-provenance@v4" in workflow
@@ -271,6 +277,22 @@ def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
     assert r"^v[0-9]+\.[0-9]+\.[0-9]+$" in workflow
     assert "needs: validate-release-input" in workflow
     assert "needs.validate-release-input.outputs.version" in workflow
+
+
+def test_signed_release_verifies_owner_signer_before_attestation_and_upload():
+    workflow = _read(".github/workflows/release.yml")
+    android = _workflow_job_block(workflow, "android-signed-release")
+
+    apksigner = android.index("verify --verbose -Werr --print-certs")
+    manifest = android.index("python scripts/release_candidate_manifest.py")
+    verifier = android.index("python scripts/verify_release_manifest.py")
+    attestation = android.index("Attest Android signed release artifacts")
+    upload = android.index("Upload Android signed release artifacts")
+
+    assert apksigner < manifest < verifier < attestation < upload
+    assert '--expected-android-cert-sha256 "${ANDROID_RELEASE_CERT_SHA256}"' in android
+    assert "vars.ANDROID_RELEASE_CERT_SHA256" in android
+    assert 'echo "${ANDROID_RELEASE_CERT_SHA256}"' not in android
 
 
 def test_manual_qa_links_v1_6_release_runbook():
@@ -349,6 +371,8 @@ def test_release_artifact_evidence_helper_is_documented_without_release_overclai
     assert "does not replace manual QA evidence" in script_text
     assert "verify_release_manifest.py" in script_text
     assert "ANDROID_APKSIGNER_VERIFY.txt" in script_text
+    assert "--expected-android-cert-sha256" in script_text
+    assert '"status": "structural_precheck_pass"' in script_text
 
     assert "python tools/release_artifact_evidence.py" in manual_qa
     assert "python tools/release_artifact_evidence.py" in runbook
@@ -494,6 +518,8 @@ def test_draft_release_reverifies_downloaded_artifacts_before_release_creation()
     assert "--artifact-dir release-artifacts/clipvault-android-signed-release-artifacts" in draft
     assert "--platform android" in draft
     assert "--require-signed" in draft
+    assert "vars.ANDROID_RELEASE_CERT_SHA256" in draft
+    assert '--expected-android-cert-sha256 "${ANDROID_RELEASE_CERT_SHA256}"' in draft
 
 
 def test_draft_release_stages_only_verified_named_artifact_directories():

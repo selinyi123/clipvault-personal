@@ -35,14 +35,18 @@ Produce a consolidated issue-comment draft listing:
 
 ```text
 You are the Environment Agent for ClipVault Personal Issue #36.
-Your job is to verify that the release environment and secret names are ready.
+Your job is to verify that the release environment, secret names, and public
+Owner certificate trust-anchor variable are ready.
 Do not print secret values.
-Required names:
+Required secret names:
 ANDROID_RELEASE_KEYSTORE_B64
 ANDROID_RELEASE_KEYSTORE_PASSWORD
 ANDROID_RELEASE_KEY_ALIAS
 ANDROID_RELEASE_KEY_PASSWORD
-Output only presence/absence, environment name, approval policy notes, and timestamp.
+Required non-secret environment variable:
+ANDROID_RELEASE_CERT_SHA256 (exactly 64 lowercase hex characters)
+Output only presence/absence, certificate-value format validity without the full
+value, environment name, approval policy notes, and timestamp.
 ```
 
 ### 2.3 Artifact Agent
@@ -56,8 +60,9 @@ Verify:
 - SHA256SUMS.txt
 - required Windows setup/portable assets
 - required Android APK
-- ANDROID_APKSIGNER_VERIFY.txt shape and success lines
-Run tools/release_artifact_evidence.py if available.
+- ANDROID_APKSIGNER_VERIFY.txt sole signer certificate against the independently
+  confirmed Owner ANDROID_RELEASE_CERT_SHA256
+Run tools/release_artifact_evidence.py with that trust anchor if available.
 Do not publish a release.
 ```
 

@@ -21,6 +21,8 @@ def _load_script(rel):
 
 release_candidate_manifest = _load_script("scripts/release_candidate_manifest.py")
 release_artifact_evidence = _load_script("tools/release_artifact_evidence.py")
+OWNER_CERT_SHA256 = "ab" * 32
+OTHER_CERT_SHA256 = "cd" * 32
 
 
 def _build_windows_release_fixture(path, *, version="1.6.0", commit="a" * 40):
@@ -41,7 +43,7 @@ def _build_android_signed_fixture(
     *,
     version="1.6.0",
     commit="a" * 40,
-    apksigner_body="Signer #1 certificate SHA-256 digest: abc123\n",
+    apksigner_body=f"Signer #1 certificate SHA-256 digest: {OWNER_CERT_SHA256}\n",
 ):
     path.mkdir()
     (path / f"ClipVault-Android-v{version}-release-signed.apk").write_bytes(b"signed")
@@ -69,10 +71,12 @@ def test_release_artifact_evidence_validates_downloaded_windows_and_android_arti
         version="v1.6.0",
         commit=commit,
         run_url="https://github.com/selinyi123/clipvault-personal/actions/runs/123",
+        expected_android_cert_sha256=OWNER_CERT_SHA256,
     )
     comment = release_artifact_evidence.render_issue_comment(report)
 
-    assert report["status"] == "pass"
+    assert report["status"] == "structural_precheck_pass"
+    assert report["android_owner_cert_sha256"] == OWNER_CERT_SHA256
     assert report["windows_artifacts"] == [
         "ClipVault-Desktop-v1.6.0-portable.exe",
         "ClipVault-Setup-v1.6.0.exe",
@@ -82,6 +86,7 @@ def test_release_artifact_evidence_validates_downloaded_windows_and_android_arti
         "ClipVault-Android-v1.6.0-release-signed.apk",
     ]
     assert "Issue #36" in comment
+    assert OWNER_CERT_SHA256 in comment
     assert "does not replace manual QA evidence" in comment
     assert "gh attestation" in comment
 
@@ -100,6 +105,7 @@ def test_release_artifact_evidence_rejects_wrong_repo_run_url(tmp_path):
             version="v1.6.0",
             commit=commit,
             run_url="https://github.com/other/repo/actions/runs/123",
+            expected_android_cert_sha256=OWNER_CERT_SHA256,
         )
 
 
@@ -125,6 +131,7 @@ def test_release_artifact_evidence_rejects_dry_run_android_manifest(tmp_path):
             version="v1.6.0",
             commit=commit,
             run_url="https://github.com/selinyi123/clipvault-personal/actions/runs/123",
+            expected_android_cert_sha256=OWNER_CERT_SHA256,
         )
 
 
@@ -135,13 +142,32 @@ def test_release_artifact_evidence_rejects_weak_apksigner_evidence(tmp_path):
     _build_windows_release_fixture(windows_dir, commit=commit)
     _build_android_signed_fixture(android_dir, commit=commit, apksigner_body="not empty\n")
 
-    with pytest.raises(ValueError, match="apksigner --print-certs"):
+    with pytest.raises(ValueError, match="exactly one Signer #1"):
         release_artifact_evidence.validate_evidence(
             windows_dir=windows_dir,
             android_dir=android_dir,
             version="v1.6.0",
             commit=commit,
             run_url="https://github.com/selinyi123/clipvault-personal/actions/runs/123",
+            expected_android_cert_sha256=OWNER_CERT_SHA256,
+        )
+
+
+def test_release_artifact_evidence_rejects_wrong_owner_certificate(tmp_path):
+    commit = "9" * 40
+    windows_dir = tmp_path / "windows"
+    android_dir = tmp_path / "android"
+    _build_windows_release_fixture(windows_dir, commit=commit)
+    _build_android_signed_fixture(android_dir, commit=commit)
+
+    with pytest.raises(ValueError, match="Owner trust anchor"):
+        release_artifact_evidence.validate_evidence(
+            windows_dir=windows_dir,
+            android_dir=android_dir,
+            version="v1.6.0",
+            commit=commit,
+            run_url="https://github.com/selinyi123/clipvault-personal/actions/runs/123",
+            expected_android_cert_sha256=OTHER_CERT_SHA256,
         )
 
 
@@ -164,6 +190,8 @@ def test_cli_writes_rendered_comment(tmp_path):
         commit,
         "--run-url",
         "https://github.com/selinyi123/clipvault-personal/actions/runs/123",
+        "--expected-android-cert-sha256",
+        OWNER_CERT_SHA256,
         "--output",
         str(output),
     ])
@@ -188,6 +216,8 @@ def test_cli_json_output_contains_artifact_names(tmp_path, capsys):
         commit,
         "--run-url",
         "https://github.com/selinyi123/clipvault-personal/actions/runs/123",
+        "--expected-android-cert-sha256",
+        OWNER_CERT_SHA256,
         "--json",
     ])
 
@@ -198,3 +228,25 @@ def test_cli_json_output_contains_artifact_names(tmp_path, capsys):
         "ANDROID_APKSIGNER_VERIFY.txt",
         "ClipVault-Android-v1.6.0-release-signed.apk",
     ]
+
+
+def test_cli_requires_owner_certificate_argument(tmp_path, capsys):
+    commit = "8" * 40
+    windows_dir = tmp_path / "windows"
+    android_dir = tmp_path / "android"
+    _build_windows_release_fixture(windows_dir, commit=commit)
+    _build_android_signed_fixture(android_dir, commit=commit)
+
+    with pytest.raises(SystemExit, match="2"):
+        release_artifact_evidence.main([
+            "--windows-dir",
+            str(windows_dir),
+            "--android-dir",
+            str(android_dir),
+            "--commit",
+            commit,
+            "--run-url",
+            "https://github.com/selinyi123/clipvault-personal/actions/runs/123",
+        ])
+
+    assert "--expected-android-cert-sha256" in capsys.readouterr().err

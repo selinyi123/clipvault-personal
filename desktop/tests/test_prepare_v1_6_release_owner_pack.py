@@ -72,6 +72,8 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "app-debug-androidTest.apk" in guide
     assert "ClipVault-Android-v1.6.0-release-signed.apk" in guide
     assert "python tools/release_artifact_evidence.py" in guide
+    assert "--expected-android-cert-sha256 $env:ANDROID_RELEASE_CERT_SHA256" in guide
+    assert "-cnotmatch '^[0-9a-f]{64}$'" in guide
     assert "python tools/manual_qa_evidence.py" in guide
     assert "PASS (OWNER-ATTESTED)" in guide
     assert "Do not manually flip" in guide

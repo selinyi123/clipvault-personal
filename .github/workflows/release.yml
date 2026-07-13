@@ -162,6 +162,7 @@ jobs:
           ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
           ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+          ANDROID_RELEASE_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
           set -euo pipefail
           for name in ANDROID_RELEASE_KEYSTORE_B64 ANDROID_RELEASE_KEYSTORE_PASSWORD ANDROID_RELEASE_KEY_ALIAS ANDROID_RELEASE_KEY_PASSWORD; do
@@ -170,6 +171,10 @@ jobs:
               exit 1
             fi
           done
+          if [[ ! "${ANDROID_RELEASE_CERT_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::ANDROID_RELEASE_CERT_SHA256 must be exactly 64 lowercase hex characters"
+            exit 1
+          fi
 
       - name: Build signed Android release APK
         shell: bash
@@ -179,6 +184,7 @@ jobs:
           ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
           ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+          ANDROID_RELEASE_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
           set -euo pipefail
           keystore=""
@@ -200,18 +206,23 @@ jobs:
 
           rm -rf ../release-artifacts
           mkdir -p ../release-artifacts
-          release_apk="$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' | sort | head -n 1)"
-          if [[ -z "${release_apk}" ]]; then
-            echo "::error::No release APK produced under app/build/outputs/apk/release"
+          mapfile -t release_apks < <(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print | sort)
+          if [[ "${#release_apks[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one release APK; found ${#release_apks[@]}"
             exit 1
           fi
+          release_apk="${release_apks[0]}"
           signed_apk="../release-artifacts/ClipVault-Android-v${version}-release-signed.apk"
           cp "${release_apk}" "${signed_apk}"
           apksigner="$(find "${ANDROID_HOME}/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
-          "${apksigner}" verify --print-certs "${signed_apk}" | tee ../release-artifacts/ANDROID_APKSIGNER_VERIFY.txt
+          if [[ -z "${apksigner}" || ! -x "${apksigner}" ]]; then
+            echo "::error::No executable apksigner found under ANDROID_HOME/build-tools"
+            exit 1
+          fi
+          "${apksigner}" verify --verbose -Werr --print-certs "${signed_apk}" | tee ../release-artifacts/ANDROID_APKSIGNER_VERIFY.txt
           cd ..
           python scripts/release_candidate_manifest.py --artifact-dir release-artifacts --platform android --version "${version}" --commit "${GITHUB_SHA}" --kind release --signed
-          python scripts/verify_release_manifest.py --artifact-dir release-artifacts --platform android --version "${version}" --commit "${GITHUB_SHA}" --require-signed
+          python scripts/verify_release_manifest.py --artifact-dir release-artifacts --platform android --version "${version}" --commit "${GITHUB_SHA}" --require-signed --expected-android-cert-sha256 "${ANDROID_RELEASE_CERT_SHA256}"
 
       - name: Attest Android signed release artifacts
         uses: actions/attest-build-provenance@v4
@@ -258,6 +269,7 @@ jobs:
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.validate-release-input.outputs.version }}
+          ANDROID_RELEASE_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
           set -euo pipefail
           python scripts/verify_release_manifest.py \
@@ -270,7 +282,8 @@ jobs:
             --platform android \
             --version "${RELEASE_VERSION}" \
             --commit "${GITHUB_SHA}" \
-            --require-signed
+            --require-signed \
+            --expected-android-cert-sha256 "${ANDROID_RELEASE_CERT_SHA256}"
 
       - name: Create draft GitHub Release
         shell: bash
