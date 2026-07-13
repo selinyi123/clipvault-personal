@@ -28,6 +28,7 @@ REQUIRED_RELEASE_ENV_SECRETS = {
 }
 REQUIRED_RELEASE_ENV_VARIABLE = "ANDROID_RELEASE_CERT_SHA256"
 ANDROID_CERT_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+GIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
 CHECKLIST_ITEM_RE = re.compile(r"(?m)^\s*[-*]\s+\[(?P<mark>[ xX])\]\s+(?P<text>.+?)\s*$")
 
 READ_ONLY_GH_SUBCOMMANDS = {
@@ -548,7 +549,66 @@ def check_release_artifact_run(
     )
 
 
-def check_release_publication(runner: Runner, repo: str, version: str) -> Gate:
+def _resolve_release_tag_commit(runner: Runner, *, repo: str, version: str) -> str:
+    """Resolve one exact lightweight or annotated release tag to a commit."""
+
+    exact_ref = f"refs/tags/{version}"
+    records = _run_json(
+        runner,
+        ["gh", "api", f"repos/{repo}/git/matching-refs/tags/{version}"],
+        "release tag ref lookup",
+    )
+    if not isinstance(records, list):
+        raise ValueError("release tag ref lookup did not return a JSON array")
+    exact = [
+        row
+        for row in records
+        if isinstance(row, dict) and row.get("ref") == exact_ref
+    ]
+    if len(exact) != 1:
+        raise ValueError(f"expected exactly one {exact_ref} ref, found {len(exact)}")
+
+    obj = exact[0].get("object")
+    if not isinstance(obj, dict):
+        raise ValueError("release tag ref is missing its Git object")
+    seen: set[str] = set()
+    for _ in range(8):
+        object_type = obj.get("type")
+        object_sha = obj.get("sha")
+        if not isinstance(object_sha, str) or GIT_SHA_RE.fullmatch(object_sha) is None:
+            raise ValueError("release tag object has an invalid Git SHA")
+        if object_type == "commit":
+            return object_sha
+        if object_type != "tag":
+            raise ValueError("release tag does not resolve to a commit")
+        if object_sha in seen:
+            raise ValueError("release tag contains an object cycle")
+        seen.add(object_sha)
+        tag_record = _run_json(
+            runner,
+            ["gh", "api", f"repos/{repo}/git/tags/{object_sha}"],
+            "annotated release tag lookup",
+        )
+        if not isinstance(tag_record, dict) or not isinstance(tag_record.get("object"), dict):
+            raise ValueError("annotated release tag is missing its target object")
+        obj = tag_record["object"]
+    raise ValueError("release tag annotation chain is too deep")
+
+
+def check_release_publication(
+    runner: Runner,
+    repo: str,
+    version: str,
+    *,
+    sha: str | None = None,
+) -> Gate:
+    gate_name = "GitHub Release publication"
+    if sha is None:
+        return _blocked(
+            gate_name,
+            "Skipped because the current main SHA is unknown.",
+            next_step="Fix the current main commit check first.",
+        )
     result = runner([
         "gh",
         "release",
@@ -561,7 +621,7 @@ def check_release_publication(runner: Runner, repo: str, version: str) -> Gate:
     ])
     if result.returncode != 0:
         return _blocked(
-            "GitHub Release publication",
+            gate_name,
             f"GitHub Release {version} is not present.",
             evidence=result.stderr.strip() or result.stdout.strip(),
             next_step=f"Only after signed artifacts and manual QA are recorded, Owner may create/review/publish {version}.",
@@ -570,21 +630,87 @@ def check_release_publication(runner: Runner, repo: str, version: str) -> Gate:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
         return _blocked(
-            "GitHub Release publication",
+            gate_name,
             f"GitHub Release {version} lookup did not return valid JSON.",
             next_step="Inspect `gh release view` output manually.",
         )
-    if data.get("isDraft"):
+    if not isinstance(data, dict):
+        return _blocked(
+            gate_name,
+            f"GitHub Release {version} lookup did not return a JSON object.",
+            next_step="Inspect `gh release view` output manually.",
+        )
+
+    expected_title = f"ClipVault Personal {version}"
+    mismatches: list[str] = []
+    if data.get("tagName") != version:
+        mismatches.append("tag")
+    if data.get("name") != expected_title:
+        mismatches.append("title")
+    if data.get("isPrerelease") is not False:
+        mismatches.append("prerelease state")
+    if data.get("targetCommitish") != sha:
+        mismatches.append("target commit")
+    if not isinstance(data.get("isDraft"), bool):
+        mismatches.append("draft state")
+    if mismatches:
+        return _blocked(
+            gate_name,
+            (
+                f"GitHub Release {version} does not match the exact publication identity: "
+                f"{', '.join(mismatches)}."
+            ),
+            evidence=str(data.get("url", "")),
+            next_step=(
+                f"Use the Owner-controlled {version} draft targeting exact main SHA {sha}; "
+                f"the title must be `{expected_title}` and prerelease must be false."
+            ),
+            metadata={"expected_tag_commit": sha, "expected_title": expected_title},
+        )
+    if data["isDraft"]:
         return _warn(
-            "GitHub Release publication",
-            f"GitHub Release {version} exists as a draft.",
+            gate_name,
+            f"Exact GitHub Release {version} exists as a non-prerelease draft for current main.",
             evidence=str(data.get("url", "")),
             next_step=f"Do not publish until Issue #{ISSUE_NUMBER} has signed-artifact and manual-QA evidence.",
+            metadata={"target_commit": sha, "title": expected_title},
+        )
+
+    published_at = data.get("publishedAt")
+    if not isinstance(published_at, str) or not published_at.strip():
+        return _blocked(
+            gate_name,
+            f"GitHub Release {version} is non-draft but has no publication timestamp.",
+            evidence=str(data.get("url", "")),
+            next_step="Inspect the live Release state before treating it as published.",
+        )
+    try:
+        tag_commit = _resolve_release_tag_commit(runner, repo=repo, version=version)
+    except ValueError as exc:
+        return _blocked(
+            gate_name,
+            f"GitHub Release {version} tag identity could not be verified.",
+            evidence=str(exc),
+            next_step=f"Restore exactly one refs/tags/{version} ref resolving to current main SHA {sha}.",
+        )
+    if tag_commit != sha:
+        return _blocked(
+            gate_name,
+            f"GitHub Release {version} tag resolves to {tag_commit}, not current main SHA {sha}.",
+            evidence=str(data.get("url", "")),
+            next_step="Do not treat this Release as the v1.6.0 publication; investigate the moved or incorrect tag.",
+            metadata={"tag_commit": tag_commit, "expected_tag_commit": sha},
         )
     return _pass(
-        "GitHub Release publication",
-        f"GitHub Release {version} exists and is not draft.",
+        gate_name,
+        f"GitHub Release {version} is published with exact identity and resolves to current main SHA {sha}.",
         evidence=str(data.get("url", "")),
+        metadata={
+            "published_at": published_at,
+            "tag_commit": tag_commit,
+            "target_commit": sha,
+            "title": expected_title,
+        },
     )
 
 
@@ -684,7 +810,7 @@ def build_report(
     gates.append(check_release_environment_secrets(runner, repo, env_exists))
     gates.append(check_release_environment_signer_variable(runner, repo, env_exists))
     gates.append(check_release_artifact_run(runner, repo=repo, branch=branch, version=version, sha=main_sha))
-    gates.append(check_release_publication(runner, repo, version))
+    gates.append(check_release_publication(runner, repo, version, sha=main_sha))
     gates.append(check_issue_state(runner, repo))
 
     blocked = sum(1 for gate in gates if gate.status == "blocked")
