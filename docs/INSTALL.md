@@ -60,6 +60,10 @@ half_life_days = 14
 
 备份只存 JSONL（无损事实源），永不 pull/force/rebase。
 
+必须使用专用的空私有仓库；除允许的 `clips/YYYY/MM/YYYY-MM-DD.jsonl` 外，
+仓库历史中不得出现 README、License、配置或其他文件。ClipVault 会拒绝向含有
+非备份路径历史的仓库提交或推送，以免误配置时把无关数据发送到远端。
+
 ```powershell
 # 1) 在 GitHub 建一个【私有】仓库，例如 clipvault-backup
 # 2) 本地准备工作副本

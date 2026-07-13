@@ -18,8 +18,38 @@
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-13 |
 
+## Current development note - 2026-07-13 / R000 backup Git path boundary
+
+- The backup Git adapter stages and commits only validated daily JSONL paths
+  under `clips/YYYY/MM/YYYY-MM-DD.jsonl`. Existing staged, tracked, deleted, or
+  untracked files elsewhere in a configured repository are never included in a
+  ClipVault commit.
+- Push fails closed if the current branch history ever tracked a path outside
+  the JSONL contract. This prevents a misconfigured existing repository from
+  exporting unrelated history through ClipVault's configured remote.
+- Merge-result diffs are included in that history audit. Push resolves exactly
+  one destination URL and sends only the audited HEAD object ID to the current
+  full branch destination; mirror,
+  tag, force, prune, submodule, signed, push-option, and hook behavior from Git
+  configuration cannot broaden the unattended operation.
+- Commits are built from raw `hash-object --no-filters` blobs through an
+  isolated temporary index. Managed files are opened without following nested
+  links and hard-linked files fail closed. Effective content-transform
+  attributes fail closed, and the caller's real index keeps unrelated staged
+  state unchanged, including if another branch is checked out concurrently.
+- Git failures retain only a safe operation label, exception class, return code,
+  and backoff. Raw stderr, remote URLs, credentials, and the local repository
+  path are not logged or propagated through adapter exceptions.
+- This slice does not change JSONL content, queue semantics, remote history,
+  Secret Guard behavior, sync/IME behavior, version metadata, release authority,
+  or Issue #36 state.
+
 ## Current development note - 2026-07-13 / R000 API request lifecycle
 
+- PR #119 merged as `ae962e850c3d1303b338e3d3653a2846c72ab80f`.
+  Exact-main [CI run 29272277045](https://github.com/selinyi123/clipvault-personal/actions/runs/29272277045)
+  and [release-candidate run 29272277019](https://github.com/selinyi123/clipvault-personal/actions/runs/29272277019)
+  both passed.
 - The stdlib single-threaded API now applies one fixed monotonic deadline to
   request ingress. Headers use the base timeout; one bounded Content-Length
   derives a fixed body budget capped at 120 seconds under the default

@@ -276,8 +276,7 @@ class ClipVaultRuntime:
 
         if self.config.backup_enabled and self.config.backup_repo_path:
             log.info(
-                "backup worker enabled repo=%s interval=%dmin",
-                self.config.backup_repo_path,
+                "backup worker enabled interval=%dmin",
                 self.config.backup_interval_minutes,
             )
 

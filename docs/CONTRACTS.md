@@ -275,18 +275,26 @@ tags:
 ```text
 clips/
   2026/06/2026-06-12.jsonl     # 每行一个 §1 Clip 对象 JSON，按 backup 时间追加
-meta/
-  device.json                  # {device_id, schema: 1}
 ```
 
-- worker 周期（默认 15 分钟）：取 backup_queue 中 state=pending → 闸门 C 复扫 Secret Guard（用当前规则集对 content 再判，命中→丢弃+ERROR）→ 追加当日 JSONL → `git add -A && git commit -m "backup: {n} clips {iso_ts}"` → `git push`。
+- worker 周期（默认 15 分钟）：取 backup_queue 中 state=pending → 闸门 C 复扫 Secret Guard（用当前规则集对 content 再判，命中→丢弃+ERROR）→ 追加当日 JSONL → 仅对本批 `clips/YYYY/MM/YYYY-MM-DD.jsonl` 执行 `git add -- <paths>` 与 path-scoped commit → `git push`。
+- Git adapter 必须拒绝绝对路径、反斜杠、`..`、glob/pathspec magic、非 `.jsonl` 文件、年月不一致的 daily path，
+  并拒绝 push 当前分支历史中曾跟踪任何非合同 JSONL 路径的仓库。用户已 staged、tracked 或 untracked 的
+  其他文件不得进入 ClipVault commit；Git stderr、remote URL 与本地 repo path 不得进入日志或异常文本。
+- Push 必须解析为单一目标 URL、使用已审计 HEAD object ID 到当前完整 `refs/heads/*` 的精确 refspec，并显式关闭
+  mirror、tags、follow-tags、force、delete、prune、submodule、signed、push-option 与 hook 行为；仓库或全局
+  Git 配置不得扩大备份发送的 refs，也不得在无人值守的备份路径执行 hooks。
+- JSONL 写入前必须验证 clip 时间戳与 daily path，并拒绝通过路径中的符号链接写出专用备份仓库。
+- Git commit 必须以不跟随目录/文件链接的方式读取普通、单链接 JSONL 文件，再从
+  `hash-object --no-filters --stdin` 的原始 bytes 和隔离的临时 index 构造；禁止 clean/process filter、
+  working-tree encoding、自动换行、GPG signing、fsmonitor 或真实 index 中无关 staged 状态影响备份 commit。
 - push 失败：commit 保留在本地，queue 条目标记 done（数据已在本地 git），下轮重试 push；退避 1m→2m→4m→…→30m 封顶。
 - **GHB-1.1 修订（2026-06-28，Owner 裁定"不复活已删除内容"）**：clip 的 **deleted** 变化会**重新入队**，
   worker 把当前状态追加为新的 JSONL 行（按 id 去重，restore 取最后一次=最新状态）。原设计"clip_meta 变化不重备"
   会导致**首次备份后被删除的 clip 在 restore 时复活**（违反 NORM-1"已删除的不复活"，且把用户删掉的内容找回来）。
   **仅 deleted 触发重备**；pinned/favorite 是装饰性整理，仍**不重备**（备份是灾难恢复快照，不是完整镜像）。
   密钥永不备份（闸门 B/C 不变），故 secret clip 的 patch 不入队。追加按行去重，状态数有限→JSONL 不会无界膨胀。
-- 禁止：pull、force push、rebase、amend。唯一例外见 docs/RUNBOOK_PURGE.md。
+- 禁止：无 pathspec 的 add/commit、pull、force push、rebase、amend。唯一例外见 docs/RUNBOOK_PURGE.md。
 - 恢复合同：`tools/restore.py` 读全部 JSONL → 重建 SQLite → 可选重建 Markdown。v1.0 门禁要求演练通过。
 
 ## 8. 跨平台测试向量（VEC-1）
