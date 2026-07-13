@@ -1,5 +1,8 @@
 package com.clipvault.app.sync
 
+import com.clipvault.core.Normalize
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -53,6 +56,47 @@ class SyncClientBoundsTest {
 
         try {
             readUtf8BodyBounded(ByteArrayInputStream(body), maxBytes = 3)
+            fail("expected IOException")
+        } catch (e: IOException) {
+            assertEquals("response body too large", e.message)
+        }
+    }
+
+    @Test
+    fun maxSizedControlCharacterClipFitsProductionPullResponseLimit() {
+        val content = "\u0000".repeat(Normalize.DEFAULT_MAX_CLIP_BYTES)
+        val body = JSONObject()
+            .put(
+                "events",
+                JSONArray().put(
+                    JSONObject()
+                        .put("seq", 1)
+                        .put("kind", "clip_new")
+                        .put(
+                            "payload",
+                            JSONObject()
+                                .put("content", content)
+                                .put("content_hash", "a".repeat(64)),
+                        )
+                        .put("created_at", "2026-07-13T00:00:00Z"),
+                ),
+            )
+            .put("next_seq", 1)
+            .put("has_more", false)
+            .toString()
+        val bytes = body.toByteArray(Charsets.UTF_8)
+
+        assertTrue(bytes.size > 4 * 1024 * 1024)
+        assertTrue(bytes.size <= MAX_SYNC_RESPONSE_BYTES)
+        assertEquals(body, readUtf8BodyBounded(ByteArrayInputStream(bytes)))
+    }
+
+    @Test
+    fun productionReaderRejectsBodyAboveHardLimit() {
+        val bytes = ByteArray(MAX_SYNC_RESPONSE_BYTES + 1) { 'x'.code.toByte() }
+
+        try {
+            readUtf8BodyBounded(ByteArrayInputStream(bytes))
             fail("expected IOException")
         } catch (e: IOException) {
             assertEquals("response body too large", e.message)

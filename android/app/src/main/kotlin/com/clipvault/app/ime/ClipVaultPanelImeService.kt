@@ -70,7 +70,7 @@ class ClipVaultPanelImeService : InputMethodService() {
         }
         saveButton = save
         actions.addView(save)
-        actions.addView(button("切回键盘") { switchToPreviousInputMethod() })
+        actions.addView(button("切回键盘") { switchToPreviousInputMethodCompat() })
         root.addView(actions)
 
         // Panel switcher: recent clips + memory categories (词库/Prompt/命令).

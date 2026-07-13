@@ -125,8 +125,28 @@ def test_android_pairing_does_not_commit_host_before_token_redeem():
     body = commit.group("body")
     clear = body.index("tokenStore.set(null)")
     host = body.index('putString("host", host)')
-    token = body.index("tokenStore.set(token)")
-    assert clear < host < token
+    install = body.index("installFreshToken(token)")
+    assert clear < host < install
+
+    fresh = re.search(
+        r"(?s)private fun installFreshToken\(token: String\) \{(?P<body>.*?)\n    \}",
+        sync,
+    )
+    assert fresh, "fresh token installation helper must be fail-closed"
+    fresh_body = fresh.group("body")
+    marker = fresh_body.index("clearSyncPushBlocked()")
+    token = fresh_body.index("tokenStore.set(token)")
+    assert marker < token
+
+    # Clearing the old encrypted token must reach disk before the host changes;
+    # an async apply() would allow a crash to restart with new-host + old-token.
+    null_branch = re.search(
+        r"(?s)if \(value\.isNullOrEmpty\(\)\) \{(?P<body>.*?)\n        \}",
+        sync,
+    )
+    assert null_branch
+    assert ".commit()" in null_branch.group("body")
+    assert ".apply()" not in null_branch.group("body")
 
 
 def test_android_sync_client_does_not_follow_redirects_with_bearer_tokens():

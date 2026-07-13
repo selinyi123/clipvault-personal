@@ -117,11 +117,14 @@ class ClipsRepo:
         if commit:
             self.conn.commit()
 
-    def set_obsidian_path(self, clip_id: str, path: str) -> None:
+    def set_obsidian_path(
+        self, clip_id: str, path: str, *, commit: bool = True
+    ) -> None:
         self.conn.execute(
             "UPDATE clips SET obsidian_path = ? WHERE id = ?", (path, clip_id)
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def set_backed_up_at(self, clip_id: str, when: str) -> None:
         self.conn.execute(
@@ -209,7 +212,9 @@ class ClipsRepo:
         self.conn.commit()
         return cur.rowcount > 0
 
-    def release_secret(self, clip_id: str, when: str) -> Clip | None:
+    def release_secret(
+        self, clip_id: str, when: str, *, commit: bool = True
+    ) -> Clip | None:
         """Mark a quarantined clip as not-secret and re-index it (DB-1 §4.3)."""
         clip = self.get(clip_id)
         if clip is None or not clip.is_secret:
@@ -224,7 +229,8 @@ class ClipsRepo:
                 "INSERT INTO clips_fts(id, content) VALUES (?, ?)",
                 (clip_id, clip.content),
             )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return self.get(clip_id)
 
     def suggest_candidates(self, since_iso: str, limit: int = 200) -> list[Clip]:

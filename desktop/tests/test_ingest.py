@@ -6,6 +6,7 @@ from clipvault.core import normalize
 from clipvault.pipeline import ingest as pipeline
 from clipvault.store.backup_queue_repo import BackupQueueRepo, SecretEnqueueError
 from clipvault.store.clips_repo import ClipsRepo
+from clipvault.store.obsidian_queue_repo import ObsidianQueueRepo
 
 FAKE_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
 
@@ -30,6 +31,9 @@ def test_public_clip_full_path(conn):
     clips = ClipsRepo(conn)
     assert clips.fts_contains(outcome.clip.id)
     assert BackupQueueRepo(conn).has(outcome.clip.id)
+    assert conn.execute(
+        "SELECT 1 FROM obsidian_queue WHERE clip_id=?", (outcome.clip.id,)
+    ).fetchone() is not None
 
 
 def test_fts_search_finds_public_clip(conn):
@@ -72,6 +76,7 @@ def _write_counts(conn) -> dict[str, int]:
         "clips": conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0],
         "fts": conn.execute("SELECT COUNT(*) FROM clips_fts").fetchone()[0],
         "backup_queue": conn.execute("SELECT COUNT(*) FROM backup_queue").fetchone()[0],
+        "obsidian_queue": conn.execute("SELECT COUNT(*) FROM obsidian_queue").fetchone()[0],
         "sync_outbox": conn.execute("SELECT COUNT(*) FROM sync_outbox").fetchone()[0],
     }
 
@@ -90,6 +95,7 @@ def test_ingest_rolls_back_clip_when_backup_enqueue_fails(conn, monkeypatch):
         "clips": 0,
         "fts": 0,
         "backup_queue": 0,
+        "obsidian_queue": 0,
         "sync_outbox": 0,
     }
 
@@ -112,6 +118,29 @@ def test_ingest_rolls_back_clip_and_backup_when_sync_emit_fails(conn, monkeypatc
         "clips": 0,
         "fts": 0,
         "backup_queue": 0,
+        "obsidian_queue": 0,
+        "sync_outbox": 0,
+    }
+
+
+def test_ingest_rolls_back_all_public_state_when_obsidian_enqueue_fails(conn, monkeypatch):
+    original = ObsidianQueueRepo.enqueue
+
+    def fail_after_enqueue(self, clip_id, when, *, commit=True):
+        original(self, clip_id, when, commit=commit)
+        raise RuntimeError("simulated obsidian queue failure")
+
+    monkeypatch.setattr(ObsidianQueueRepo, "enqueue", fail_after_enqueue)
+
+    with pytest.raises(RuntimeError, match="obsidian queue failure"):
+        pipeline.ingest(conn, "atomic obsidian intent failure", source_device="d")
+
+    assert conn.in_transaction is False
+    assert _write_counts(conn) == {
+        "clips": 0,
+        "fts": 0,
+        "backup_queue": 0,
+        "obsidian_queue": 0,
         "sync_outbox": 0,
     }
 

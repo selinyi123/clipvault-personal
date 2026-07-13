@@ -52,7 +52,10 @@ def test_b4_obsidian_failure_then_sweep_repairs(service, cfg, tmp_path):
     assert clip is not None and clip.obsidian_path is None  # saved, not written
 
     (tmp_path / "vault").unlink()  # vault becomes available again
-    assert service.retry_obsidian_sweep() == 1
+    next_attempt_at = service.conn.execute(
+        "SELECT next_attempt_at FROM obsidian_queue WHERE clip_id=?", (clip.id,)
+    ).fetchone()[0]
+    assert service.retry_obsidian_sweep(now_fn=lambda: next_attempt_at) == 1
     clip = service.clips.get(outcome.clip.id)
     assert clip.obsidian_path is not None
     assert len(list((tmp_path / "vault").rglob("*.md"))) == 1
@@ -79,3 +82,27 @@ def test_duplicate_does_not_rewrite_obsidian(service, tmp_path):
     service.handle_clipboard_text("dup me")
     service.handle_clipboard_text("dup me")
     assert len(list((tmp_path / "vault").rglob("*.md"))) == 1
+
+
+def test_release_rolls_back_public_state_when_outbox_emit_fails(service, conn, monkeypatch):
+    from clipvault.store.outbox_repo import OutboxRepo
+    from clipvault.sync import engine
+
+    secret = service.handle_clipboard_text(FAKE_AWS_KEY).clip
+
+    def fail_after_append(db_conn, clip, when, *, commit=True):
+        OutboxRepo(db_conn).append("clip_new", {"id": clip.id}, when, commit=commit)
+        raise RuntimeError("simulated release outbox failure")
+
+    monkeypatch.setattr(engine, "emit_clip_new", fail_after_append)
+
+    with pytest.raises(RuntimeError, match="release outbox failure"):
+        service.release_clip(secret.id)
+
+    persisted = service.clips.get(secret.id)
+    assert persisted.is_secret is True
+    assert persisted.released is False
+    assert service.clips.fts_contains(secret.id) is False
+    assert conn.execute("SELECT COUNT(*) FROM backup_queue").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM obsidian_queue").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM sync_outbox").fetchone()[0] == 0

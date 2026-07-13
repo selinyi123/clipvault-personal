@@ -106,9 +106,11 @@ function memCard(m) {
 async function refresh() {
   const status = await api("/api/status");
   const sync = status.sync || {};
+  const obsidian = status.obsidian_retry || {};
   let statusText =
     (status.version ? `v${status.version} · ` : "")
     + `共 ${status.clips_total} 条 · 隔离 ${status.quarantined} · 待备份 ${status.backup_pending}`
+    + (obsidian.pending ? ` · Obsidian 待写 ${obsidian.pending}` : "")
     + (status.last_backup_at ? ` · 最近备份 ${fmtTime(status.last_backup_at)}` : "")
     + (sync.paired_devices
         ? ` · 已配对 ${sync.paired_devices} 台`

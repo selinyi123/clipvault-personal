@@ -13,6 +13,7 @@ import pytest
 from clipvault.api.handlers import Api
 from clipvault.api import server as api_server
 from clipvault.config import Config
+from clipvault.core import normalize
 from clipvault.service import ClipVaultService
 from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.outbox_repo import OutboxRepo
@@ -45,7 +46,8 @@ def _pair(api) -> str:
 def _clip_new_event(seq, content, **kw):
     data = {
         "id": kw.get("id", f"01CLIP{seq:020d}"), "content": content,
-        "content_hash": kw.get("hash", f"hash{seq}"), "content_type": "text",
+        "content_hash": kw.get("content_hash", normalize.content_hash(content)),
+        "content_type": kw.get("content_type", "text"),
         "is_secret": kw.get("is_secret", False), "secret_level": None, "secret_reasons": [],
         "source_device": PEER, "source_app": None,
         "created_at": "2026-06-13T10:00:00Z", "last_seen_at": "2026-06-13T10:00:00Z",
@@ -192,7 +194,7 @@ def test_h2_sync_push_rejects_non_array_events(api, caplog):
 
 def test_h2_sync_push_rejects_batches_above_android_limit(api):
     token = _pair(api)
-    events = [_clip_new_event(i + 1, f"clip {i}", hash=f"bulk{i}") for i in range(101)]
+    events = [_clip_new_event(i + 1, f"clip {i}") for i in range(101)]
     status, body = api.sync_push(token, {"events": events})
     assert status == 400
     assert "at most 100" in body["error"]["message"]
@@ -206,43 +208,43 @@ def test_h2_bad_since_seq_returns_400(api):
 
 def test_h3_push_clip_new_lands(api, conn, tmp_path):
     token = _pair(api)
-    ev = _clip_new_event(1, "hello from phone", hash="abc123")
+    ev = _clip_new_event(1, "hello from phone")
     s, body = api.sync_push(token, {"events": [ev]})
     assert s == 200 and body["acked_upto"] == 1
-    clip = ClipsRepo(conn).get_by_hash("abc123")
+    clip = ClipsRepo(conn).get_by_hash(normalize.content_hash("hello from phone"))
     assert clip is not None and clip.content == "hello from phone"
     assert len(list((tmp_path / "vault").rglob("*.md"))) == 1  # obsidian written
 
 
 def test_h4_push_idempotent(api, conn, tmp_path):
     token = _pair(api)
-    ev = _clip_new_event(1, "dup phone clip", hash="dup1")
+    ev = _clip_new_event(1, "dup phone clip")
     api.sync_push(token, {"events": [ev]})
     s, body = api.sync_push(token, {"events": [ev]})  # replay
     assert body["acked_upto"] == 1
-    assert conn.execute("SELECT COUNT(*) FROM clips WHERE content_hash='dup1'").fetchone()[0] == 1
+    assert ClipsRepo(conn).get_by_hash(normalize.content_hash("dup phone clip")) is not None
     assert len(list((tmp_path / "vault").rglob("*.md"))) == 1  # not rewritten
 
 
 def test_h4_duplicate_seq_in_same_batch_is_applied_once(api, conn):
     token = _pair(api)
     events = [
-        _clip_new_event(1, "first seq payload", hash="dupseq1", id="01DUPSEQ000000000000001"),
-        _clip_new_event(1, "second seq payload", hash="dupseq2", id="01DUPSEQ000000000000002"),
+        _clip_new_event(1, "first seq payload", id="01DUPSEQ000000000000001"),
+        _clip_new_event(1, "second seq payload", id="01DUPSEQ000000000000002"),
     ]
 
     status, body = api.sync_push(token, {"events": events})
 
     assert status == 200 and body["acked_upto"] == 1
-    assert ClipsRepo(conn).get_by_hash("dupseq1") is not None
-    assert ClipsRepo(conn).get_by_hash("dupseq2") is None
+    assert ClipsRepo(conn).get_by_hash(normalize.content_hash("first seq payload")) is not None
+    assert ClipsRepo(conn).get_by_hash(normalize.content_hash("second seq payload")) is None
 
 
 def test_h5_push_secret_quarantined_not_propagated(api, conn, tmp_path):
     token = _pair(api)
-    ev = _clip_new_event(1, FAKE_AWS_KEY, hash="seekrit")
+    ev = _clip_new_event(1, FAKE_AWS_KEY)
     api.sync_push(token, {"events": [ev]})
-    clip = ClipsRepo(conn).get_by_hash("seekrit")
+    clip = ClipsRepo(conn).get_by_hash(normalize.content_hash(FAKE_AWS_KEY))
     assert clip.is_secret is True
     assert not ClipsRepo(conn).fts_contains(clip.id)             # not indexed
     assert conn.execute("SELECT COUNT(*) FROM backup_queue").fetchone()[0] == 0
@@ -266,12 +268,13 @@ def test_h6_pull_returns_local_public_clips(api, conn):
 def test_h7_clip_meta_lww(api, conn):
     token = _pair(api)
     # land a clip from the peer
-    api.sync_push(token, {"events": [_clip_new_event(1, "meta target", hash="mt1")]})
-    clip = ClipsRepo(conn).get_by_hash("mt1")
+    content_hash = normalize.content_hash("meta target")
+    api.sync_push(token, {"events": [_clip_new_event(1, "meta target")]})
+    clip = ClipsRepo(conn).get_by_hash(content_hash)
     # peer deletes it at t=20
     meta_del = {"origin_device": PEER, "seq": 2, "kind": "clip_meta",
                 "ts": "2026-06-13T10:20:00Z",
-                "data": {"content_hash": "mt1", "patch": {"deleted": True},
+                "data": {"content_hash": content_hash, "patch": {"deleted": True},
                          "ts": "2026-06-13T10:20:00Z"}}
     api.sync_push(token, {"events": [meta_del]})
     assert ClipsRepo(conn).get(clip.id).deleted is True
@@ -279,7 +282,7 @@ def test_h7_clip_meta_lww(api, conn):
     # a STALE un-delete at t=10 must not resurrect
     stale = {"origin_device": PEER, "seq": 3, "kind": "clip_meta",
              "ts": "2026-06-13T10:10:00Z",
-             "data": {"content_hash": "mt1", "patch": {"deleted": False},
+             "data": {"content_hash": content_hash, "patch": {"deleted": False},
                       "ts": "2026-06-13T10:10:00Z"}}
     api.sync_push(token, {"events": [stale]})
     assert ClipsRepo(conn).get(clip.id).deleted is True  # unchanged
@@ -289,12 +292,13 @@ def test_h7_clip_meta_pins_and_favorites(api, conn):
     # A peer's clip_meta carrying pinned/favorite must mirror onto the desktop
     # clip, not just the deleted flag (the Android cache consumes the same patch).
     token = _pair(api)
-    api.sync_push(token, {"events": [_clip_new_event(1, "pin me", hash="pf1")]})
-    clip = ClipsRepo(conn).get_by_hash("pf1")
+    content_hash = normalize.content_hash("pin me")
+    api.sync_push(token, {"events": [_clip_new_event(1, "pin me")]})
+    clip = ClipsRepo(conn).get_by_hash(content_hash)
     assert not clip.pinned and not clip.favorite
     meta = {"origin_device": PEER, "seq": 2, "kind": "clip_meta",
             "ts": "2026-06-13T10:20:00Z",
-            "data": {"content_hash": "pf1",
+            "data": {"content_hash": content_hash,
                      "patch": {"pinned": True, "favorite": True},
                      "ts": "2026-06-13T10:20:00Z"}}
     api.sync_push(token, {"events": [meta]})
@@ -305,16 +309,17 @@ def test_h7_clip_meta_pins_and_favorites(api, conn):
 def test_h7_clip_meta_pin_lww_rejects_stale(api, conn):
     # Same-field LWW: an older-ts un-pin must not override a newer pin.
     token = _pair(api)
-    api.sync_push(token, {"events": [_clip_new_event(1, "lww pin", hash="pf2")]})
-    clip = ClipsRepo(conn).get_by_hash("pf2")
+    content_hash = normalize.content_hash("lww pin")
+    api.sync_push(token, {"events": [_clip_new_event(1, "lww pin")]})
+    clip = ClipsRepo(conn).get_by_hash(content_hash)
     api.sync_push(token, {"events": [{"origin_device": PEER, "seq": 2, "kind": "clip_meta",
         "ts": "2026-06-13T10:20:00Z",
-        "data": {"content_hash": "pf2", "patch": {"pinned": True},
+        "data": {"content_hash": content_hash, "patch": {"pinned": True},
                  "ts": "2026-06-13T10:20:00Z"}}]})
     assert ClipsRepo(conn).get(clip.id).pinned is True
     api.sync_push(token, {"events": [{"origin_device": PEER, "seq": 3, "kind": "clip_meta",
         "ts": "2026-06-13T10:10:00Z",
-        "data": {"content_hash": "pf2", "patch": {"pinned": False},
+        "data": {"content_hash": content_hash, "patch": {"pinned": False},
                  "ts": "2026-06-13T10:10:00Z"}}]})
     assert ClipsRepo(conn).get(clip.id).pinned is True  # stale un-pin ignored
 
@@ -341,12 +346,13 @@ def test_h7_clip_meta_per_field_lww(api, conn):
     # v1.8: a newer change to one field must not be masked by an older change to a
     # different field that happened to bump a shared timestamp.
     token = _pair(api)
-    api.sync_push(token, {"events": [_clip_new_event(1, "field lww", hash="fl1")]})
-    clip = ClipsRepo(conn).get_by_hash("fl1")
+    content_hash = normalize.content_hash("field lww")
+    api.sync_push(token, {"events": [_clip_new_event(1, "field lww")]})
+    clip = ClipsRepo(conn).get_by_hash(content_hash)
 
     def meta(seq, patch, ts):
         return {"origin_device": PEER, "seq": seq, "kind": "clip_meta", "ts": ts,
-                "data": {"content_hash": "fl1", "patch": patch, "ts": ts}}
+                "data": {"content_hash": content_hash, "patch": patch, "ts": ts}}
 
     api.sync_push(token, {"events": [meta(2, {"pinned": True}, "2026-06-13T10:10:00Z")]})
     api.sync_push(token, {"events": [meta(3, {"favorite": True}, "2026-06-13T10:20:00Z")]})
@@ -392,6 +398,34 @@ def test_h8_pull_response_byte_budget_pages_without_skipping(conn):
     assert second["has_more"] is False
 
 
+def test_h8_pull_continues_across_bounded_sqlite_fetch_pages(conn):
+    outbox = OutboxRepo(conn)
+    expected = []
+    for index in range(17):
+        expected.append(
+            outbox.append(
+                "clip_new",
+                {"content": f"page-row-{index}", "content_hash": f"page-hash-{index}"},
+                "2026-07-13T00:00:00Z",
+            )
+        )
+
+    since = 0
+    pages = []
+    received = []
+    while True:
+        page = sync_engine.build_pull(conn, since_seq=since)
+        pages.append(len(page["events"]))
+        received.extend(event["seq"] for event in page["events"])
+        since = page["next_seq"]
+        if not page["has_more"]:
+            break
+
+    assert pages == [8, 8, 1]
+    assert received == expected
+    assert since == expected[-1]
+
+
 def test_h8_pull_single_event_over_response_budget_fails_without_skipping(conn, caplog):
     outbox = OutboxRepo(conn)
     when = "2026-06-13T10:00:00Z"
@@ -405,14 +439,57 @@ def test_h8_pull_single_event_over_response_budget_fails_without_skipping(conn, 
     assert "oversized-content" not in caplog.text
 
 
+def test_h8_pull_accepts_max_clip_with_worst_case_json_escaping(conn):
+    content = "\0" * normalize.DEFAULT_MAX_CLIP_BYTES
+    outbox = OutboxRepo(conn)
+    seq = outbox.append(
+        "clip_new",
+        {
+            "id": "01J00000000000000000000000",
+            "content": content,
+            "content_hash": "a" * 64,
+            "content_type": "text",
+            "is_secret": False,
+            "secret_level": None,
+            "secret_reasons": [],
+            "source_device": "desktop-test",
+            "source_app": None,
+            "created_at": "2026-07-13T00:00:00Z",
+            "last_seen_at": "2026-07-13T00:00:00Z",
+            "times_seen": 1,
+            "pinned": False,
+            "favorite": False,
+            "deleted": False,
+        },
+        "2026-07-13T00:00:00Z",
+    )
+    event = outbox.list_since(0, limit=1)[0]
+    event_bytes = sync_engine._event_wire_size(event)
+
+    page = sync_engine.build_pull(conn, since_seq=0)
+    response_bytes = len(
+        json.dumps(page, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+
+    assert event_bytes > 4 * 1024 * 1024
+    assert event_bytes <= sync_engine.SYNC_PULL_RESPONSE_BYTES
+    assert response_bytes <= sync_engine.SYNC_PULL_HTTP_RESPONSE_BYTES
+    assert [item["seq"] for item in page["events"]] == [seq]
+    assert page["next_seq"] == seq
+    assert page["has_more"] is False
+
+
 def test_h8_pull_single_event_over_response_budget_returns_413(api, conn):
     token = _pair(api)
     outbox = OutboxRepo(conn)
     when = "2026-06-13T10:00:00Z"
     seq = outbox.append(
         "clip_new",
-        {"content": "x" * sync_engine.SYNC_PULL_RESPONSE_BYTES, "content_hash": "pull-api-too-big"},
+        {"content": "x" * sync_engine.SYNC_PULL_HTTP_RESPONSE_BYTES, "content_hash": "pull-api-too-big"},
         when,
+    )
+    assert sync_engine._event_wire_size(outbox.list_since(0, limit=1)[0]) > (
+        sync_engine.SYNC_PULL_HTTP_RESPONSE_BYTES
     )
 
     status, body = api.sync_pull(token, {"since_seq": "0"})
@@ -426,13 +503,13 @@ def test_h8_pull_single_event_over_response_budget_returns_413(api, conn):
 def test_h8_push_gap_does_not_advance_ack(api, conn):
     token = _pair(api)
     # Event 2 can be applied idempotently, but ack must remain at 0 because seq 1 is missing.
-    _, first = api.sync_push(token, {"events": [_clip_new_event(2, "gap two", hash="gap2")]})
+    _, first = api.sync_push(token, {"events": [_clip_new_event(2, "gap two")]})
     assert first["acked_upto"] == 0
-    assert ClipsRepo(conn).get_by_hash("gap2") is not None
+    assert ClipsRepo(conn).get_by_hash(normalize.content_hash("gap two")) is not None
     # When seq 1 arrives later and seq 2 is replayed, the contiguous ack can advance to 2.
     _, second = api.sync_push(token, {"events": [
-        _clip_new_event(1, "gap one", hash="gap1"),
-        _clip_new_event(2, "gap two", hash="gap2"),
+        _clip_new_event(1, "gap one"),
+        _clip_new_event(2, "gap two"),
     ]})
     assert second["acked_upto"] == 2
 
@@ -466,7 +543,7 @@ def test_status_reports_oversized_pull_block_without_content(api, conn):
     _pair(api)
     outbox = OutboxRepo(conn)
     secret_text = "status-visible-content-must-not-leak"
-    oversized_content = secret_text + ("x" * sync_engine.SYNC_PULL_RESPONSE_BYTES)
+    oversized_content = secret_text + ("x" * sync_engine.SYNC_PULL_HTTP_RESPONSE_BYTES)
     seq = outbox.append(
         "clip_new",
         {"content": oversized_content, "content_hash": "blocked-status"},
@@ -539,14 +616,14 @@ def test_h10_malformed_event_does_not_wedge_batch(api, conn):
     # unprocessable no-op so it is not resent forever.
     token = _pair(api)
     events = [
-        _clip_new_event(1, "before bad", hash="ok1"),
+        _clip_new_event(1, "before bad"),
         {"origin_device": PEER, "seq": 2, "kind": "clip_meta", "data": {}},  # missing keys
-        _clip_new_event(3, "after bad", hash="ok3"),
+        _clip_new_event(3, "after bad"),
     ]
     s, body = api.sync_push(token, {"events": events})
     assert s == 200 and body["acked_upto"] == 3          # malformed #2 acked, no wedge
-    assert ClipsRepo(conn).get_by_hash("ok1") is not None
-    assert ClipsRepo(conn).get_by_hash("ok3") is not None  # valid event after the bad one still lands
+    assert ClipsRepo(conn).get_by_hash(normalize.content_hash("before bad")) is not None
+    assert ClipsRepo(conn).get_by_hash(normalize.content_hash("after bad")) is not None
 
 
 def test_h10_integrity_conflict_event_does_not_wedge_batch(api, conn):
@@ -556,25 +633,180 @@ def test_h10_integrity_conflict_event_does_not_wedge_batch(api, conn):
     token = _pair(api)
     duplicate_id = "01SAMEID000000000000001"
     events = [
-        _clip_new_event(1, "before conflict", hash="ok-before", id=duplicate_id),
-        _clip_new_event(2, "conflicting id", hash="bad-conflict", id=duplicate_id),
-        _clip_new_event(3, "after conflict", hash="ok-after", id="01SAMEID000000000000003"),
+        _clip_new_event(1, "before conflict", id=duplicate_id),
+        _clip_new_event(2, "conflicting id", id=duplicate_id),
+        _clip_new_event(3, "after conflict", id="01SAMEID000000000000003"),
     ]
 
     s, body = api.sync_push(token, {"events": events})
 
     assert s == 200 and body["acked_upto"] == 3
-    assert ClipsRepo(conn).get_by_hash("ok-before") is not None
-    assert ClipsRepo(conn).get_by_hash("bad-conflict") is None
-    assert ClipsRepo(conn).get_by_hash("ok-after") is not None
+    assert ClipsRepo(conn).get_by_hash(normalize.content_hash("before conflict")) is not None
+    assert ClipsRepo(conn).get_by_hash(normalize.content_hash("conflicting id")) is None
+    assert ClipsRepo(conn).get_by_hash(normalize.content_hash("after conflict")) is not None
 
 
 def test_h10_event_without_seq_is_dropped(api, conn):
     token = _pair(api)
     events = [
         {"origin_device": PEER, "kind": "clip_new", "data": {}},  # no seq -> unorderable
-        _clip_new_event(1, "valid one", hash="okv"),
+        _clip_new_event(1, "valid one"),
     ]
     s, body = api.sync_push(token, {"events": events})
     assert s == 200 and body["acked_upto"] == 1
-    assert ClipsRepo(conn).get_by_hash("okv") is not None
+    assert ClipsRepo(conn).get_by_hash(normalize.content_hash("valid one")) is not None
+
+
+def test_h10_malformed_clip_contract_is_acked_without_landing(api, conn, caplog):
+    token = _pair(api)
+    events = []
+    for seq, content in enumerate(
+        ("bad hash", "bad time", "bad kind", "bad count", "not normalized "), start=1
+    ):
+        event = _clip_new_event(seq, content)
+        events.append(event)
+    events[0]["data"]["content_hash"] = "0" * 64
+    events[1]["data"]["created_at"] = "not-a-time"
+    events[2]["data"]["content_type"] = "unknown"
+    events[3]["data"]["times_seen"] = True
+
+    with caplog.at_level("ERROR", logger="clipvault.sync"):
+        status, body = api.sync_push(token, {"events": events})
+
+    assert status == 200 and body["acked_upto"] == len(events)
+    assert conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0] == 0
+    assert "not normalized" not in caplog.text
+
+
+def test_h10_remote_frontmatter_metadata_injection_is_acked_noop(api, conn, caplog):
+    token = _pair(api)
+    marker = "must-not-enter-log-or-yaml"
+    event = _clip_new_event(1, "safe body")
+    event["data"]["source_app"] = f"phone\n{marker}: true"
+
+    with caplog.at_level("ERROR", logger="clipvault.sync"):
+        status, body = api.sync_push(token, {"events": [event]})
+
+    assert status == 200 and body["acked_upto"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0] == 0
+    assert marker not in caplog.text
+
+
+def test_h10_untrusted_event_kind_is_not_written_to_logs(api, conn, caplog):
+    token = _pair(api)
+    marker = "kind-must-not-leak-sensitive-payload"
+    event = {"origin_device": PEER, "seq": 1, "kind": marker, "data": {}}
+
+    with caplog.at_level("ERROR", logger="clipvault.sync"):
+        status, body = api.sync_push(token, {"events": [event]})
+
+    assert status == 200 and body["acked_upto"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0] == 0
+    assert marker not in caplog.text
+
+
+def test_h10_nested_malformed_event_data_is_acked_without_db_or_log_leak(api, conn, caplog):
+    token = _pair(api)
+    marker = "nested-sensitive-marker-must-not-leak"
+    valid_ts = "2026-06-13T10:00:00Z"
+    events = [
+        {"origin_device": PEER, "seq": 1, "kind": "memory_upsert", "data": {
+            "kind": [marker], "text": "safe", "label": None,
+            "pinned": False, "use_count": 0, "source": "manual",
+        }},
+        {"origin_device": PEER, "seq": 2, "kind": "memory_upsert", "data": {
+            "kind": "term", "text": {marker: "value"}, "label": None,
+            "pinned": False, "use_count": 0, "source": "manual",
+        }},
+        {"origin_device": PEER, "seq": 3, "kind": "clip_meta", "data": {
+            "content_hash": [marker], "patch": {"pinned": True}, "ts": valid_ts,
+        }},
+        {"origin_device": PEER, "seq": 4, "kind": "memory_delete", "data": {
+            "kind": "term", "text": {marker: "value"}, "ts": valid_ts,
+        }},
+        {"origin_device": PEER, "seq": 5, "kind": "clip_meta", "data": {
+            "content_hash": "0" * 64,
+            "patch": {"pinned": {marker: True}},
+            "ts": valid_ts,
+        }},
+        {"origin_device": PEER, "seq": 6, "kind": "memory_upsert", "data": {
+            "kind": "term", "text": "safe", "label": {marker: "value"},
+            "pinned": False, "use_count": 0, "source": "manual",
+        }},
+    ]
+
+    with caplog.at_level("ERROR", logger="clipvault.sync"):
+        status, body = api.sync_push(token, {"events": events})
+
+    assert status == 200 and body["acked_upto"] == len(events)
+    assert conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM clip_meta_ts").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM memory_meta_ts").fetchone()[0] == 0
+    assert marker not in caplog.text
+
+
+def test_remote_db_intent_survives_crash_before_external_write(api, conn, monkeypatch, tmp_path):
+    event = _clip_new_event(1, "remote crash recovery")
+
+    def crash_before_write(_clip):
+        raise RuntimeError("simulated process stop")
+
+    monkeypatch.setattr(api.service, "write_obsidian_or_queue", crash_before_write)
+    with pytest.raises(RuntimeError, match="process stop"):
+        sync_engine._apply_clip_new(conn, event["data"], api.service)
+
+    clip = ClipsRepo(conn).get_by_hash(normalize.content_hash("remote crash recovery"))
+    assert clip is not None
+    assert conn.execute(
+        "SELECT 1 FROM backup_queue WHERE clip_id=?", (clip.id,)
+    ).fetchone() is not None
+    assert conn.execute(
+        "SELECT 1 FROM obsidian_queue WHERE clip_id=?", (clip.id,)
+    ).fetchone() is not None
+    assert conn.in_transaction is False
+
+    monkeypatch.undo()
+    sync_engine._apply_clip_new(conn, event["data"], api.service)
+    assert ClipsRepo(conn).get(clip.id).obsidian_path is not None
+    assert len(list((tmp_path / "vault").rglob("*.md"))) == 1
+
+
+def test_remote_duplicate_replay_repairs_missing_downstream_rows(api, conn, monkeypatch):
+    event = _clip_new_event(1, "remote replay repair")
+    monkeypatch.setattr(api.service, "write_obsidian_or_queue", lambda _clip: False)
+    sync_engine._apply_clip_new(conn, event["data"], api.service)
+    clip = ClipsRepo(conn).get_by_hash(normalize.content_hash("remote replay repair"))
+    conn.execute("DELETE FROM backup_queue WHERE clip_id=?", (clip.id,))
+    conn.execute("DELETE FROM obsidian_queue WHERE clip_id=?", (clip.id,))
+    conn.commit()
+
+    sync_engine._apply_clip_new(conn, event["data"], api.service)
+
+    assert conn.execute(
+        "SELECT 1 FROM backup_queue WHERE clip_id=?", (clip.id,)
+    ).fetchone() is not None
+    assert conn.execute(
+        "SELECT 1 FROM obsidian_queue WHERE clip_id=?", (clip.id,)
+    ).fetchone() is not None
+    assert conn.execute("SELECT COUNT(*) FROM sync_outbox").fetchone()[0] == 0
+
+
+def test_remote_public_state_rolls_back_when_backup_intent_fails(api, conn, monkeypatch):
+    event = _clip_new_event(1, "remote atomic rollback")
+    original = sync_engine.BackupQueueRepo.enqueue
+
+    def fail_after_enqueue(self, clip_id, when, *, commit=True):
+        original(self, clip_id, when, commit=commit)
+        raise RuntimeError("simulated remote backup failure")
+
+    monkeypatch.setattr(sync_engine.BackupQueueRepo, "enqueue", fail_after_enqueue)
+
+    with pytest.raises(RuntimeError, match="remote backup failure"):
+        sync_engine._apply_clip_new(conn, event["data"], api.service)
+
+    assert conn.in_transaction is False
+    assert conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM clips_fts").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM backup_queue").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM obsidian_queue").fetchone()[0] == 0

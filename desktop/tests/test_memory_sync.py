@@ -69,7 +69,8 @@ def test_k4_apply_memory_upsert_idempotent(conn):
 def test_k5_apply_memory_delete(conn):
     MemoryRepo(conn).upsert("term", "doomed")
     ev = {"origin_device": "peer", "seq": 1, "kind": "memory_delete",
-          "ts": "t", "data": {"kind": "term", "text": "doomed", "ts": "t"}}
+          "ts": "2026-06-13T10:00:00Z",
+          "data": {"kind": "term", "text": "doomed", "ts": "2026-06-13T10:00:00Z"}}
     engine.apply_push(conn, "peer", [ev], service=None)
     assert MemoryRepo(conn).list(kind="term") == []
 

@@ -43,12 +43,19 @@ object Capture {
         val hash = Normalize.contentHash(content)
         val now = utcNow()
 
-        val existing = db.clips().byHash(hash)
-        if (existing != null) {
-            db.clips().touchSeen(existing.id, now)
-            return Result(Status.DUPLICATE, existing)
+        // Preserve the cheap duplicate path without holding a writer transaction
+        // while Secret Guard and classification run. Hard deletion is not part of
+        // ClipDao's contract, so a row found here must still exist when rechecked.
+        if (db.clips().byHash(hash) != null) {
+            return db.runInTransaction<Result> {
+                val existing = checkNotNull(db.clips().byHash(hash)) {
+                    "clip disappeared during duplicate capture"
+                }
+                touchDuplicate(db, existing, now)
+            }
         }
 
+        // Deterministic planning stays outside the SQLite writer transaction.
         val verdict = SecretGuard.scan(content)          // gate A
         val type = Classifier.classify(content)
         val clip = ClipEntity(
@@ -58,13 +65,44 @@ object Capture {
             sourceDevice = sourceDevice, sourceApp = sourceApp,
             createdAt = now, lastSeenAt = now, timesSeen = 1,
         )
-        db.clips().insert(clip)
-
-        if (!clip.isSecret) {
-            // gate B: only public clips are published to the desktop
-            db.outbox().append(OutboxEntity(kind = "clip_new", payload = clipJson(clip), createdAt = now))
+        val plannedOutbox = if (clip.isSecret) {
+            null
+        } else {
+            OutboxEntity(kind = "clip_new", payload = clipJson(clip), createdAt = now)
         }
-        return Result(Status.NEW, clip)
+
+        return db.runInTransaction<Result> {
+            // Recheck under the writer transaction: another capture may have won
+            // after the optimistic lookup and before this transaction began.
+            val existing = db.clips().byHash(hash)
+            if (existing != null) {
+                return@runInTransaction touchDuplicate(db, existing, now)
+            }
+
+            val insertResult = db.clips().insert(clip)
+            if (insertResult == -1L) {
+                // INSERT IGNORE can lose either the content-hash race or the
+                // (extremely unlikely) primary-key race. Only the former is a
+                // valid duplicate; never emit an outbox row for the candidate ID.
+                val winner = checkNotNull(db.clips().byHash(hash)) {
+                    "clip insert was ignored without a matching content hash"
+                }
+                return@runInTransaction touchDuplicate(db, winner, now)
+            }
+
+            // Gate B: only public clips are published to the desktop. Room rolls
+            // the clip insert back if appending this outbox row fails.
+            plannedOutbox?.let(db.outbox()::append)
+            Result(Status.NEW, clip)
+        }
+    }
+
+    private fun touchDuplicate(db: AppDatabase, existing: ClipEntity, now: String): Result {
+        db.clips().touchSeen(existing.id, now)
+        val touched = checkNotNull(db.clips().byHash(existing.contentHash)) {
+            "duplicate clip disappeared after touch"
+        }
+        return Result(Status.DUPLICATE, touched)
     }
 
     private fun clipJson(c: ClipEntity): String = JSONObject().apply {

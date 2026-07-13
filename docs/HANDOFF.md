@@ -16,7 +16,52 @@
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
-| Last updated | 2026-07-05 |
+| Last updated | 2026-07-13 |
+
+## Current development note - 2026-07-13 / R000 cross-platform stability hotfix
+
+- The current-main baseline at `a509006034b6777b8f80f76b466b761f4c151b4f`
+  had a red Desktop CI result after the Obsidian retry queue merge. This hotfix
+  repairs that regression; it does not treat branch-local tests as current-main
+  evidence. Current-main CI and release-candidate dry-run results must be
+  re-recorded after merge before Issue #36 can advance.
+- Desktop public ingest, remote public clip apply, and explicit secret release
+  now commit the clip/public-state transition, FTS change, backup intent,
+  Obsidian intent, and sync outbox intent in one SQLite unit of work. External
+  Obsidian filesystem IO remains after the durable DB commit.
+- Obsidian retries use ownership-bearing leases. Schema 7 adds bounded keyset
+  reconciliation and cleanup cursors so crash-window repair does not restore the
+  old unbounded table sweep. Queue failures persist only a safe exception class;
+  status surfaces expose aggregate counts without clip ids, content, paths, or
+  error details.
+- Remote `clip_new` events are validated before persistence, including
+  normalization/hash agreement, enum and scalar types, timestamps, byte limits,
+  and control-character rejection for Markdown frontmatter fields. A seq-valid
+  malformed event is a safe acknowledged no-op so it cannot wedge later events.
+- Android capture keeps planning outside Room's write transaction, rechecks
+  duplicates inside the transaction, and commits the clip plus public outbox
+  event atomically. API 26/27 IME switch-back falls back to the system picker;
+  API 28+ keeps the direct previous-IME path.
+- Sync request and response budgets are symmetric with the 1 MiB normalized
+  clip contract and worst-case JSON escaping. Oversized or corrupt Android
+  outbox heads remain durable, enter a content-free local blocked state, skip
+  repeated periodic push work, and do not prevent inbound pull. The user can
+  explicitly request a recheck after repair or upgrade. Multi-event HTTP 413
+  responses first shrink and retry the prefix; only a rejected single event is
+  blocked. API 26/27 reads existing outbox TEXT through payload-free metadata
+  and bounded SQLite `substr` chunks, avoiding the legacy CursorWindow single-
+  row limit without a schema or persistent-format change. The API 26/27
+  instrumented regression exists but CI currently compiles rather than runs it;
+  real API 26/27 execution remains required before release evidence is complete.
+- CI now runs Android `lintDebug`. The unsigned `Release candidate dry run`
+  runs the Desktop pytest suite plus Android debug/release lint before packaging,
+  so a green artifact run cannot mask a red regression suite. The separate,
+  manually dispatched `Release artifact build` workflow applies the same
+  Desktop/lint gate before producing final artifact candidates.
+- Scope note: this is stability-only. It does not add analytics, typed-text
+  logging, IME network work, a new dependency, a version bump, signed/final
+  artifacts, manual QA evidence, a GitHub Release, or permission to close Issue
+  #36. Owner-controlled device/signing/release evidence remains required.
 
 ## Current development note - 2026-07-04 / v1.6 release gate and v1.7 stability gates in progress
 

@@ -22,6 +22,8 @@ import com.clipvault.app.ClipVaultApp
 import com.clipvault.app.data.ClipEntity
 import com.clipvault.app.sync.Settings
 import com.clipvault.app.sync.SyncClient
+import com.clipvault.app.sync.SyncPushBlockedState
+import com.clipvault.app.sync.SyncPushBlockReason
 import com.clipvault.app.sync.SyncScheduler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -99,6 +101,9 @@ private fun Home() {
     val enabled = remember(statusKey) { imeEnabled(ctx) }
     val selected = remember(statusKey) { imeSelected(ctx) }
     val paired = remember(statusKey, pairing) { isPaired(ctx) }
+    val syncPushBlocked = remember(statusKey) {
+        try { Settings(ctx).syncPushBlocked } catch (_: Exception) { null }
+    }
 
     fun refresh() = scope.launch {
         // Guarded: a DB error must never crash the app (same lesson as pairing).
@@ -125,6 +130,31 @@ private fun Home() {
                 onSwitch = { switchKeyboard(ctx) },
                 onPair = { pairing = true },
             )
+            if (syncPushBlocked != null) {
+                Spacer(Modifier.height(12.dp))
+                SyncPushBlockedCard(syncPushBlocked) {
+                    scope.launch {
+                        val cleared = withContext(Dispatchers.IO) {
+                            try {
+                                Settings(ctx).clearSyncPushBlocked()
+                                true
+                            } catch (_: Exception) {
+                                false
+                            }
+                        }
+                        if (cleared) {
+                            SyncScheduler.requestPushBestEffort(ctx)
+                            statusKey++
+                        } else {
+                            android.widget.Toast.makeText(
+                                ctx,
+                                "无法更新同步状态，请稍后重试",
+                                android.widget.Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                }
+            }
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(),
                 label = { Text("搜索剪切板历史") }, singleLine = true)
@@ -139,6 +169,30 @@ private fun Home() {
     }
 
     if (pairing) PairDialog(onDismiss = { pairing = false; statusKey++ })
+}
+
+@Composable
+private fun SyncPushBlockedCard(state: SyncPushBlockedState, onRecheck: () -> Unit) {
+    val reason = when (state.reason) {
+        SyncPushBlockReason.EVENT_TOO_LARGE -> "事件超过同步大小上限，或桌面端版本过旧"
+        SyncPushBlockReason.INVALID_PAYLOAD -> "事件格式损坏"
+        SyncPushBlockReason.ACK_OUT_OF_RANGE -> "桌面确认序号异常"
+    }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp)) {
+            Text(
+                "同步发送已暂停",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "本地队列事件 #${state.seq} 无法安全发送：$reason。接收桌面内容仍会继续。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            TextButton(onClick = onRecheck) { Text("已修复，重新检查") }
+        }
+    }
 }
 
 @Composable

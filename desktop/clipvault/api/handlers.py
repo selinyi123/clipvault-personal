@@ -380,6 +380,9 @@ class Api:
             "quarantined": counts["secret"],
             "backup_pending": pending,
             "last_backup_at": last_backup,
+            # Aggregate-only queue health. Never expose clip ids, content,
+            # Vault paths, or stored error details through the status API.
+            "obsidian_retry": self.service.obsidian_retry_stats(),
             "lan_reachable": _lan_reachable(self.service.config.host),
             "sync": {
                 **self.peers.summary(),

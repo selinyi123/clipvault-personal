@@ -22,33 +22,40 @@ def _cfg(tmp_path: Path) -> Config:
 
 
 def test_obsidian_queue_backoff_and_ready_limit(conn):
+    now = "2026-07-09T00:00:00Z"
     first = pipeline.ingest(
         conn,
         "obsidian pending one",
         source_device="d",
+        now_fn=lambda: now,
         new_id_fn=lambda: "clip-0001",
     )
     second = pipeline.ingest(
         conn,
         "obsidian pending two",
         source_device="d",
+        now_fn=lambda: now,
         new_id_fn=lambda: "clip-0002",
     )
     queue = ObsidianQueueRepo(conn)
-    now = "2026-07-09T00:00:00Z"
 
-    assert queue.enqueue(first.clip.id, now) is True
-    assert queue.enqueue(second.clip.id, now) is True
-    assert queue.claim_ready(now, limit=1) == [first.clip.id]
+    assert queue.enqueue(first.clip.id, now) is False  # ingest queued atomically
+    assert queue.enqueue(second.clip.id, now) is False
+    first_claim = queue.claim_ready(now, limit=1)[0]
+    assert first_claim.clip_id == first.clip.id
 
-    attempts = queue.record_failure(first.clip.id, "PermissionError", now)
+    attempts = queue.record_failure(first_claim, "PermissionError: private path", now)
 
     assert attempts == 1
-    assert queue.claim_ready(now, limit=10) == [second.clip.id]
+    second_claim = queue.claim_ready(now, limit=10)[0]
+    assert second_claim.clip_id == second.clip.id
     stats = queue.stats(now)
     assert stats["pending"] == 2
-    assert stats["ready"] == 1
-    assert stats["blocked"] == 1
+    assert stats["ready"] == 0
+    assert stats["blocked"] == 2
+    assert conn.execute(
+        "SELECT last_error FROM obsidian_queue WHERE clip_id=?", (first.clip.id,)
+    ).fetchone()[0] == "PermissionError"
 
 
 def test_service_queues_failed_obsidian_write(conn, tmp_path, monkeypatch):
@@ -80,10 +87,10 @@ def test_retry_obsidian_sweep_is_bounded(conn, tmp_path, monkeypatch):
             conn,
             text,
             source_device="d",
+            now_fn=lambda: now,
             new_id_fn=lambda index=index: f"clip-retry-{index:04d}",
         )
         ids.append(outcome.clip.id)
-        queue.enqueue(outcome.clip.id, now)
 
     def write_clip(clip, vault_path, type_dirs):
         path = Path(vault_path) / f"{clip.id}.md"
@@ -107,11 +114,14 @@ def test_retry_obsidian_sweep_is_bounded(conn, tmp_path, monkeypatch):
 def test_successful_write_clears_existing_queue_row(conn, tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     svc = ClipVaultService(conn, cfg)
-    outcome = pipeline.ingest(conn, "existing obsidian retry row", source_device="d")
-    queue = ObsidianQueueRepo(conn)
     now = "2026-07-09T00:00:00Z"
-    queue.enqueue(outcome.clip.id, now)
-    queue.record_failure(outcome.clip.id, "PermissionError", now)
+    outcome = pipeline.ingest(
+        conn, "existing obsidian retry row", source_device="d", now_fn=lambda: now
+    )
+    queue = ObsidianQueueRepo(conn)
+    claim = queue.claim_one(outcome.clip.id, now)
+    assert claim is not None
+    queue.record_failure(claim, "PermissionError", now)
 
     def write_clip(clip, vault_path, type_dirs):
         path = Path(vault_path) / f"{clip.id}.md"
@@ -121,7 +131,9 @@ def test_successful_write_clears_existing_queue_row(conn, tmp_path, monkeypatch)
 
     monkeypatch.setattr(writer, "write_clip", write_clip)
 
-    assert svc.write_obsidian_or_queue(outcome.clip) is True
+    assert svc.retry_obsidian_sweep(
+        now_fn=lambda: "2026-07-09T00:01:01Z", max_runtime_ms=10_000
+    ) == 1
     assert queue.stats(now)["pending"] == 0
     assert ClipsRepo(conn).get(outcome.clip.id).obsidian_path is not None
 
@@ -144,5 +156,4 @@ def test_secret_clip_is_not_queued_for_obsidian(conn):
 
     assert outcome.clip.is_secret
     assert queue.enqueue(outcome.clip.id, "2026-07-09T00:00:00Z") is False
-    assert queue.record_failure(outcome.clip.id, "PermissionError", "2026-07-09T00:00:00Z") == 0
     assert queue.stats("2026-07-09T00:00:00Z")["pending"] == 0

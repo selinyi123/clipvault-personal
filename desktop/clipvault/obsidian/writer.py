@@ -23,6 +23,7 @@ DEFAULT_TYPE_DIRS = {
 
 _SLUG_FORBIDDEN = re.compile(r"[\\/:*?\"<>|#^\[\]]")
 _BACKTICK_RUN = re.compile(r"`+")
+_RECOVERY_COLLISION_LIMIT = 64
 
 
 class SecretWriteRefused(Exception):
@@ -125,4 +126,28 @@ def write_clip(
     if clip.obsidian_path:
         return Path(clip.obsidian_path)
     rel_path, content = render(clip, type_dirs, tz)
+    # The Markdown file may have reached disk before SQLite recorded
+    # ``obsidian_path`` (process crash, disk-full commit, transient DB error).
+    # Recover that deterministic file by its stable clip id instead of creating
+    # a collision-suffixed duplicate on retry.
+    final = Path(vault_path) / rel_path
+    if final.parent.is_dir():
+        id_line = f"clipvault_id: {clip.id}"
+        # Probe the deterministic path first, then a fixed collision window.
+        # Avoid enumerating an entire large Vault directory on every new write.
+        candidates = [final]
+        candidates.extend(
+            final.with_name(f"{final.stem}-{n}{final.suffix}")
+            for n in range(1, _RECOVERY_COLLISION_LIMIT + 1)
+        )
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            try:
+                with candidate.open("r", encoding="utf-8") as handle:
+                    header = "".join(handle.readline() for _ in range(12))
+            except (OSError, UnicodeError):
+                continue
+            if id_line in header.splitlines():
+                return candidate
     return write(vault_path, rel_path, content)
