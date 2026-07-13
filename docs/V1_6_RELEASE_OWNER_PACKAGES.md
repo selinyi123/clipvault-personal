@@ -78,6 +78,9 @@ previous known file before returning an error.
 
 The manual template is generated directly from
 `tools/manual_qa_evidence.py`, so it uses schema v2 and the exact 18-item gate.
+Its optional compatibility mode still accepts an older schema-v2 report without
+the new binding object, but the generated Owner path always requires strict
+cross-checking against `final-draft-artifact-evidence.json`.
 The release-artifact JSON is explicitly a coordination worksheet and is not
 accepted as validator evidence.
 
@@ -88,6 +91,9 @@ particular:
 
 - do not manually change the generated Issue draft from BLOCKED to PASS;
 - render manual evidence through `tools/manual_qa_evidence.py`;
+- use `--final-draft-artifact-evidence` together with
+  `--require-final-draft-binding`, and copy the verifier-produced canonical
+  run/draft/APK projection into `release_artifact_binding`;
 - do not treat `ANDROID_APKSIGNER_VERIFY.txt` shape as Owner identity proof;
 - do not post absolute local paths, private clipboard content, device serials,
   keystore material, passwords, or unredacted logs;

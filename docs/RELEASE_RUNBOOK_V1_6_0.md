@@ -246,20 +246,33 @@ from the draft Release directory, not bytes from the `draft=false` preflight.
 ## 6. Record manual QA evidence on Issue #36
 
 After running the real Android device, IME privacy, sync, and Windows clipboard
-privacy checks from `docs/MANUAL_QA_V1_6_0.md`, use the local helper to validate
-and render the manual-QA evidence comment:
+privacy checks from `docs/MANUAL_QA_V1_6_0.md`, the local helper may be used for
+a drafting preview. The commands below are not the final eligible render:
 
 ```powershell
 $qaEvidenceDir = ".\.field-test-artifacts\v1.6.0-manual-qa"
+$finalDraftEvidence = ".\.field-test-artifacts\v1.6.0-draft-run-REPLACE_WITH_DRAFT_TRUE_RUN_ID\final-draft-artifact-evidence.json"
 New-Item -ItemType Directory -Force -Path $qaEvidenceDir | Out-Null
 python tools/manual_qa_evidence.py --write-template "$qaEvidenceDir\manual-qa-v1.6.0.json"
-python tools/manual_qa_evidence.py --input "$qaEvidenceDir\manual-qa-v1.6.0.json" --no-fail
-python tools/manual_qa_evidence.py --input "$qaEvidenceDir\manual-qa-v1.6.0.json" --output "$qaEvidenceDir\manual-qa-issue-comment.md"
+python tools/manual_qa_evidence.py --input "$qaEvidenceDir\manual-qa-v1.6.0.json" --final-draft-artifact-evidence "$finalDraftEvidence" --require-final-draft-binding --no-fail
 ```
+
+Render the final comment only through **Step F** of the generated
+`.field-test-artifacts/v1.6.0-owner-pack/OWNER_RELEASE_ACTION_PACK.md`. That step pins the trusted interpreter,
+clean frozen commit, dynamically loaded source blobs, and both evidence input
+digests, then promotes a pending output only after all post-checks succeed. A
+bare helper render is not final Issue #36 release-gate evidence.
 
 These file-writing modes refuse to replace existing files unless `--force` is
 explicitly provided; symlinks, directories, and input/output self-overwrite are
 always rejected. Preserve the filled JSON and render to a separate path.
+Strict mode recomputes the supplied final-draft artifact snapshot and fails unless
+the manual report names the same canonical binding, run attempt, numeric draft
+Release ID, snapshot URL, and signed APK. The URL is cross-checked but is not a
+canonical-binding input; live revalidation remains required before publication.
+Only a rendered report with
+`final_draft_binding_assurance=verified_external_snapshot` is eligible for the
+final Issue #36 evidence review.
 
 Post the rendered comment only after the Owner has filled the JSON with real
 observations. The helper is local-only: it does not call GitHub, run device QA,
@@ -268,9 +281,13 @@ passing manual-QA report still does not replace signed artifact evidence, final
 Windows artifact evidence, release environment/secrets evidence, or final
 Owner-approved GitHub Release publication.
 
-`PASS (OWNER-ATTESTED)` means the JSON is structurally complete; the helper does
+Strict-mode `PASS (OWNER-ATTESTED)` means the JSON is structurally complete; the helper does
 not fetch or independently parse referenced SDK/JUnit evidence and does not
 prove that the reported physical observations occurred.
+Legacy schema-v2 compatibility mode can return `ok=true`, but it remains
+`BLOCKED` because it is not bound to an externally supplied final-draft
+snapshot. Its historical success exit status means structural completeness
+only, not Issue #36 release eligibility.
 
 The evidence file must use `schema_version=2` and bind all observations to the
 exact target commit, including the Windows environment source commit. Before

@@ -14,9 +14,212 @@ manual_qa_evidence = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = manual_qa_evidence
 _spec.loader.exec_module(manual_qa_evidence)
 
+_ARTIFACT_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "release_artifact_evidence.py"
+_artifact_spec = importlib.util.spec_from_file_location(
+    "release_artifact_evidence_for_manual_qa_tests", _ARTIFACT_SCRIPT
+)
+release_artifact_evidence = importlib.util.module_from_spec(_artifact_spec)
+sys.modules[_artifact_spec.name] = release_artifact_evidence
+_artifact_spec.loader.exec_module(release_artifact_evidence)
+
+
+def _final_draft_artifact_report():
+    target_commit = "a" * 40
+    run_id = 123
+    run_url = (
+        "https://github.com/selinyi123/clipvault-personal/actions/runs/123"
+    )
+    artifacts = []
+    for index, spec in enumerate(
+        sorted(
+            release_artifact_evidence._asset_specs("v1.6.0"),
+            key=lambda value: value.release_name,
+        ),
+        start=1,
+    ):
+        digest = "3" * 64 if spec.role == "android_signed_apk" else f"{index + 10:064x}"
+        artifacts.append({
+            "role": spec.role,
+            "workflow_bundle": spec.workflow_bundle,
+            "workflow_name": spec.workflow_name,
+            "release_name": spec.release_name,
+            "size_bytes": 1_000 + index,
+            "sha256": digest,
+            "attestation_verified": True,
+            "matching_invocation_count": 1,
+            "release_asset_id": 200 + index,
+        })
+    report = {
+        "schema_version": 1,
+        "evidence_type": "clipvault.issue36.final_draft_artifacts",
+        "artifact_gate_status": "snapshot_verified_live_revalidation_required",
+        "repo": "selinyi123/clipvault-personal",
+        "issue": 36,
+        "version": "v1.6.0",
+        "branch": "main",
+        "target_commit": target_commit,
+        "workflow_run": {
+            "id": run_id,
+            "url": run_url,
+            "attempt": 1,
+            "workflow": "Release artifact build",
+            "path": ".github/workflows/release.yml",
+            "event": "workflow_dispatch",
+            "status": "completed",
+            "conclusion": "success",
+            "head_branch": "main",
+            "head_sha": target_commit,
+            "display_title": "Release artifacts v1.6.0 from main draft=true",
+        },
+        "workflow_artifacts": [
+            {
+                "id": 101,
+                "name": "clipvault-android-signed-release-artifacts",
+                "size_bytes": 2_000,
+                "api_archive_sha256": "4" * 64,
+            },
+            {
+                "id": 102,
+                "name": "clipvault-windows-release-artifacts",
+                "size_bytes": 3_000,
+                "api_archive_sha256": "5" * 64,
+            },
+        ],
+        "draft_release": {
+            "id": 77,
+            "url": (
+                "https://github.com/selinyi123/clipvault-personal/"
+                "releases/tag/untagged-77"
+            ),
+            "tag_name": "v1.6.0",
+            "name": "ClipVault Personal v1.6.0",
+            "is_draft": True,
+            "is_prerelease": False,
+            "target_commitish": target_commit,
+        },
+        "release_tag": {
+            "ref": "refs/tags/v1.6.0",
+            "state": "absent",
+            "commit_sha": None,
+        },
+        "android_signer": {
+            "expected_cert_sha256": "ab" * 32,
+            "observed_cert_sha256": "ab" * 32,
+            "signer_count": 1,
+            "apksigner_verified": True,
+            "trust_anchor_source": (
+                "github_release_environment_variable_and_owner_input_match"
+            ),
+            "release_environment": "release",
+            "release_environment_variable": "ANDROID_RELEASE_CERT_SHA256",
+        },
+        "artifacts": artifacts,
+    }
+    report["artifact_binding_sha256"] = (
+        release_artifact_evidence._compute_binding_sha256(report)
+    )
+    return report
+
+
+def _bind_report_to_final_draft(report, artifact_report, *, evidence_ref="Final draft report 123"):
+    projection = (
+        release_artifact_evidence.build_final_draft_manual_qa_binding_projection(
+            artifact_report
+        )
+    )
+    report["release_artifact_binding"] = json.loads(json.dumps(projection))
+    report["release_artifact_binding"]["evidence_ref"] = evidence_ref
+    final_run = report["android_runs"][2]
+    final_run["artifact_evidence_ref"] = evidence_ref
+    final_run["apk_name"] = projection["android_signed_apk"]["name"]
+    final_run["apk_sha256"] = projection["android_signed_apk"]["sha256"]
+    return report
+
+
+def test_final_draft_fixture_has_fixed_inventory_binding_and_projection():
+    artifact_report = _final_draft_artifact_report()
+    inventory = {
+        (row["role"], row["workflow_bundle"], row["release_name"])
+        for row in artifact_report["artifacts"]
+    }
+    assert inventory == {
+        (
+            "windows_portable",
+            "clipvault-windows-release-artifacts",
+            "ClipVault-Desktop-v1.6.0-portable.exe",
+        ),
+        (
+            "windows_installer",
+            "clipvault-windows-release-artifacts",
+            "ClipVault-Setup-v1.6.0.exe",
+        ),
+        (
+            "windows_checksums",
+            "clipvault-windows-release-artifacts",
+            "windows-SHA256SUMS.txt",
+        ),
+        (
+            "windows_manifest",
+            "clipvault-windows-release-artifacts",
+            "windows-RELEASE_MANIFEST.json",
+        ),
+        (
+            "android_signed_apk",
+            "clipvault-android-signed-release-artifacts",
+            "ClipVault-Android-v1.6.0-release-signed.apk",
+        ),
+        (
+            "android_apksigner_evidence",
+            "clipvault-android-signed-release-artifacts",
+            "ANDROID_APKSIGNER_VERIFY.txt",
+        ),
+        (
+            "android_checksums",
+            "clipvault-android-signed-release-artifacts",
+            "android-SHA256SUMS.txt",
+        ),
+        (
+            "android_manifest",
+            "clipvault-android-signed-release-artifacts",
+            "android-RELEASE_MANIFEST.json",
+        ),
+    }
+    assert artifact_report["artifact_binding_sha256"] == (
+        "49665182cc772001a65ce3cd5fa91ee2671aac082b0f78554a99ebbcc1738df8"
+    )
+    assert release_artifact_evidence.build_final_draft_manual_qa_binding_projection(
+        artifact_report
+    ) == {
+        "artifact_evidence_type": "clipvault.issue36.final_draft_artifacts",
+        "artifact_binding_sha256": (
+            "49665182cc772001a65ce3cd5fa91ee2671aac082b0f78554a99ebbcc1738df8"
+        ),
+        "target_commit": "a" * 40,
+        "workflow_run": {
+            "id": 123,
+            "attempt": 1,
+            "url": (
+                "https://github.com/selinyi123/clipvault-personal/actions/runs/123"
+            ),
+        },
+        "draft_release": {
+            "id": 77,
+            "url": (
+                "https://github.com/selinyi123/clipvault-personal/"
+                "releases/tag/untagged-77"
+            ),
+            "tag_name": "v1.6.0",
+        },
+        "android_signed_apk": {
+            "name": "ClipVault-Android-v1.6.0-release-signed.apk",
+            "sha256": "3" * 64,
+        },
+    }
+
 
 def _valid_report():
     data = manual_qa_evidence.build_template()
+    data.pop("release_artifact_binding")
     data["target_commit"] = "a" * 40
     data["tester"] = "Owner"
     data["tested_at"] = "2026-07-04T12:00:00Z"
@@ -121,6 +324,9 @@ def test_template_contains_every_required_manual_qa_item():
     assert template["schema_version"] == 2
     assert template["version"] == "v1.6.0"
     assert template["scope_note"] == manual_qa_evidence.scope_note()
+    assert template["release_artifact_binding"]["artifact_evidence_type"] == (
+        "clipvault.issue36.final_draft_artifacts"
+    )
     assert [run["sdk_int"] for run in template["android_runs"][:2]] == [26, 27]
     assert template["android_runs"][0]["test_apk_name"] == "app-debug-androidTest.apk"
     assert template["android_runs"][2]["apk_name"] == "ClipVault-Android-v1.6.0-release-signed.apk"
@@ -145,17 +351,21 @@ def test_helper_is_scoped_to_issue_36_v1_6_0():
     assert "manual QA evidence helper only supports v1.6.0" in result.errors
 
 
-def test_valid_all_pass_evidence_is_release_ready_and_renders_issue_comment():
+def test_legacy_all_pass_evidence_is_compatible_but_remains_release_blocked():
     report = _valid_report()
 
     result = manual_qa_evidence.validate_evidence(report)
     markdown = manual_qa_evidence.render_markdown(report, result)
 
     assert result.ok is True
-    assert result.release_ready is True
+    assert result.structurally_complete is True
+    assert result.release_ready is False
+    assert result.final_draft_binding_assurance == "not_present_legacy_compatibility"
     assert result.item_counts == {"blocked": 0, "fail": 0, "pass": 18}
     assert "Manual QA evidence for Issue #36" in markdown
-    assert "Status: **PASS (OWNER-ATTESTED)**" in markdown
+    assert "Status: **BLOCKED**" in markdown
+    assert "final_draft_binding_assurance=not_present_legacy_compatibility" in markdown
+    assert "does not qualify as final Issue #36 release-gate evidence" in markdown
     assert "Manual Android device QA" in markdown
     assert "Manual IME privacy QA" in markdown
     assert "Manual sync QA" in markdown
@@ -165,6 +375,276 @@ def test_valid_all_pass_evidence_is_release_ready_and_renders_issue_comment():
     assert "does not replace signed artifact evidence" in markdown
     assert "Owner-attested inputs" in markdown
     assert result.as_dict()["evidence_assurance"] == "owner_attested_structural_validation"
+
+
+def test_strict_binding_accepts_exact_final_draft_snapshot_and_renders_identity():
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+
+    result = manual_qa_evidence.validate_evidence(
+        report,
+        final_draft_artifact_evidence=artifact_report,
+        require_final_draft_binding=True,
+    )
+    markdown = manual_qa_evidence.render_markdown(report, result)
+
+    assert result.release_ready is True
+    assert result.structurally_complete is True
+    assert result.final_draft_binding_assurance == "verified_external_snapshot"
+    assert "final_draft_binding_assurance=verified_external_snapshot" in markdown
+    assert "Final draft artifact binding" in markdown
+    assert artifact_report["artifact_binding_sha256"] in markdown
+    assert artifact_report["workflow_run"]["url"] in markdown
+    assert artifact_report["draft_release"]["url"] in markdown
+    assert "ClipVault-Android-v1.6.0-release-signed.apk" in markdown
+    assert "Final draft report 123" in markdown
+
+
+def test_verified_binding_assurance_survives_an_unfinished_manual_qa_row():
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    report["sections"]["android_device_qa"]["items"]["pairing"] = {
+        "status": "blocked",
+        "evidence": "",
+        "run_ids": ["signed-release-physical"],
+        "next_step": "Complete physical pairing QA.",
+    }
+
+    result = manual_qa_evidence.validate_evidence(
+        report,
+        final_draft_artifact_evidence=artifact_report,
+        require_final_draft_binding=True,
+    )
+    markdown = manual_qa_evidence.render_markdown(report, result)
+
+    assert result.release_ready is False
+    assert result.final_draft_binding_assurance == "verified_external_snapshot"
+    assert "verified against the supplied final-draft snapshot (offline)" in markdown
+
+
+def test_strict_binding_is_required_but_schema_v2_without_it_remains_compatible():
+    artifact_report = _final_draft_artifact_report()
+    report = _valid_report()
+    unverified_bound_report = _bind_report_to_final_draft(
+        _valid_report(), artifact_report
+    )
+
+    legacy = manual_qa_evidence.validate_evidence(report)
+    unverified = manual_qa_evidence.validate_evidence(unverified_bound_report)
+    strict = manual_qa_evidence.validate_evidence(
+        report,
+        final_draft_artifact_evidence=artifact_report,
+        require_final_draft_binding=True,
+    )
+
+    assert legacy.ok is True
+    assert legacy.release_ready is False
+    assert legacy.final_draft_binding_assurance == "not_present_legacy_compatibility"
+    assert unverified.release_ready is False
+    assert unverified.final_draft_binding_assurance == "unverified_or_invalid"
+    assert any(
+        "not accepted without an externally supplied" in error
+        for error in unverified.errors
+    )
+    assert "not verified; report remains blocked" in manual_qa_evidence.render_markdown(
+        unverified_bound_report, unverified
+    )
+    assert strict.release_ready is False
+    assert any("release_artifact_binding is required" in error for error in strict.errors)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "error_fragment"),
+    [
+        (
+            lambda binding: binding.__setitem__("artifact_binding_sha256", "f" * 64),
+            "artifact_binding_sha256 must match",
+        ),
+        (
+            lambda binding: binding.__setitem__("target_commit", "b" * 40),
+            "target_commit must match",
+        ),
+        (
+            lambda binding: binding["workflow_run"].__setitem__("id", 124),
+            "workflow_run.id must match",
+        ),
+        (
+            lambda binding: binding["workflow_run"].__setitem__("attempt", 2),
+            "workflow_run.attempt must match",
+        ),
+        (
+            lambda binding: binding["workflow_run"].__setitem__(
+                "url",
+                "https://github.com/selinyi123/clipvault-personal/actions/runs/124",
+            ),
+            "workflow_run.url must match",
+        ),
+        (
+            lambda binding: binding["draft_release"].__setitem__("id", 78),
+            "draft_release.id must match",
+        ),
+        (
+            lambda binding: binding["draft_release"].__setitem__(
+                "url",
+                "https://github.com/selinyi123/clipvault-personal/releases/tag/untagged-78",
+            ),
+            "draft_release.url must match",
+        ),
+        (
+            lambda binding: binding["draft_release"].__setitem__("tag_name", "v1.5.10"),
+            "draft_release.tag_name",
+        ),
+        (
+            lambda binding: binding["android_signed_apk"].__setitem__(
+                "name", "renamed.apk"
+            ),
+            "android_signed_apk.name",
+        ),
+        (
+            lambda binding: binding["android_signed_apk"].__setitem__(
+                "sha256", "f" * 64
+            ),
+            "android_signed_apk.sha256",
+        ),
+    ],
+)
+def test_strict_manual_binding_rejects_every_identity_mismatch(mutate, error_fragment):
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    mutate(report["release_artifact_binding"])
+
+    result = manual_qa_evidence.validate_evidence(
+        report,
+        final_draft_artifact_evidence=artifact_report,
+        require_final_draft_binding=True,
+    )
+
+    assert result.release_ready is False
+    assert any(error_fragment in error for error in result.errors)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda evidence: evidence["workflow_run"].__setitem__("conclusion", "failure"),
+        lambda evidence: evidence["workflow_run"].__setitem__("head_sha", "b" * 40),
+        lambda evidence: evidence["release_tag"].__setitem__("state", "unknown"),
+        lambda evidence: evidence["android_signer"].__setitem__(
+            "observed_cert_sha256", "cd" * 32
+        ),
+        lambda evidence: evidence["artifacts"][0].__setitem__(
+            "attestation_verified", False
+        ),
+        lambda evidence: evidence["artifacts"][0].__setitem__(
+            "matching_invocation_count", 0
+        ),
+        lambda evidence: evidence["workflow_artifacts"][1].__setitem__("id", 101),
+        lambda evidence: evidence["artifacts"][1].__setitem__(
+            "release_asset_id", evidence["artifacts"][0]["release_asset_id"]
+        ),
+        lambda evidence: evidence["workflow_artifacts"].reverse(),
+        lambda evidence: evidence["artifacts"].reverse(),
+        lambda evidence: evidence["workflow_run"].__setitem__("id", True),
+        lambda evidence: evidence["draft_release"].__setitem__("id", True),
+        lambda evidence: next(
+            row
+            for row in evidence["artifacts"]
+            if row["role"] == "android_signed_apk"
+        ).__setitem__("role", "windows_portable"),
+        lambda evidence: evidence.__setitem__(
+            "target_commit", f" {evidence['target_commit']}"
+        ),
+    ],
+)
+def test_strict_binding_rejects_noncanonical_or_unverified_artifact_snapshot(mutate):
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    mutate(artifact_report)
+    artifact_report["artifact_binding_sha256"] = (
+        release_artifact_evidence._compute_binding_sha256(artifact_report)
+    )
+
+    result = manual_qa_evidence.validate_evidence(
+        report,
+        final_draft_artifact_evidence=artifact_report,
+        require_final_draft_binding=True,
+    )
+
+    assert result.release_ready is False
+    assert any("final_draft_artifact_evidence is invalid" in error for error in result.errors)
+
+
+def test_strict_binding_rejects_tampered_projection_with_stale_claimed_digest():
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    artifact_report["artifacts"][0]["sha256"] = "f" * 64
+
+    result = manual_qa_evidence.validate_evidence(
+        report,
+        final_draft_artifact_evidence=artifact_report,
+        require_final_draft_binding=True,
+    )
+
+    assert result.release_ready is False
+    assert any(
+        "final-draft artifact binding does not match report contents" in error
+        for error in result.errors
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("apk_name", "renamed.apk"),
+        ("apk_sha256", "f" * 64),
+        ("artifact_evidence_ref", "another final draft report"),
+    ],
+)
+def test_strict_binding_rejects_final_android_run_diverging_from_binding(field, value):
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    report["android_runs"][2][field] = value
+
+    result = manual_qa_evidence.validate_evidence(
+        report,
+        final_draft_artifact_evidence=artifact_report,
+        require_final_draft_binding=True,
+    )
+
+    assert result.release_ready is False
+    assert any(f"final signed android run {field}" in error for error in result.errors)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda binding: binding.__setitem__("artifact_evidence_type", "wrong"),
+        lambda binding: binding["workflow_run"].__setitem__("id", True),
+        lambda binding: binding["draft_release"].__setitem__("id", True),
+        lambda binding: binding.__setitem__(
+            "artifact_binding_sha256", f" {binding['artifact_binding_sha256']}"
+        ),
+        lambda binding: binding.__setitem__(
+            "target_commit", binding["target_commit"].upper()
+        ),
+        lambda binding: binding["workflow_run"].__setitem__(
+            "url", f" {binding['workflow_run']['url']}"
+        ),
+        lambda binding: binding.pop("android_signed_apk"),
+    ],
+)
+def test_strict_manual_binding_requires_canonical_shape_and_values(mutate):
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    mutate(report["release_artifact_binding"])
+
+    result = manual_qa_evidence.validate_evidence(
+        report,
+        final_draft_artifact_evidence=artifact_report,
+        require_final_draft_binding=True,
+    )
+
+    assert result.release_ready is False
 
 
 def test_pass_rows_require_observed_evidence():
@@ -412,7 +892,8 @@ def test_sdk_int_is_authoritative_over_vendor_android_version_string():
 
     result = manual_qa_evidence.validate_evidence(report)
 
-    assert result.release_ready is True
+    assert result.ok is True
+    assert result.release_ready is False
 
 
 def test_cursorwindow_counters_reject_booleans_and_missing_references():
@@ -607,6 +1088,12 @@ def test_lowercase_template_placeholders_are_not_valid_evidence():
         lambda report: report["android_compatibility_qa"]["cursorwindow_large_payload"][
             "results"
         ][1].update({"sdk_evidence_ref": "/home/owner/sdk.txt"}),
+        lambda report: report["android_compatibility_qa"]["cursorwindow_large_payload"][
+            "results"
+        ][1].update({"sdk_evidence_ref": "JUnit output: /root/private/sdk.txt"}),
+        lambda report: report["desktop_environment"].update(
+            {"build_source": "Copied from /etc/clipvault/release.json"}
+        ),
         lambda report: report["desktop_environment"].update(
             {"build_source": r"C:\\Private\\ClipVault.exe"}
         ),
@@ -648,6 +1135,32 @@ def test_free_form_evidence_rejects_private_paths_and_escapes_html():
     assert "&lt;script&gt;" in markdown
 
 
+def test_rendered_public_references_cannot_inject_markdown_images_or_links():
+    report = _valid_report()
+    report["sections"]["android_device_qa"]["items"]["pairing"]["evidence"] = (
+        "![remote](https://example.invalid/pixel.png)"
+    )
+    report["sections"]["sync_qa"]["items"]["public_clips_memory_sync"][
+        "evidence"
+    ] = "https://github.com/selinyi123/clipvault-personal/actions/runs/123"
+    report["sections"]["sync_qa"]["items"]["secret_private_isolation"][
+        "evidence"
+    ] = r"left|right and slash\pipe|tail"
+
+    result = manual_qa_evidence.validate_evidence(report)
+    markdown = manual_qa_evidence.render_markdown(report, result)
+
+    assert result.ok is True
+    assert "![remote](https://example.invalid/pixel.png)" not in markdown
+    assert r"\!\[remote\]\(https://example.invalid/pixel.png\)" in markdown
+    assert (
+        "<https://github.com/selinyi123/clipvault-personal/actions/runs/123>"
+        in markdown
+    )
+    assert r"left\|right and slash\\pipe\|tail" in markdown
+    assert r"left\\|right" not in markdown
+
+
 def test_cli_writes_template_and_json_summary(tmp_path, capsys):
     template_path = tmp_path / "manual-qa.json"
 
@@ -658,13 +1171,304 @@ def test_cli_writes_template_and_json_summary(tmp_path, capsys):
     valid_path = tmp_path / "valid.json"
     valid_path.write_text(json.dumps(_valid_report()), encoding="utf-8")
     assert manual_qa_evidence.main(["--input", str(valid_path), "--json"]) == 0
+    blocked_output = json.loads(capsys.readouterr().out)
+    assert blocked_output["ok"] is True
+    assert blocked_output["structurally_complete"] is True
+    assert blocked_output["release_ready"] is False
+    assert manual_qa_evidence.main(
+        ["--input", str(valid_path), "--json", "--no-fail"]
+    ) == 0
     output = json.loads(capsys.readouterr().out)
-    assert output["release_ready"] is True
+    assert output["ok"] is True
+    assert output["release_ready"] is False
+    assert output["final_draft_binding_assurance"] == "not_present_legacy_compatibility"
     assert output["item_counts"]["pass"] == 18
 
     markdown_path = tmp_path / "manual-qa-comment.md"
-    assert manual_qa_evidence.main(["--input", str(valid_path), "--output", str(markdown_path)]) == 0
+    assert manual_qa_evidence.main(
+        [
+            "--input",
+            str(valid_path),
+            "--output",
+            str(markdown_path),
+            "--no-fail",
+        ]
+    ) == 0
     assert "Manual QA evidence for Issue #36" in markdown_path.read_text(encoding="utf-8")
+
+
+def test_cli_strict_mode_cross_checks_exact_final_draft_report(tmp_path, capsys):
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    input_path = tmp_path / "manual-qa.json"
+    artifact_path = tmp_path / "final-draft-artifacts.json"
+    input_path.write_text(json.dumps(report), encoding="utf-8")
+    artifact_path.write_text(json.dumps(artifact_report), encoding="utf-8")
+
+    assert manual_qa_evidence.main([
+        "--input",
+        str(input_path),
+        "--final-draft-artifact-evidence",
+        str(artifact_path),
+        "--require-final-draft-binding",
+        "--json",
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["release_ready"] is True
+
+
+def test_cli_strict_artifact_report_rejects_duplicate_keys_and_nonfinite_numbers(
+    tmp_path,
+):
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    input_path = tmp_path / "manual-qa.json"
+    input_path.write_text(json.dumps(report), encoding="utf-8")
+
+    duplicate_path = tmp_path / "duplicate-artifact.json"
+    duplicate_raw = json.dumps(artifact_report).replace(
+        '"conclusion": "success"',
+        '"conclusion": "failure", "conclusion": "success"',
+        1,
+    )
+    duplicate_path.write_text(duplicate_raw, encoding="utf-8")
+    with pytest.raises(SystemExit):
+        manual_qa_evidence.main([
+            "--input",
+            str(input_path),
+            "--final-draft-artifact-evidence",
+            str(duplicate_path),
+            "--require-final-draft-binding",
+            "--json",
+        ])
+
+    nonfinite_path = tmp_path / "nonfinite-artifact.json"
+    nonfinite_path.write_text(
+        json.dumps(artifact_report).replace('"attempt": 1', '"attempt": NaN', 1),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        manual_qa_evidence.main([
+            "--input",
+            str(input_path),
+            "--final-draft-artifact-evidence",
+            str(nonfinite_path),
+            "--require-final-draft-binding",
+            "--json",
+        ])
+
+
+def test_cli_strict_artifact_report_must_be_distinct_from_input_and_output(tmp_path):
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    input_path = tmp_path / "manual-qa.json"
+    artifact_path = tmp_path / "final-draft-artifacts.json"
+    input_path.write_text(json.dumps(report), encoding="utf-8")
+    artifact_path.write_text(json.dumps(artifact_report), encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        manual_qa_evidence.main([
+            "--input",
+            str(input_path),
+            "--final-draft-artifact-evidence",
+            str(input_path),
+            "--require-final-draft-binding",
+            "--json",
+        ])
+    with pytest.raises(SystemExit):
+        manual_qa_evidence.main([
+            "--input",
+            str(input_path),
+            "--final-draft-artifact-evidence",
+            str(artifact_path),
+            "--require-final-draft-binding",
+            "--output",
+            str(artifact_path),
+            "--force",
+        ])
+
+    artifact_alias = tmp_path / "artifact-alias.json"
+    try:
+        os.link(artifact_path, artifact_alias)
+    except (NotImplementedError, OSError):
+        pytest.skip("hardlink creation is unavailable on this filesystem")
+    with pytest.raises(SystemExit):
+        manual_qa_evidence.main([
+            "--input",
+            str(artifact_alias),
+            "--final-draft-artifact-evidence",
+            str(artifact_path),
+            "--require-final-draft-binding",
+            "--json",
+        ])
+
+
+def test_cli_strict_artifact_report_rejects_output_hardlink_alias(tmp_path):
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    input_path = tmp_path / "manual-qa.json"
+    artifact_path = tmp_path / "final-draft-artifacts.json"
+    input_path.write_text(json.dumps(report), encoding="utf-8")
+    artifact_path.write_text(json.dumps(artifact_report), encoding="utf-8")
+    original = artifact_path.read_bytes()
+
+    hardlink_output = tmp_path / "hardlink-output.md"
+    try:
+        os.link(artifact_path, hardlink_output)
+    except (NotImplementedError, OSError):
+        pytest.skip("hardlink creation is unavailable on this filesystem")
+    with pytest.raises(SystemExit):
+        manual_qa_evidence.main([
+            "--input",
+            str(input_path),
+            "--final-draft-artifact-evidence",
+            str(artifact_path),
+            "--require-final-draft-binding",
+            "--output",
+            str(hardlink_output),
+            "--force",
+        ])
+    assert artifact_path.read_bytes() == original
+    assert hardlink_output.read_bytes() == original
+
+
+def test_cli_strict_artifact_report_rejects_output_symlink_alias(tmp_path):
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    input_path = tmp_path / "manual-qa.json"
+    artifact_path = tmp_path / "final-draft-artifacts.json"
+    input_path.write_text(json.dumps(report), encoding="utf-8")
+    artifact_path.write_text(json.dumps(artifact_report), encoding="utf-8")
+    original = artifact_path.read_bytes()
+
+    symlink_output = tmp_path / "symlink-output.md"
+    try:
+        symlink_output.symlink_to(artifact_path)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlink creation is unavailable on this filesystem")
+    with pytest.raises(SystemExit):
+        manual_qa_evidence.main([
+            "--input",
+            str(input_path),
+            "--final-draft-artifact-evidence",
+            str(artifact_path),
+            "--require-final-draft-binding",
+            "--output",
+            str(symlink_output),
+            "--force",
+        ])
+    assert artifact_path.read_bytes() == original
+
+
+def test_cli_file_identity_comparison_error_fails_closed(tmp_path, monkeypatch, capsys):
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    input_path = tmp_path / "manual-qa.json"
+    artifact_path = tmp_path / "final-draft-artifacts.json"
+    input_path.write_text(json.dumps(report), encoding="utf-8")
+    artifact_path.write_text(json.dumps(artifact_report), encoding="utf-8")
+
+    def fail_samefile(self, other):
+        raise OSError("identity lookup unavailable")
+
+    monkeypatch.setattr(Path, "samefile", fail_samefile)
+    with pytest.raises(SystemExit):
+        manual_qa_evidence.main([
+            "--input",
+            str(input_path),
+            "--final-draft-artifact-evidence",
+            str(artifact_path),
+            "--require-final-draft-binding",
+            "--json",
+        ])
+
+    assert "cannot safely compare file identities" in capsys.readouterr().err
+
+
+def test_cli_file_identity_resolution_error_fails_closed(tmp_path, monkeypatch, capsys):
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    input_path = tmp_path / "manual-qa.json"
+    artifact_path = tmp_path / "final-draft-artifacts.json"
+    input_path.write_text(json.dumps(report), encoding="utf-8")
+    artifact_path.write_text(json.dumps(artifact_report), encoding="utf-8")
+
+    def fail_resolve(self, strict=False):
+        raise RuntimeError("resolution unavailable")
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+    with pytest.raises(SystemExit):
+        manual_qa_evidence.main([
+            "--input",
+            str(input_path),
+            "--final-draft-artifact-evidence",
+            str(artifact_path),
+            "--require-final-draft-binding",
+            "--json",
+        ])
+
+    assert "cannot safely compare file identities" in capsys.readouterr().err
+
+
+def test_json_loader_bounds_input_and_markdown_redacts_binding_local_path(tmp_path):
+    oversized = tmp_path / "oversized.json"
+    oversized.write_bytes(b'"' + b"x" * manual_qa_evidence.MAX_JSON_INPUT_BYTES + b'"')
+    with pytest.raises(ValueError, match="input limit"):
+        manual_qa_evidence.load_json(oversized)
+
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(
+        _valid_report(), artifact_report, evidence_ref=r"C:\\Private\\artifact.json"
+    )
+    result = manual_qa_evidence.validate_evidence(report)
+    markdown = manual_qa_evidence.render_markdown(report, result)
+    assert "C:\\Private" not in markdown
+    assert "[redacted local evidence path]" in markdown
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda binding: binding["workflow_run"].__setitem__(
+            "url", r"C:\Private\run.txt"
+        ),
+        lambda binding: binding["draft_release"].__setitem__(
+            "url", r"\\server\private\release.txt"
+        ),
+        lambda binding: binding["android_signed_apk"].__setitem__(
+            "name", "/home/owner/private/app.apk"
+        ),
+    ],
+)
+def test_renderer_redacts_private_paths_from_binding_identity_fields(mutate):
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    mutate(report["release_artifact_binding"])
+
+    result = manual_qa_evidence.validate_evidence(report)
+    markdown = manual_qa_evidence.render_markdown(report, result)
+
+    assert "C:\\Private" not in markdown
+    assert "server\\private" not in markdown
+    assert "/home/owner/private" not in markdown
+    assert "[redacted local evidence path]" in markdown
+
+
+def test_release_artifact_loader_restores_sys_modules_entry(monkeypatch):
+    key = "release_artifact_evidence_for_manual_qa"
+    sentinel = object()
+    nested_sentinel = object()
+    monkeypatch.setitem(sys.modules, key, sentinel)
+    monkeypatch.setitem(sys.modules, "verify_release_manifest", nested_sentinel)
+    monkeypatch.setattr(
+        manual_qa_evidence, "_release_artifact_evidence_module", None
+    )
+
+    loaded = manual_qa_evidence._release_artifact_evidence()
+
+    assert loaded is not sentinel
+    assert sys.modules[key] is sentinel
+    assert sys.modules["verify_release_manifest"] is nested_sentinel
 
 
 def test_cli_refuses_to_overwrite_template_without_force(tmp_path):
@@ -692,9 +1496,18 @@ def test_cli_refuses_to_overwrite_rendered_output_without_force(tmp_path):
     assert output_path.read_bytes() == b"OWNER COMMENT"
 
     assert manual_qa_evidence.main(
-        ["--input", str(input_path), "--output", str(output_path), "--force"]
+        [
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+            "--force",
+            "--no-fail",
+        ]
     ) == 0
-    assert "Status: **PASS (OWNER-ATTESTED)**" in output_path.read_text(encoding="utf-8")
+    rendered = output_path.read_text(encoding="utf-8")
+    assert "Status: **BLOCKED**" in rendered
+    assert "final_draft_binding_assurance=not_present_legacy_compatibility" in rendered
 
 
 def test_cli_never_allows_input_to_be_overwritten_by_output(tmp_path):
@@ -789,6 +1602,30 @@ def test_cli_returns_nonzero_for_incomplete_evidence_unless_no_fail(tmp_path):
     assert manual_qa_evidence.main(["--input", str(path), "--json", "--no-fail"]) == 0
 
 
+def test_cli_requires_strict_binding_arguments_as_a_pair(tmp_path, capsys):
+    input_path = tmp_path / "manual-qa.json"
+    artifact_path = tmp_path / "final-draft-artifacts.json"
+    input_path.write_text(json.dumps(_valid_report()), encoding="utf-8")
+    artifact_path.write_text(json.dumps(_final_draft_artifact_report()), encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        manual_qa_evidence.main([
+            "--input",
+            str(input_path),
+            "--require-final-draft-binding",
+        ])
+    assert "must be used together" in capsys.readouterr().err
+
+    with pytest.raises(SystemExit):
+        manual_qa_evidence.main([
+            "--input",
+            str(input_path),
+            "--final-draft-artifact-evidence",
+            str(artifact_path),
+        ])
+    assert "must be used together" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -801,6 +1638,12 @@ def test_cli_returns_nonzero_for_incomplete_evidence_unless_no_fail(tmp_path):
         ["--input", "x.json", "--force"],
         ["--template", "--version", "v1.7.0"],
         ["--template", "--issue", "82"],
+        [
+            "--template",
+            "--final-draft-artifact-evidence",
+            "y.json",
+            "--require-final-draft-binding",
+        ],
     ],
 )
 def test_cli_requires_exactly_one_mode(argv):

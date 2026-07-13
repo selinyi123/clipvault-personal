@@ -66,6 +66,18 @@ def test_trusted_source_loader_ignores_unchecked_hash_bytecode_cache(
     assert module.VALUE == "trusted-source"
 
 
+def test_trusted_source_loader_restores_preexisting_module_entry(tmp_path, monkeypatch):
+    trusted_source = tmp_path / "trusted.py"
+    trusted_source.write_text("VALUE = 'trusted-source'\n", encoding="utf-8")
+    sentinel = object()
+    monkeypatch.setitem(sys.modules, "trusted_restore_test", sentinel)
+
+    module = evidence._load_source_module("trusted_restore_test", trusted_source)
+
+    assert module.VALUE == "trusted-source"
+    assert sys.modules["trusted_restore_test"] is sentinel
+
+
 def test_subprocess_runner_sanitizes_pager_and_java_injection_environment(monkeypatch):
     captured: dict[str, object] = {}
 
@@ -483,6 +495,41 @@ def test_live_evidence_binds_exact_run_draft_bytes_attestations_and_signer(tmp_p
     assert runner.release_calls == 2
     assert runner.cert_variable_calls == 2
     assert runner.release_tag_calls == 2
+
+
+def test_live_collector_output_is_accepted_by_manual_qa_binding_projection(tmp_path):
+    report, _, paths = _collect(tmp_path)
+
+    projection = evidence.build_final_draft_manual_qa_binding_projection(report)
+
+    assert projection == {
+        "artifact_evidence_type": "clipvault.issue36.final_draft_artifacts",
+        "artifact_binding_sha256": report["artifact_binding_sha256"],
+        "target_commit": COMMIT,
+        "workflow_run": {
+            "id": RUN_ID,
+            "attempt": 1,
+            "url": RUN_URL,
+        },
+        "draft_release": {
+            "id": 77,
+            "url": (
+                "https://github.com/selinyi123/clipvault-personal/"
+                "releases/tag/untagged-77"
+            ),
+            "tag_name": "v1.6.0",
+        },
+        "android_signed_apk": {
+            "name": "ClipVault-Android-v1.6.0-release-signed.apk",
+            "sha256": next(
+                row["sha256"]
+                for row in report["artifacts"]
+                if row["role"] == "android_signed_apk"
+            ),
+        },
+    }
+    serialized = json.dumps(projection)
+    assert all(str(path) not in serialized for path in paths)
 
 
 def test_live_evidence_uses_all_identity_flags_and_explicit_apksigner(tmp_path):
