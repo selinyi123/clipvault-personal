@@ -173,9 +173,11 @@ class SyncWorkerSourceTest {
         val legacyPair = src.substring(legacyPairStart, pairWithHostStart)
         val hostPairEnd = src.indexOf("private fun requestPairToken", pairWithHostStart)
         val hostPair = src.substring(pairWithHostStart, hostPairEnd)
-        assertTrue(legacyPair.contains("s.replaceTokenIfCurrent(redemption.request, redemption.token, redemption.serverDevice)"))
+        assertTrue(legacyPair.contains("s.replaceTokenIfCurrent("))
+        assertTrue(legacyPair.contains("s.finishPairingIfCurrent(redemption.request)"))
         assertTrue(hostPair.contains("s.replacePairingIfCurrent("))
         assertTrue(hostPair.contains("redemption.serverDevice"))
+        assertTrue(hostPair.contains("s.finishPairingIfCurrent(redemption.request)"))
         assertFalse(legacyPair.contains("s.token = token"))
     }
 
@@ -205,7 +207,24 @@ class SyncWorkerSourceTest {
         assertTrue(snapshotBody.contains("auth && hostOverride != null && host != storedHost"))
         assertTrue(snapshotBody.contains("authenticated sync host override rejected"))
         assertTrue(snapshotBody.contains("if (auth && bearerToken.isNullOrEmpty()) throw SyncAuthException()"))
-        assertTrue(src.contains("val pairingSnapshot = s.beginPairingSnapshot(hostOverride)"))
+        assertTrue(snapshotBody.contains("pairingGate.authenticatedSnapshot(read)"))
+        assertTrue(snapshotBody.contains("ClipVaultApp.db(appCtx).outbox().pairingBaseSeq()"))
+
+        val pairTokenStart = src.indexOf("private fun requestPairToken(code: String)")
+        val pushStart = src.indexOf("fun push(events: JSONArray)", pairTokenStart)
+        assertTrue(pairTokenStart >= 0)
+        assertTrue(pushStart > pairTokenStart)
+        val pairTokenBody = src.substring(pairTokenStart, pushStart)
+        assertTrue(pairTokenBody.contains("val pairingSnapshot = s.beginPairingSnapshot(hostOverride)"))
+        assertTrue(pairTokenBody.contains(".put(\"outbox_base_seq\", outboxBaseSeq)"))
+        assertTrue(pairTokenBody.contains("parsePairingResponse(response.text, outboxBaseSeq)"))
+        assertTrue(pairTokenBody.contains("pairingSnapshot.pairingDeviceId"))
+
+        val deviceStart = src.indexOf("private fun readOrCreateDeviceId()")
+        val blockedStart = src.indexOf("internal fun markSyncPushBlocked", deviceStart)
+        val deviceBody = src.substring(deviceStart, blockedStart)
+        assertTrue(deviceBody.contains("putString(\"device_id\", id).commit()"))
+        assertTrue(deviceBody.contains("throw IOException(\"sync device identity write failed\")"))
     }
 
     @Test

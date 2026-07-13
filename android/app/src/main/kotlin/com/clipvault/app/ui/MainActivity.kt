@@ -294,7 +294,7 @@ private fun PairDialog(onDismiss: () -> Unit) {
                     } catch (e: Exception) { false }
                     pairingInProgress = false
                     if (ok) { SyncScheduler.requestPush(ctx); onDismiss() }
-                    else msg = "配对失败：请确认电脑端 ClipVault 正在运行、IP 与配对码正确（码 5 分钟有效）、手机和电脑在同一网络。若电脑端 server.host 仍是默认的 127.0.0.1，需在可信网络下改为 0.0.0.0 并重启才能被手机连接"
+                    else msg = "配对失败：请先将电脑端 ClipVault 更新到当前版本，并确认程序正在运行、IP 与配对码正确（码 5 分钟有效）、手机和电脑在同一网络。若电脑端 server.host 仍是默认的 127.0.0.1，需在可信网络下改为 0.0.0.0 并重启才能被手机连接"
                 }
             }) { Text("配对") }
         },

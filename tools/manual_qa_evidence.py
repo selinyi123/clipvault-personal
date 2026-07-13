@@ -23,7 +23,8 @@ from typing import Any, Iterable
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_VERSION = "v1.6.0"
 DEFAULT_ISSUE = 36
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+LEGACY_SCHEMA_VERSION = 2
 COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
@@ -44,6 +45,13 @@ VALID_BUILD_VARIANTS = {"debug", "release"}
 CURSORWINDOW_TEST_NAME = (
     "com.clipvault.app.capture.CaptureTransactionTest#"
     "maxControlCharacterCaptureCanBeReadThroughBoundedOutboxChunks"
+)
+OUTBOX_BASE_TEST_CLASS = "com.clipvault.app.data.OutboxBaseSeqTest"
+OUTBOX_BASE_TEST_METHODS = (
+    "emptyNeverUsedOutboxStartsAtOne",
+    "emptyAcknowledgedOutboxUsesAutoincrementHighWaterMark",
+    "pendingMinimumWinsOverNextAutoincrementSequence",
+    "exhaustedAutoincrementHighWaterMarkDoesNotOverflow",
 )
 CURSORWINDOW_MIN_PAYLOAD_BYTES = 4 * 1024 * 1024
 MAX_SYNC_PUSH_REQUEST_BYTES = 6 * 1024 * 1024 + 64 * 1024
@@ -132,6 +140,10 @@ REQUIRED_SECTIONS: tuple[QaSection, ...] = (
         items=(
             QaItem("public_clips_memory_sync", "Confirm public clips and memory sync desktop <-> Android."),
             QaItem("secret_private_isolation", "Confirm secret/private content remains isolated according to the current contracts."),
+            QaItem(
+                "re_pair_outbox_high_water",
+                "Confirm re-pairing preserves both pending Android outbox rows and the next sequence after a fully acknowledged queue.",
+            ),
         ),
     ),
     QaSection(
@@ -146,6 +158,61 @@ REQUIRED_SECTIONS: tuple[QaSection, ...] = (
         ),
     ),
 )
+
+LEGACY_V2_REQUIRED_SECTIONS: tuple[QaSection, ...] = (
+    QaSection(
+        key="android_device_qa",
+        title="Manual Android device QA",
+        items=(
+            QaItem("pairing", "Pair Android with the desktop node using a one-time pairing code."),
+            QaItem("share_capture", "Share text from another app into ClipVault and confirm it appears locally."),
+            QaItem("qs_tile_capture", "Use the Quick Settings tile to explicitly save current clipboard content."),
+            QaItem("panel_ime_paste", "Enable ClipVault Panel IME and confirm a candidate tap commits text."),
+            QaItem("explicit_save_requires_tap", "Confirm Panel IME explicit save requires a user tap."),
+        ),
+    ),
+    QaSection(
+        key="ime_privacy_qa",
+        title="Manual IME privacy QA",
+        items=(
+            QaItem("normal_field_candidates", "Open a normal text field and confirm candidates can appear."),
+            QaItem("sensitive_field_entry", "Move to password/incognito/no-suggestions fields."),
+            QaItem("sensitive_field_suppression", "Confirm candidates are hidden or replaced with the suppression message."),
+            QaItem("inflight_candidates_cleared", "Confirm in-flight candidates are cleared on the transition into a sensitive field."),
+            QaItem("typed_text_not_persisted", "Confirm typed text is not written to Room, outbox, logs, sync payloads, or desktop storage."),
+        ),
+    ),
+    QaSection(
+        key="sync_qa",
+        title="Manual sync QA",
+        items=(
+            QaItem("public_clips_memory_sync", "Confirm public clips and memory sync desktop <-> Android."),
+            QaItem("secret_private_isolation", "Confirm secret/private content remains isolated according to the current contracts."),
+        ),
+    ),
+    QaSection(
+        key="windows_clipboard_privacy_qa",
+        title="Manual Windows clipboard privacy QA",
+        items=(
+            QaItem("exclude_monitor", "`ExcludeClipboardContentFromMonitorProcessing` prevents capture."),
+            QaItem("viewer_ignore", "`Clipboard Viewer Ignore` prevents capture."),
+            QaItem("history_off", "`CanIncludeInClipboardHistory=0` prevents capture."),
+            QaItem("cloud_off", "`CanUploadToCloudClipboard=0` prevents capture."),
+            QaItem("normal_control", "A normal text clipboard item without those formats is still captured."),
+        ),
+    ),
+)
+
+LEGACY_V2_ITEM_KEYS: dict[str, tuple[str, ...]] = {
+    section.key: tuple(item.key for item in section.items)
+    for section in LEGACY_V2_REQUIRED_SECTIONS
+}
+
+
+def _required_sections_for_schema(schema_version: object) -> tuple[QaSection, ...]:
+    if type(schema_version) is int and schema_version == LEGACY_SCHEMA_VERSION:
+        return LEGACY_V2_REQUIRED_SECTIONS
+    return REQUIRED_SECTIONS
 
 
 @dataclass(frozen=True)
@@ -338,6 +405,28 @@ def build_template(version: str = DEFAULT_VERSION) -> dict[str, object]:
                             if section.key in {"android_device_qa", "ime_privacy_qa", "sync_qa"}
                             else {}
                         ),
+                        **(
+                            {
+                                "instrumented_test_class": OUTBOX_BASE_TEST_CLASS,
+                                "instrumented_results": [
+                                    {
+                                        "run_id": run_id,
+                                        "executed": 0,
+                                        "failures": 0,
+                                        "errors": 0,
+                                        "skipped": 0,
+                                        "result_ref": "",
+                                        "result_sha256": "",
+                                    }
+                                    for run_id in (
+                                        "api26-cursorwindow",
+                                        "api27-cursorwindow",
+                                    )
+                                ],
+                            }
+                            if item.key == "re_pair_outbox_high_water"
+                            else {}
+                        ),
                         "next_step": "REPLACE_WITH_OWNER_ACTION_OR_SET_STATUS_TO_PASS_AFTER_RUNNING",
                         "notes": item.label,
                     }
@@ -507,7 +596,7 @@ def _validate_release_artifact_binding(
         "evidence_ref",
     }
     if set(raw_binding) != expected_binding_keys:
-        errors.append("release_artifact_binding must use the canonical schema-v2 shape")
+        errors.append("release_artifact_binding must use the canonical binding shape")
 
     raw_target_commit = data.get("target_commit")
     if (
@@ -865,9 +954,13 @@ def _validate_metadata(
         return {}
 
     schema_version = data.get("schema_version")
-    if schema_version != SCHEMA_VERSION or isinstance(schema_version, bool):
+    if type(schema_version) is not int or schema_version not in {
+        LEGACY_SCHEMA_VERSION,
+        SCHEMA_VERSION,
+    }:
         errors.append(
-            f"schema_version must be {SCHEMA_VERSION}; regenerate the template instead of reusing v1 evidence"
+            f"schema_version must be {SCHEMA_VERSION}, or {LEGACY_SCHEMA_VERSION} "
+            "for read-only legacy validation; regenerate the current template"
         )
 
     version = _require_non_empty_string(data.get("version"), "version", errors)
@@ -1126,6 +1219,8 @@ def _validate_item(
     item: QaItem,
     runs: dict[str, dict[str, object]],
     final_run_id: str,
+    reserved_evidence_refs: set[str],
+    reserved_evidence_digests: set[str],
     errors: list[str],
     warnings: list[str],
 ) -> str | None:
@@ -1178,6 +1273,99 @@ def _validate_item(
         elif status == "pass" and final_run_id not in seen_run_ids:
             errors.append(f"{path}.run_ids must include the physical final signed APK run")
 
+    if item.key == "re_pair_outbox_high_water":
+        test_class = _string(item_data.get("instrumented_test_class"))
+        if test_class != OUTBOX_BASE_TEST_CLASS:
+            errors.append(
+                f"{path}.instrumented_test_class must be {OUTBOX_BASE_TEST_CLASS}"
+            )
+        raw_results = item_data.get("instrumented_results")
+        if not isinstance(raw_results, list):
+            errors.append(f"{path}.instrumented_results must be an array")
+            raw_results = []
+        covered_sdks: list[int] = []
+        result_refs: set[str] = set()
+        result_digests: set[str] = set()
+        for index, raw_result in enumerate(raw_results):
+            result_path = f"{path}.instrumented_results[{index}]"
+            if not _is_mapping(raw_result):
+                errors.append(f"{result_path} must be an object")
+                continue
+            run_id = _require_non_empty_string(
+                raw_result.get("run_id"), f"{result_path}.run_id", errors
+            )
+            executed = _require_int(
+                raw_result.get("executed"), f"{result_path}.executed", errors
+            )
+            failures = _require_int(
+                raw_result.get("failures"), f"{result_path}.failures", errors
+            )
+            error_count = _require_int(
+                raw_result.get("errors"), f"{result_path}.errors", errors
+            )
+            skipped = _require_int(
+                raw_result.get("skipped"), f"{result_path}.skipped", errors
+            )
+            run = runs.get(run_id)
+            if run is None:
+                errors.append(f"{result_path}.run_id does not reference android_runs")
+            else:
+                sdk_int = run.get("sdk_int")
+                if sdk_int not in {26, 27}:
+                    errors.append(
+                        f"{result_path}.run_id must reference an API 26 or API 27 run"
+                    )
+                elif isinstance(sdk_int, int):
+                    covered_sdks.append(sdk_int)
+                if _string(run.get("build_variant")).lower() != "debug":
+                    errors.append(
+                        f"{result_path}.run_id must reference a debug instrumentation run"
+                    )
+                if _string(run.get("test_apk_name")) != "app-debug-androidTest.apk":
+                    errors.append(
+                        f"{result_path}.run_id must reference app-debug-androidTest.apk"
+                    )
+            if status == "pass":
+                result_ref = _require_public_reference(
+                    raw_result.get("result_ref"), f"{result_path}.result_ref", errors
+                )
+                result_digest = _require_sha256(
+                    raw_result.get("result_sha256"),
+                    f"{result_path}.result_sha256",
+                    errors,
+                ).lower()
+                if result_ref in reserved_evidence_refs:
+                    errors.append(
+                        f"{result_path}.result_ref must differ from CursorWindow, "
+                        "SDK, and APK evidence"
+                    )
+                if result_digest in reserved_evidence_digests:
+                    errors.append(
+                        f"{result_path}.result_sha256 must differ from CursorWindow, "
+                        "SDK, and APK evidence"
+                    )
+                if result_ref in result_refs:
+                    errors.append(f"{result_path}.result_ref must be unique")
+                result_refs.add(result_ref)
+                if result_digest in result_digests:
+                    errors.append(f"{result_path}.result_sha256 must be unique")
+                result_digests.add(result_digest)
+                expected_executed = len(OUTBOX_BASE_TEST_METHODS)
+                if executed != expected_executed:
+                    errors.append(
+                        f"{result_path}.executed must be {expected_executed} when status is pass"
+                    )
+                if failures != 0:
+                    errors.append(f"{result_path}.failures must be 0 when status is pass")
+                if error_count != 0:
+                    errors.append(f"{result_path}.errors must be 0 when status is pass")
+                if skipped != 0:
+                    errors.append(f"{result_path}.skipped must be 0 when status is pass")
+        if status == "pass" and sorted(covered_sdks) != [26, 27]:
+            errors.append(
+                f"{path}.instrumented_results must include one passing API 26 and API 27 run"
+            )
+
     if status != "pass":
         warnings.append(f"{path} is {status}; Issue #{DEFAULT_ISSUE} manual QA remains incomplete")
     return status
@@ -1197,6 +1385,8 @@ def validate_evidence(
     if expected_version != DEFAULT_VERSION:
         errors.append(f"manual QA evidence helper only supports {DEFAULT_VERSION}")
 
+    schema_version = data.get("schema_version") if _is_mapping(data) else None
+    required_sections = _required_sections_for_schema(schema_version)
     runs = _validate_metadata(data, expected_version, errors)
     final_run_id = _string(data.get("final_signed_android_run_id")) if _is_mapping(data) else ""
     target_commit = _string(data.get("target_commit")) if _is_mapping(data) else ""
@@ -1234,11 +1424,42 @@ def validate_evidence(
     if compatibility_status is not None:
         counts[compatibility_status] += 1
 
+    reserved_evidence_refs: set[str] = set()
+    reserved_evidence_digests: set[str] = set()
+    for run in runs.values():
+        for key in (
+            "apk_name",
+            "test_apk_name",
+            "apk_source",
+            "artifact_evidence_ref",
+        ):
+            reference = _string(run.get(key))
+            if reference and not _is_placeholder(reference):
+                reserved_evidence_refs.add(reference)
+        for key in ("apk_sha256", "test_apk_sha256"):
+            digest = _string(run.get(key)).lower()
+            if digest:
+                reserved_evidence_digests.add(digest)
+    if _is_mapping(cursorwindow):
+        raw_cursor_results = cursorwindow.get("results")
+        if isinstance(raw_cursor_results, list):
+            for raw_result in raw_cursor_results:
+                if not _is_mapping(raw_result):
+                    continue
+                for key in ("sdk_evidence_ref", "result_ref"):
+                    reference = _string(raw_result.get(key))
+                    if reference:
+                        reserved_evidence_refs.add(reference)
+                for key in ("sdk_evidence_sha256", "result_sha256"):
+                    digest = _string(raw_result.get(key)).lower()
+                    if digest:
+                        reserved_evidence_digests.add(digest)
+
     sections = data.get("sections") if _is_mapping(data) else None
     if not _is_mapping(sections):
         errors.append("sections must be an object")
     else:
-        for section in REQUIRED_SECTIONS:
+        for section in required_sections:
             section_data = sections.get(section.key)
             if not _is_mapping(section_data):
                 errors.append(f"sections.{section.key} must be an object")
@@ -1247,6 +1468,17 @@ def validate_evidence(
             if not _is_mapping(items_data):
                 errors.append(f"sections.{section.key}.items must be an object")
                 continue
+            expected_item_keys = {item.key for item in section.items}
+            unexpected_item_keys = sorted(
+                str(item_key)
+                for item_key in items_data
+                if item_key not in expected_item_keys
+            )
+            if unexpected_item_keys:
+                errors.append(
+                    f"sections.{section.key}.items contains unexpected item(s) for "
+                    f"schema v{schema_version}: {', '.join(unexpected_item_keys)}"
+                )
             for item in section.items:
                 if item.key not in items_data:
                     errors.append(f"sections.{section.key}.items.{item.key} is required")
@@ -1257,21 +1489,29 @@ def validate_evidence(
                     item=item,
                     runs=runs,
                     final_run_id=final_run_id,
+                    reserved_evidence_refs=reserved_evidence_refs,
+                    reserved_evidence_digests=reserved_evidence_digests,
                     errors=errors,
                     warnings=warnings,
                 )
                 if status is not None:
                     counts[status] += 1
 
-    expected_items = 1 + sum(len(section.items) for section in REQUIRED_SECTIONS)
+    expected_items = 1 + sum(len(section.items) for section in required_sections)
     observed_items = sum(counts.values())
     if observed_items != expected_items:
         errors.append(f"expected {expected_items} QA items, found {observed_items}")
 
     if binding_assurance == "not_present_legacy_compatibility":
         warnings.append(
-            "release_artifact_binding is absent; schema-v2 compatibility validation "
+            "release_artifact_binding is absent; unbound compatibility validation "
             "does not qualify as final Issue #36 release-gate evidence"
+        )
+
+    if type(schema_version) is int and schema_version == LEGACY_SCHEMA_VERSION:
+        warnings.append(
+            "schema-v2 evidence is accepted only for read-only legacy validation; "
+            "regenerate schema-v3 and execute the re-pair outbox high-water QA row"
         )
 
     ok = not errors
@@ -1279,6 +1519,8 @@ def validate_evidence(
     release_ready = (
         structurally_complete
         and binding_assurance == "verified_external_snapshot"
+        and type(schema_version) is int
+        and schema_version == SCHEMA_VERSION
     )
     return ValidationResult(
         ok=ok,
@@ -1453,7 +1695,32 @@ def render_markdown(
         )
     lines.append("")
 
-    for section in REQUIRED_SECTIONS:
+    if data.get("schema_version") == SCHEMA_VERSION:
+        high_water = _item(data, "sync_qa", "re_pair_outbox_high_water")
+        lines.extend([
+            "### API 26/27 Android outbox baseline evidence",
+            "",
+            f"- Test class: `{_escape_table(high_water.get('instrumented_test_class'))}`",
+            "",
+            "| Run ID | Executed | Failures | Errors | Skipped | Result evidence | Result SHA-256 |",
+            "|---|---:|---:|---:|---:|---|---|",
+        ])
+        raw_outbox_results = high_water.get("instrumented_results")
+        outbox_results = raw_outbox_results if isinstance(raw_outbox_results, list) else []
+        for raw_result in outbox_results:
+            row = raw_result if isinstance(raw_result, dict) else {}
+            lines.append(
+                f"| {_escape_table(row.get('run_id'))} | "
+                f"{_escape_table(row.get('executed'))} | "
+                f"{_escape_table(row.get('failures'))} | "
+                f"{_escape_table(row.get('errors'))} | "
+                f"{_escape_table(row.get('skipped'))} | "
+                f"{_escape_public_reference(row.get('result_ref'))} | "
+                f"`{_escape_table(row.get('result_sha256'))}` |"
+            )
+        lines.append("")
+
+    for section in _required_sections_for_schema(data.get("schema_version")):
         lines.extend([
             f"### {section.title}",
             "",
@@ -1572,6 +1839,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         action="store_true",
         help="fail unless manual QA is bound to the supplied final-draft evidence",
     )
+    parser.add_argument(
+        "--require-release-ready",
+        action="store_true",
+        help=(
+            "fail and suppress --output unless the current schema, all QA rows, "
+            "and final-draft binding satisfy the Issue #36 manual-QA gate"
+        ),
+    )
     parser.add_argument("--output", type=Path, help="write rendered Markdown to this path instead of stdout")
     parser.add_argument("--json", action="store_true", help="emit validation JSON instead of Markdown")
     parser.add_argument("--no-fail", action="store_true", help="return exit code 0 even when evidence is incomplete")
@@ -1594,6 +1869,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
     if args.final_draft_artifact_evidence and not args.input:
         parser.error("--final-draft-artifact-evidence requires --input")
+    if args.require_release_ready and not args.require_final_draft_binding:
+        parser.error("--require-release-ready requires --require-final-draft-binding")
     try:
         if args.input and args.output and _paths_identify_same_file(args.input, args.output):
             parser.error("--input and --output must not identify the same file")
@@ -1644,7 +1921,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         if not isinstance(loaded, dict):
             loaded = {}
         markdown = render_markdown(loaded, result, issue=args.issue)
-        if args.output:
+        if args.output and not (args.require_release_ready and not result.release_ready):
             try:
                 _write_text_file(args.output, markdown, force=args.force)
             except (OSError, ValueError) as exc:
@@ -1654,9 +1931,10 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     if args.no_fail:
         return 0
-    # Preserve the legacy validator's structural-success exit contract while
-    # keeping Issue #36 release eligibility explicit in `release_ready`.
-    return 0 if result.structurally_complete else 2
+    # Preserve the legacy structural-success exit contract unless a release
+    # workflow explicitly requests the stronger Issue #36 manual-QA gate.
+    accepted = result.release_ready if args.require_release_ready else result.structurally_complete
+    return 0 if accepted else 2
 
 
 if __name__ == "__main__":

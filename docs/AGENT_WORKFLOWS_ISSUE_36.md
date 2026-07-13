@@ -111,6 +111,8 @@ Record:
 - QS Tile capture
 - Panel IME paste
 - app foreground manual clipboard save if applicable
+- fully drained outbox -> unpair/re-pair -> next explicit save reaches Desktop
+- pending outbox row -> re-pair -> pending and later saves arrive in order
 Do not claim background clipboard monitoring; Android platform constraints forbid it.
 ```
 
@@ -138,6 +140,8 @@ Record:
 - secret clip remains local/quarantined
 - secret/private memory remains isolated
 - bad/expired token behavior if tested
+- re-pairing after an Android outbox high-water mark preserves pending rows and
+  continuously acknowledges the next row
 Do not paste secret values into evidence.
 Use labels like SECRET_SAMPLE_A with hashes or redacted previews.
 ```

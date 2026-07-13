@@ -33,7 +33,9 @@ gradle :core:test        # 仅需 JDK + Gradle + Maven Central，无需 Android 
 2. 配置 Android SDK（compileSdk 34，minSdk 26）。
 3. Build → 在真机/模拟器安装。
 4. 启用输入法：系统设置 → 语言和输入法 → 启用 “ClipVault”。
-5. 配对：桌面 Web UI 点「配对设备」得到一次性码 → App「配对」里填桌面 IP + 码。
+5. 配对：先确保桌面端与 Android 为当前兼容版本；桌面 Web UI 点「配对设备」得到
+   一次性码 → App「配对」里填桌面 IP + 码。重新配对会协商 Android 本地 outbox 的
+   首个保留序号，已确认并清空过旧事件时也不会让后续显式保存永久卡住。
 6. 验证路径：
    - 任意 App 分享文本 → ClipVault → 历史出现、同步到桌面。
    - 通知栏 Quick Settings 「Save to ClipVault」保存当前剪贴板。

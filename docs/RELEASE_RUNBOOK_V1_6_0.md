@@ -112,10 +112,12 @@ Example CLI setup for the keystore value:
 ```powershell
 try {
   [Convert]::ToBase64String([IO.File]::ReadAllBytes("clipvault-release.jks")) |
-    Set-Content -Encoding ascii keystore.b64
-  gh secret set ANDROID_RELEASE_KEYSTORE_B64 `
-    --repo selinyi123/clipvault-personal `
-    --env release < keystore.b64
+    Set-Content -Encoding ascii -ErrorAction Stop keystore.b64
+  Get-Content -LiteralPath keystore.b64 -Raw -ErrorAction Stop |
+    gh secret set ANDROID_RELEASE_KEYSTORE_B64 `
+      --repo selinyi123/clipvault-personal `
+      --env release
+  if ($LASTEXITCODE -ne 0) { throw "Failed to set the release keystore secret" }
 } finally {
   Remove-Item keystore.b64 -ErrorAction SilentlyContinue
 }
@@ -127,12 +129,15 @@ Set the password/alias secrets without echoing them into logs:
 gh secret set ANDROID_RELEASE_KEYSTORE_PASSWORD `
   --repo selinyi123/clipvault-personal `
   --env release
+if ($LASTEXITCODE -ne 0) { throw "Failed to set the keystore password secret" }
 gh secret set ANDROID_RELEASE_KEY_ALIAS `
   --repo selinyi123/clipvault-personal `
   --env release
+if ($LASTEXITCODE -ne 0) { throw "Failed to set the key alias secret" }
 gh secret set ANDROID_RELEASE_KEY_PASSWORD `
   --repo selinyi123/clipvault-personal `
   --env release
+if ($LASTEXITCODE -ne 0) { throw "Failed to set the key password secret" }
 ```
 
 ## 4. Run the signed no-draft preflight
@@ -285,15 +290,16 @@ Strict-mode `PASS (OWNER-ATTESTED)` means the JSON is structurally complete; the
 not fetch or independently parse referenced SDK/JUnit evidence and does not
 prove that the reported physical observations occurred.
 Legacy schema-v2 compatibility mode can return `ok=true`, but it remains
-`BLOCKED` because it is not bound to an externally supplied final-draft
-snapshot. Its historical success exit status means structural completeness
-only, not Issue #36 release eligibility.
+`BLOCKED` even if a binding object is supplied: it lacks the required re-pair
+outbox high-water row. Its historical success exit status means structural
+completeness only, not Issue #36 release eligibility.
 
-The evidence file must use `schema_version=2` and bind all observations to the
+The evidence file must use `schema_version=3` and bind all observations to the
 exact target commit, including the Windows environment source commit. Before
-final device QA, run the targeted CursorWindow
-regression once on API 26 and once on API 27 (an emulator is acceptable for
-this compatibility lane). Require `git status --short` to be empty and require
+final device QA, run the targeted CursorWindow regression and the Android
+outbox-baseline Room regression once on API 26 and once on API 27 (an emulator
+is acceptable for this compatibility lane). Require `git status --short` to be
+empty and require
 `git rev-parse HEAD` and `git rev-parse origin/main` to equal the report target
 commit before building either test APK:
 
@@ -307,19 +313,82 @@ New-Item -ItemType Directory -Force -Path $qaEvidenceDir | Out-Null
 $sdk = (adb shell getprop ro.build.version.sdk).Trim()
 $sdk | Set-Content -NoNewline -Encoding ascii "$qaEvidenceDir\api-$sdk-sdk.txt"
 Get-FileHash -Algorithm SHA256 "$qaEvidenceDir\api-$sdk-sdk.txt"
+$connectedResults = ".\android\app\build\outputs\androidTest-results\connected"
+if (Test-Path -LiteralPath $connectedResults) {
+  $existingResults = Get-Item -LiteralPath $connectedResults -Force -ErrorAction Stop
+  if (($existingResults.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Refusing reparse-point connected-test results"
+  }
+  Rename-Item -LiteralPath $connectedResults -NewName ("connected.previous-" + [Guid]::NewGuid().ToString("N")) -ErrorAction Stop
+}
 Push-Location android
-.\gradlew.bat :app:connectedDebugAndroidTest --no-daemon "-Pandroid.testInstrumentationRunnerArguments.class=com.clipvault.app.capture.CaptureTransactionTest#maxControlCharacterCaptureCanBeReadThroughBoundedOutboxChunks"
-Pop-Location
-Get-FileHash -Algorithm SHA256 ".\android\app\build\outputs\apk\debug\app-debug.apk"
-Get-FileHash -Algorithm SHA256 ".\android\app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk"
+try {
+  .\gradlew.bat :app:connectedDebugAndroidTest --no-daemon "-Pandroid.testInstrumentationRunnerArguments.class=com.clipvault.app.capture.CaptureTransactionTest#maxControlCharacterCaptureCanBeReadThroughBoundedOutboxChunks"
+  if ($LASTEXITCODE -ne 0) { throw "CursorWindow filtered instrumentation failed" }
+} finally {
+  Pop-Location
+}
+if (-not (Test-Path -LiteralPath $connectedResults -PathType Container)) {
+  throw "CursorWindow run did not create fresh connected-test results"
+}
+$freshResults = Get-Item -LiteralPath $connectedResults -Force -ErrorAction Stop
+if (($freshResults.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+  throw "Fresh connected-test results must not be a reparse point"
+}
+$appDebugApk = ".\android\app\build\outputs\apk\debug\app-debug.apk"
+$testDebugApk = ".\android\app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk"
+$cursorAppApkSha256 = (Get-FileHash -LiteralPath $appDebugApk -Algorithm SHA256).Hash.ToLowerInvariant()
+$cursorTestApkSha256 = (Get-FileHash -LiteralPath $testDebugApk -Algorithm SHA256).Hash.ToLowerInvariant()
+$cursorAppApkSha256
+$cursorTestApkSha256
 ```
 
-Before switching targets, locate the exact-test XML below
+Before another connected run, locate the exact CursorWindow result below
 `android/app/build/outputs/androidTest-results/connected/`, inspect it, copy it
-to a distinct redacted API-specific file under `$qaEvidenceDir`, and hash the
-copy. Do not assume the next connected run will preserve the previous result
-directory. `.field-test-artifacts/` is ignored by Git, so these retained local
-files do not invalidate the clean tracked checkout check.
+to a redacted `api-$sdk-cursorwindow.xml` under `$qaEvidenceDir`, and hash the
+copy. Then run the outbox suite separately and snapshot its result immediately:
+
+```powershell
+if (Test-Path -LiteralPath $connectedResults) {
+  $existingResults = Get-Item -LiteralPath $connectedResults -Force -ErrorAction Stop
+  if (($existingResults.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Refusing reparse-point connected-test results"
+  }
+  Rename-Item -LiteralPath $connectedResults -NewName ("connected.previous-" + [Guid]::NewGuid().ToString("N")) -ErrorAction Stop
+}
+Push-Location android
+try {
+  .\gradlew.bat :app:connectedDebugAndroidTest --no-daemon "-Pandroid.testInstrumentationRunnerArguments.class=com.clipvault.app.data.OutboxBaseSeqTest"
+  if ($LASTEXITCODE -ne 0) { throw "Outbox baseline filtered instrumentation failed" }
+} finally {
+  Pop-Location
+}
+if (-not (Test-Path -LiteralPath $connectedResults -PathType Container)) {
+  throw "Outbox baseline run did not create fresh connected-test results"
+}
+$freshResults = Get-Item -LiteralPath $connectedResults -Force -ErrorAction Stop
+if (($freshResults.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+  throw "Fresh connected-test results must not be a reparse point"
+}
+$outboxAppApkSha256 = (Get-FileHash -LiteralPath $appDebugApk -Algorithm SHA256).Hash.ToLowerInvariant()
+$outboxTestApkSha256 = (Get-FileHash -LiteralPath $testDebugApk -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($outboxAppApkSha256 -cne $cursorAppApkSha256 -or
+    $outboxTestApkSha256 -cne $cursorTestApkSha256) {
+  throw "Debug app or instrumentation APK changed between filtered test runs; discard both results and rerun"
+}
+```
+
+Copy the result containing exactly all four `OutboxBaseSeqTest` cases to a
+distinct redacted `api-$sdk-outbox-base.xml` and hash it before switching
+targets. It must report no failure, error, or skip. Do not reuse one aggregate
+XML for both evidence rows and do not assume a later connected run preserves
+the previous result directory. The digest comparison above must pass so both
+JUnit results identify the same debug APK inputs; otherwise discard both result
+snapshots. `.field-test-artifacts/` is ignored by Git, so
+these retained local files do not invalidate the clean tracked checkout check.
+Keep the two invocations in one PowerShell session. Renaming the prior result
+directory, checking Gradle's exit code, and requiring a newly created result
+directory prevent a failed invocation from reusing stale PASS XML.
 
 For each SDK, retain a redacted JUnit result filtered to the named test case
 with `tests=1`, `failures=0`, `errors=0`, and `skipped=0` (not aggregate suite
@@ -342,7 +411,7 @@ run, and artifact-evidence reference. Use that physical release run ID for
 every passing Android, IME, and sync row.
 Debug instrumentation evidence never substitutes for signed-release manual QA.
 Run the Windows installer/portable and clipboard privacy cases with the EXEs
-downloaded from that same draft Release. The schema-v2 manual helper does not
+downloaded from that same draft Release. The schema-v3 manual helper does not
 independently cross-check Windows bytes, so each Windows evidence row must cite
 the draft URL plus the exact EXE name/SHA-256 from the saved digest set; this is
 still an Owner-attested observation.

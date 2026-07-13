@@ -58,12 +58,12 @@ def test_local_module_loader_ignores_unchecked_hash_bytecode_cache(
     assert module.VALUE == "trusted-source"
 
 
-def test_manual_template_reuses_canonical_schema_v2_contract():
+def test_manual_template_reuses_canonical_schema_v3_contract():
     generated = owner_pack.manual_qa_template(owner_pack.VERSION)
     canonical = owner_pack.manual_qa_evidence.build_template(owner_pack.VERSION)
 
     assert generated == canonical
-    assert generated["schema_version"] == 2
+    assert generated["schema_version"] == 3
     assert len(generated["android_runs"]) == 3
     assert [run["sdk_int"] for run in generated["android_runs"][:2]] == [26, 27]
     assert generated["android_runs"][2]["apk_name"] == (
@@ -72,7 +72,7 @@ def test_manual_template_reuses_canonical_schema_v2_contract():
     expected_items = 1 + sum(
         len(section.items) for section in owner_pack.manual_qa_evidence.REQUIRED_SECTIONS
     )
-    assert expected_items == 18
+    assert expected_items == 19
 
 
 def test_artifact_worksheet_is_scoped_and_never_claims_validation():
@@ -134,6 +134,7 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "final-draft-artifact-comment.md" in guide
     assert '--final-draft-artifact-evidence "$finalDraftEvidence"' in guide
     assert guide.count("--require-final-draft-binding") == 2
+    assert guide.count("--require-release-ready") == 2
     assert "release_artifact_binding" in guide
     assert "artifact_evidence_type <- evidence_type" in guide
     assert "artifacts` row whose role is `android_signed_apk`" in guide
@@ -179,12 +180,21 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "Assert-SameSha" in guide
     assert "draft-release-SHA256SUMS.txt" in guide
     assert "Windows observations are Owner-attested" in guide
+    assert "OutboxBaseSeqTest" in guide
+    assert "re_pair_outbox_high_water" in guide
+    assert "separate filtered" in guide
+    assert "never reuse one aggregate XML" in guide
+    assert "hash both debug APK inputs after each filtered invocation" in guide
+    assert "otherwise discard both results" in guide
+    assert "move any connected-test result directory aside" in guide
+    assert "abort on a nonzero Gradle exit" in guide
 
     step_f = guide.split("### Step F - execute manual QA against exact bytes", 1)[1]
     step_f = step_f.split("### Step G - consolidate Issue #36 evidence", 1)[0]
     assert 'v1.6.0-draft-run-$runId' in step_f
     assert step_f.count('--final-draft-artifact-evidence "$finalDraftEvidence"') == 2
     assert step_f.count("--require-final-draft-binding") == 2
+    assert step_f.count("--require-release-ready") == 2
     assert "release-artifacts-v1.6.0.template.json" not in step_f
     assert "final-draft-artifact-comment.md" not in step_f
     for relative_path in (
@@ -220,6 +230,14 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "Manual QA or final-draft artifact evidence changed during final render" in step_f
     assert 'Move-Item -LiteralPath $pendingOutput -Destination $finalOutput' in step_f
     assert "Final manual QA output already exists" in step_f
+    assert "OutboxBaseSeqTest" in step_f
+    assert "separate filtered" in step_f
+    assert "never reuse one aggregate XML" in step_f
+    assert "hash both debug APK inputs after each filtered invocation" in step_f
+    assert "otherwise discard both results" in step_f
+    assert "move any connected-test result directory aside" in step_f
+    assert "abort on a nonzero Gradle exit" in step_f
+    assert "re_pair_outbox_high_water" in step_f
     assert "Remove-Item -LiteralPath $pendingOutput" in step_f
     assert "Refusing stale prepublish directory" in guide
     assert "Draft assets changed after QA" in guide

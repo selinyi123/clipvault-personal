@@ -26,8 +26,11 @@ docs/{HANDOFF,CONTRACTS}.md
 
 鉴权：除本机 127.0.0.1（Web UI 豁免）外，`/api/sync/*` 要求 `Authorization: Bearer <token>`。
 
-- `POST /api/pair` `{code, device_id, device_name}` → `{token}`（PAIR-1：一次性码 TTL 5min，
-  token 32B base64url；桌面只存 sha256）。
+- `POST /api/pair` `{code, device_id, device_name, outbox_base_seq?}` →
+  `{token, server_device, outbox_base_seq?}`（PAIR-1：一次性码 TTL 5min，token 32B
+  base64url；桌面只存 sha256）。新版 Android 从同一 SQLite 快照发送最早保留的
+  outbox seq，桌面原子设置 `peer_cursor=outbox_base_seq-1` 并精确回显；缺少字段时
+  保持旧客户端 cursor 行为。
 - `POST /api/sync/push` `{device_id, events:[Event...]}` → `{acked_upto}`
   - 仅应用 seq > peer_cursor[device] 的事件，按 seq 升序；clip_new 闸门 A/B 复扫（密钥→本地隔离，
     不再外传）、按 content_hash 幂等插入；clip_meta 按 content_hash 找 clip、字段级 LWW（ts 比较，
@@ -56,7 +59,11 @@ Event：`{origin_device, seq, kind, ts, data}`，kind ∈ clip_new|clip_meta（m
 
 ## 5. 验收门禁（用 http.client 模拟 Android peer）
 
-- H1. 配对：mint code → redeem 得 token；错误/过期 code 拒绝；token 以 sha256 存储（明文不落库）。
+- H1. 配对：mint code → redeem 得 token；错误/过期 code 拒绝；token 以 sha256 存储
+  （明文不落库）。新版 Android 的正整数 `outbox_base_seq` 必须在兑换前严格校验、
+  原值回显，并把 peer cursor 精确设为 `base-1`；旧客户端缺少字段时仍兼容。
+- H1a. outbox 高水位：Android 队列已清空但 `AUTOINCREMENT` 高水位大于 0 时，重新
+  配对后的下一条显式保存仍可被连续 ack；较低的新基线不得被旧 cursor 吞掉。
 - H2. 鉴权：无/错 token 访问 /api/sync/* → 401；正确 token → 200。
 - H3. push clip_new：桌面落库 + 写 Obsidian + 入 backup_queue；acked_upto 正确。
 - H4. push 幂等：重复推同一批（同 seq）→ 不重复落库、不重复 Obsidian、acked_upto 不变。

@@ -26,6 +26,7 @@ _SUGGEST_WINDOW_DAYS = 30
 _DEVICE_ID_RE = re.compile(r"^[0-9A-Za-z_-]{1,80}$")
 _DEVICE_NAME_MAX_CHARS = 80
 _SYNC_PUSH_EVENT_LIMIT = 100
+_OUTBOX_BASE_SEQ_MAX = 9_223_372_036_854_775_807
 
 
 def _now_iso() -> str:
@@ -397,13 +398,37 @@ class Api:
             device_name = _normalize_device_name(body.get("device_name"))
         except ValueError as exc:
             return 400, {"error": {"code": "bad_request", "message": str(exc)}}
+        outbox_base_seq = None
+        if "outbox_base_seq" in body:
+            outbox_base_seq = body["outbox_base_seq"]
+            if (
+                isinstance(outbox_base_seq, bool)
+                or not isinstance(outbox_base_seq, int)
+                or not 1 <= outbox_base_seq <= _OUTBOX_BASE_SEQ_MAX
+            ):
+                return 400, {"error": {
+                    "code": "bad_request",
+                    "message": (
+                        "outbox_base_seq must be an integer between 1 and "
+                        f"{_OUTBOX_BASE_SEQ_MAX}"
+                    ),
+                }}
         if self.pairing.is_rate_limited():
             return 429, {"error": {"code": "rate_limited", "message": "too many attempts, try again shortly"}}
         token = self.pairing.redeem(code)
         if token is None:
             return 403, {"error": {"code": "bad_code", "message": "invalid or expired code"}}
-        self.peers.upsert_pair(device_id, device_name, hash_token(token), _now_iso())
-        return 200, {"token": token, "server_device": self.service.config.device_id}
+        self.peers.upsert_pair(
+            device_id,
+            device_name,
+            hash_token(token),
+            _now_iso(),
+            peer_cursor=(outbox_base_seq - 1 if outbox_base_seq is not None else None),
+        )
+        response = {"token": token, "server_device": self.service.config.device_id}
+        if outbox_base_seq is not None:
+            response["outbox_base_seq"] = outbox_base_seq
+        return 200, response
 
     def _auth_device(self, token: str | None) -> dict | None:
         if not token:

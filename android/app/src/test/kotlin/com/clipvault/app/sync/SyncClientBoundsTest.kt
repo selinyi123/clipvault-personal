@@ -127,6 +127,45 @@ class SyncClientBoundsTest {
     }
 
     @Test
+    fun pairingBaseEchoAcceptsOnlyPositiveIntegralJsonNumbers() {
+        assertEquals(1L, strictPairingBaseSeq(1))
+        assertEquals(Long.MAX_VALUE, strictPairingBaseSeq(Long.MAX_VALUE))
+
+        listOf(null, JSONObject.NULL, true, false, 0, 0L, -1, -1L, 1.0, "1").forEach {
+            assertEquals(null, strictPairingBaseSeq(it))
+        }
+    }
+
+    @Test
+    fun pairingResponseRequiresExactBaseEchoAndStringToken() {
+        val valid = parsePairingResponse(
+            JSONObject()
+                .put("token", "fresh-token")
+                .put("server_device", "desktop-main")
+                .put("outbox_base_seq", 101)
+                .toString(),
+            expectedOutboxBaseSeq = 101L,
+        )
+
+        assertEquals("fresh-token", valid?.token)
+        assertEquals("desktop-main", valid?.serverDevice)
+
+        listOf(
+            JSONObject().put("token", "fresh-token"),
+            JSONObject().put("token", "fresh-token").put("outbox_base_seq", 100),
+            JSONObject().put("token", "fresh-token").put("outbox_base_seq", "101"),
+            JSONObject().put("token", "").put("outbox_base_seq", 101),
+            JSONObject().put("token", 123).put("outbox_base_seq", 101),
+            JSONObject()
+                .put("token", "fresh-token")
+                .put("server_device", 123)
+                .put("outbox_base_seq", 101),
+        ).forEach { response ->
+            assertNull(parsePairingResponse(response.toString(), expectedOutboxBaseSeq = 101L))
+        }
+    }
+
+    @Test
     fun pullCursorAllowsEmptyTerminalPageWithoutProgress() {
         val next = nextPullCursorOrThrow(5, eventCount = 0, nextSeq = 5, hasMore = false)
 

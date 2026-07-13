@@ -140,7 +140,8 @@ def test_android_pairing_does_not_commit_host_before_token_redeem():
     assert "authenticated sync host override rejected" in snapshot_body
     assert "if (auth && bearerToken.isNullOrEmpty()) throw SyncAuthException()" in snapshot_body
     assert 'putLong("since", 0L)' in body
-    assert 'optString("server_device", "")' in sync
+    assert "parsePairingResponse(response.text, outboxBaseSeq)" in sync
+    assert 'parsed.opt("server_device")' in sync
 
     fresh = re.search(
         r"(?s)private fun installFreshToken\(token: String\) \{(?P<body>.*?)\n    \}",
