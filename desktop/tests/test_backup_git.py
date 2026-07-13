@@ -433,6 +433,24 @@ def test_add_commit_updates_snapshotted_branch_during_concurrent_checkout(
     )
 
 
+def test_add_commit_returns_durable_sha_when_real_index_sync_fails(
+    tmp_path,
+    monkeypatch,
+):
+    repo = _configured_repo(tmp_path)
+    _write(repo, ALLOWED_PATH, '{"content":"public"}\n')
+
+    def fail_index_sync(repo_arg, branch_ref, blobs):
+        raise git_repo.GitError("git index synchronization failed")
+
+    monkeypatch.setattr(git_repo, "_sync_real_index", fail_index_sync)
+
+    committed = git_repo.add_commit(repo, "backup", paths=[ALLOWED_PATH])
+
+    assert committed is not None
+    assert _git(repo, "rev-parse", "refs/heads/main").stdout.strip() == committed
+
+
 @pytest.mark.parametrize("driver_command", ["clean", "process"])
 def test_add_commit_rejects_info_attribute_filter_without_executing_it(
     tmp_path,

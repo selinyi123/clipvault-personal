@@ -584,7 +584,14 @@ def add_commit(
         result = _run(repo, ["update-ref", branch_ref, committed, expected_head])
         if result.returncode != 0:
             raise GitError("git branch update failed", result.returncode)
-        _sync_real_index(repo, branch_ref, blobs)
+        try:
+            _sync_real_index(repo, branch_ref, blobs)
+        except GitError:
+            # update-ref is the durability boundary.  Reporting failure after it
+            # succeeded makes a retry look like a no-op and can strand the queue.
+            # The isolated-index commit is valid even if this best-effort status
+            # cleanup must wait for a later managed-path update.
+            pass
         return committed
 
 
