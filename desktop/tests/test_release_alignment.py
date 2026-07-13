@@ -295,7 +295,7 @@ def test_release_runbook_uses_live_main_evidence_commands():
     assert "gh workflow run \"Release candidate dry run\"" in runbook
     assert "Release artifact build` only with `--ref main`" in runbook
     assert "Release artifacts v1.6.0 from main draft=false" in runbook
-    assert "The signed release workflow must run from the current `main` ref" in runbook
+    assert "The workflow must run from current `main`" in runbook
     assert "CI_RUN_ID" in runbook
     assert "RELEASE_CANDIDATE_DRY_RUN_ID" in runbook
     assert not re.search(r"https://github\.com/[^)\s]+/actions/runs/\d+", runbook)
@@ -352,14 +352,35 @@ def test_release_artifact_evidence_helper_is_documented_without_release_overclai
 
     assert "python tools/release_artifact_evidence.py" in manual_qa
     assert "python tools/release_artifact_evidence.py" in runbook
-    assert "gh run download $runId" in runbook
+    assert "python tools/prepare_v1_6_release_owner_pack.py" in runbook
     assert "gh attestation verify" in runbook
-    assert "a green workflow run does not by itself prove the artifact contents" in runbook
-    assert "does not download artifacts, call" in runbook
+    assert "a green workflow run does not by itself prove the artifact contents" in runbook.lower()
+    assert "only a structural precheck" in runbook
     assert "does not download artifacts, run or trigger workflows" in research
     assert "R85 | Downloaded release artifact evidence and provenance" in research
     assert "tools/release_artifact_evidence.py" in handoff
     assert "green workflow run still is not artifact-content proof" in handoff
+
+
+def test_release_runbook_qa_uses_the_final_draft_bytes_without_rebuild():
+    runbook = _read("docs/RELEASE_RUNBOOK_V1_6_0.md")
+
+    preflight = runbook.index("create_draft_release=false")
+    final_draft = runbook.index("create_draft_release=true", preflight)
+    manual_qa = runbook.index("## 6. Record manual QA evidence", final_draft)
+    publication = runbook.index("gh release edit v1.6.0", manual_qa)
+
+    assert preflight < final_draft < manual_qa < publication
+    assert "Its bytes are not eligible" in runbook
+    assert "from the draft Release directory" in runbook
+    assert "Refusing stale prepublish directory" in runbook
+    assert "Draft assets changed after QA" in runbook
+    assert "$published.isDraft" in runbook
+    assert "$published.targetCommitish -ne $mainSha" in runbook
+    assert "Refusing stale post-publish directory" in runbook
+    assert "Published assets differ from the approved digest set" in runbook
+    assert "without another build" in runbook
+    assert "Optional draft GitHub Release" not in runbook
 
 
 def test_release_runbook_uses_release_environment_secrets():
