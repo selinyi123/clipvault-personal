@@ -118,5 +118,11 @@ class CaptureTransactionTest {
         assertEquals(1, batch.events.length())
         assertEquals(content, batch.events.getJSONObject(0).getJSONObject("data").getString("content"))
         assertTrue(wireBytes <= MAX_SYNC_PUSH_REQUEST_BYTES)
+        // Numeric-only evidence for the Owner's API 26/27 release-gate report.
+        // Never print the captured payload, device serial, or a local path.
+        println(
+            "CLIPVAULT_CURSORWINDOW_EVIDENCE " +
+                "payload_bytes=${metadata.single().payloadBytes} wire_bytes=$wireBytes",
+        )
     }
 }

@@ -319,9 +319,12 @@ def test_manual_qa_evidence_helper_is_documented_without_release_overclaim():
     assert "windows_clipboard_privacy_qa" in script_text
 
     for doc in (manual_qa, runbook):
-        assert "python tools/manual_qa_evidence.py --write-template manual-qa-v1.6.0.json" in doc
-        assert "python tools/manual_qa_evidence.py --input manual-qa-v1.6.0.json --no-fail" in doc
-        assert "python tools/manual_qa_evidence.py --input manual-qa-v1.6.0.json --output manual-qa-issue-comment.md" in doc
+        assert r'.field-test-artifacts\v1.6.0-manual-qa' in doc
+        assert r'python tools/manual_qa_evidence.py --write-template "$qaEvidenceDir\manual-qa-v1.6.0.json"' in doc
+        assert r'python tools/manual_qa_evidence.py --input "$qaEvidenceDir\manual-qa-v1.6.0.json" --no-fail' in doc
+        assert r'python tools/manual_qa_evidence.py --input "$qaEvidenceDir\manual-qa-v1.6.0.json" --output "$qaEvidenceDir\manual-qa-issue-comment.md"' in doc
+        assert "app-debug-androidTest.apk" in doc
+        assert "git status --short" in doc
         assert "does not replace signed artifact evidence" in doc
         assert "Issue #36" in doc
 

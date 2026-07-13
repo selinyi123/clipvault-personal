@@ -244,9 +244,12 @@
   exact unchecked release-gate checklist items, so the next Owner evidence step
   can target the missing rows directly without treating a count as completion.
 - `tools/manual_qa_evidence.py` is a local Issue #36 manual-QA evidence helper.
-  It generates a JSON template, validates Android device QA, IME privacy QA,
-  sync QA, and Windows clipboard privacy QA rows, and renders a Markdown issue
-  comment draft. It does not run device QA, post to GitHub, edit checklist
+  Its fail-closed schema v2 separately records non-skipped API 26/27
+  CursorWindow regression runs and a physical final-signed-APK run, binds them
+  to the target commit and artifact hashes/evidence, validates Android device
+  QA, IME privacy QA, sync QA, and Windows clipboard privacy QA rows, and
+  renders a Markdown issue comment draft. It does not run device QA, post to
+  GitHub, edit checklist
   rows, sign artifacts, publish a Release, or close Issue #36, and the rendered
   report explicitly does not replace signed-artifact/final-release evidence.
 - `tools/release_artifact_evidence.py` is a local Issue #36 release-artifact

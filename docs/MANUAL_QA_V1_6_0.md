@@ -64,9 +64,11 @@ build alone:
 Use the local helper to prepare a complete Issue #36 manual-QA evidence comment:
 
 ```powershell
-python tools/manual_qa_evidence.py --write-template manual-qa-v1.6.0.json
-python tools/manual_qa_evidence.py --input manual-qa-v1.6.0.json --no-fail
-python tools/manual_qa_evidence.py --input manual-qa-v1.6.0.json --output manual-qa-issue-comment.md
+$qaEvidenceDir = ".\.field-test-artifacts\v1.6.0-manual-qa"
+New-Item -ItemType Directory -Force -Path $qaEvidenceDir | Out-Null
+python tools/manual_qa_evidence.py --write-template "$qaEvidenceDir\manual-qa-v1.6.0.json"
+python tools/manual_qa_evidence.py --input "$qaEvidenceDir\manual-qa-v1.6.0.json" --no-fail
+python tools/manual_qa_evidence.py --input "$qaEvidenceDir\manual-qa-v1.6.0.json" --output "$qaEvidenceDir\manual-qa-issue-comment.md"
 ```
 
 The helper is a formatter and validator only. It does not run Android device QA,
@@ -75,13 +77,26 @@ or close the release gate. It exits non-zero unless every required manual-QA ite
 is marked `pass` with evidence; use `--no-fail` only while drafting or recording
 blocked or failing rows. `--write-template` and `--output` write UTF-8 files
 directly, avoiding Windows PowerShell redirection encoding differences.
+Both modes refuse to overwrite an existing file by default. Use `--force` only
+after confirming the destination is a tool-managed disposable copy; the helper
+always refuses symlink/directory outputs and never allows `--output` to replace
+its own `--input` evidence JSON.
 
 The generated report must include:
 
-- `version=v1.6.0` and the full 40-character target commit.
-- tester and timestamp.
-- Android device/app/APK source.
-- Windows desktop environment/build source.
+- `schema_version=2`, `version=v1.6.0`, and the full 40-character target commit.
+- tester and timezone-qualified ISO-8601 timestamps.
+- separate Android execution rows for API 26, API 27, and the physical device
+  used with the final signed release APK. Each row records the SDK, build
+  variant, source commit, app APK name/SHA-256, and (for compatibility runs)
+  instrumentation APK name/SHA-256 without recording a device serial. The final
+  signed run additionally requires the independently validated
+  artifact-evidence reference.
+- non-skipped API 26 and API 27 results for
+  `CaptureTransactionTest#maxControlCharacterCaptureCanBeReadThroughBoundedOutboxChunks`,
+  including a result reference and SHA-256.
+- Windows desktop environment/build source and source commit matching the
+  report target commit.
 - Manual Android device QA rows.
 - Manual IME privacy QA rows.
 - Manual sync QA rows.
@@ -90,10 +105,95 @@ The generated report must include:
 This manual QA report does not replace signed artifact evidence, final Windows
 artifact evidence, signed Android APK evidence, release environment/secrets
 evidence, or Owner-approved `v1.6.0` GitHub Release publication.
+Its `PASS (OWNER-ATTESTED)` result means the required structure and reported
+values are complete; the helper does not fetch or independently parse the
+referenced SDK/JUnit files and cannot prove that physical observations occurred.
+
+Older evidence without `schema_version=2` is intentionally blocked. Regenerate
+the template instead of copying a v1 report forward: the older shape cannot
+prove the API 26/27 compatibility regression ran rather than being compiled or
+skipped.
+
+## API 26 and API 27 CursorWindow compatibility QA
+
+This is a compatibility-test lane, not final signed-APK manual QA. An API 26 or
+API 27 emulator is acceptable for this targeted regression; the final signed
+APK still requires the separate physical-device lane below. Use one connected
+target at a time. First require a clean checkout whose HEAD equals the exact
+target commit recorded in the evidence file:
+
+```powershell
+git fetch origin
+git status --short
+git rev-parse HEAD
+git rev-parse origin/main
+$qaEvidenceDir = ".\.field-test-artifacts\v1.6.0-manual-qa"
+New-Item -ItemType Directory -Force -Path $qaEvidenceDir | Out-Null
+```
+
+Do not proceed if the status is non-empty or either commit differs from the
+report target. Record the SDK before each run:
+
+```powershell
+$sdk = (adb shell getprop ro.build.version.sdk).Trim()
+$sdk | Set-Content -NoNewline -Encoding ascii "$qaEvidenceDir\api-$sdk-sdk.txt"
+Get-FileHash -Algorithm SHA256 "$qaEvidenceDir\api-$sdk-sdk.txt"
+Push-Location android
+.\gradlew.bat :app:connectedDebugAndroidTest --no-daemon "-Pandroid.testInstrumentationRunnerArguments.class=com.clipvault.app.capture.CaptureTransactionTest#maxControlCharacterCaptureCanBeReadThroughBoundedOutboxChunks"
+Pop-Location
+Get-FileHash -Algorithm SHA256 ".\android\app\build\outputs\apk\debug\app-debug.apk"
+Get-FileHash -Algorithm SHA256 ".\android\app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk"
+```
+
+Connected-test XML is written below
+`android/app/build/outputs/androidTest-results/connected/`. Locate the XML that
+contains the exact test-case name, inspect it, then copy it to a distinct
+redacted `api-26-...` or `api-27-...` file under `$qaEvidenceDir` and hash that
+copy before running the other SDK; a later connected run may replace prior
+output. `.field-test-artifacts/` is ignored by Git so retaining this local
+evidence does not make the tracked checkout dirty.
+
+Run once with an API 26 target and once with an API 27 target. For each run:
+
+1. Confirm `$sdk` is exactly `26` or `27`. Save that numeric output
+   as redacted SDK evidence and record a reference plus SHA-256; API 26 and API
+   27 must use distinct evidence files/digests.
+2. Filter the JUnit XML to the named test case and confirm that result reports
+   `tests=1`, `failures=0`, `errors=0`, and `skipped=0`; do not copy aggregate
+   counts from the full instrumentation suite.
+   A green Gradle task with the test skipped is not evidence.
+   Also record both generated APK digests: the app APK and Android
+   instrumentation-test APK are independent inputs to the connected test and
+   must not share a digest. The final signed APK digest must also differ from
+   every debug app/test APK digest.
+3. Record the numeric-only `CLIPVAULT_CURSORWINDOW_EVIDENCE` output. The
+   `payload_bytes` value must exceed `4194304`; `wire_bytes` must be between
+   `1` and `6356992`.
+4. Hash the JUnit XML or an exported redacted result file with
+   `Get-FileHash -Algorithm SHA256`. Record a repository/workflow URL or a
+   short relative evidence label plus the digest. API 26 and API 27 must use
+   distinct result references/digests. Do not record a device serial,
+   clipboard payload, absolute/UNC local path, or `file://` URI.
+
+The same redaction rule applies to every free-form `evidence` and `next_step`
+value. The helper rejects common absolute local-path forms and HTML-escapes the
+rendered table, but it cannot detect arbitrary clipboard text; review the
+generated Markdown before posting it.
+
+Within one SDK run, the SDK-output reference/digest and JUnit/result
+reference/digest must identify different evidence; do not copy one digest into
+multiple semantic rows.
+
+The debug instrumentation APK and its results cannot substitute for the final
+signed APK evidence or the physical-device manual checks.
 
 ## Manual Android device QA
 
-Run on a real Android device with the `v1.6.0` APK installed:
+Run on a real Android device with
+`ClipVault-Android-v1.6.0-release-signed.apk` installed. Verify its SHA-256
+matches the independently validated release artifact report, then reference
+the corresponding `physical` / `release` `android_runs` entry from every
+passing Android, IME, and sync row:
 
 1. Pair Android with the desktop node using a one-time desktop pairing code.
 2. Share text from another app into ClipVault and confirm it appears locally.
