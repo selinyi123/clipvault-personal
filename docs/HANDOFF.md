@@ -18,6 +18,37 @@
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-13 |
 
+## Current development note - 2026-07-13 / R000 pairing outbox baseline
+
+- Exact-main `d6a45e2cd1f91b9be9cf394dc1bd278d1cb4a25f` passed
+  [CI run 29288246002](https://github.com/selinyi123/clipvault-personal/actions/runs/29288246002)
+  and
+  [release-candidate run 29288246017](https://github.com/selinyi123/clipvault-personal/actions/runs/29288246017).
+- This branch repairs re-pairing after Android has already acknowledged and
+  deleted low outbox sequences. Android derives the first retained sequence in
+  one SQLite snapshot (pending minimum, otherwise the AUTOINCREMENT next value)
+  and pairs it with the same durable device identity. Desktop validates the
+  announced positive integer before consuming the one-time code, atomically
+  resets that peer cursor to `base - 1`, and echoes the exact base.
+- New Android installs the token only after an exact integer echo. While a
+  pairing request owns the baseline snapshot, new authenticated cycles are
+  paused and stale authenticated responses cannot clear outbox rows or advance
+  cursors. Multiple overlapping pairing attempts retain latest-attempt-wins
+  behavior. Legacy Android requests without the extension remain accepted.
+- Issue #36 manual evidence now emits schema v3 with 19 required items. Its
+  re-pair row binds four executed `OutboxBaseSeqTest` cases on both API 26 and
+  API 27 plus the physical signed-APK observation. Schema v2 remains readable
+  in its frozen 18-item shape but can never be release-ready.
+- A pre-existing fail-closed follow-up remains: the Desktop pairing code is
+  consumed before the peer-row commit. A database/commit failure must roll back
+  the long-lived API connection immediately, and a later slice should make code
+  redemption reserve/confirm transactional so a failed commit cannot leave a
+  hidden token/cursor mutation.
+- The wire extension adds no schema version, dependency, analytics, typed-text
+  logging, IME network work, version bump, signed/final artifact, release
+  authority, or permission to close Issue #36. The Android instrumentation test
+  is compiled in CI but remains device QA rather than executed release evidence.
+
 ## Current development note - 2026-07-13 / R000 backup crash convergence
 
 - This branch makes the dedicated private JSONL backup pipeline crash-safe from
@@ -434,8 +465,9 @@
   exact unchecked release-gate checklist items, so the next Owner evidence step
   can target the missing rows directly without treating a count as completion.
 - `tools/manual_qa_evidence.py` is a local Issue #36 manual-QA evidence helper.
-  Its fail-closed schema v2 separately records non-skipped API 26/27
-  CursorWindow regression runs and a physical final-signed-APK run, binds them
+  Its fail-closed schema v3 separately records non-skipped API 26/27
+  CursorWindow and Android outbox-baseline regression runs plus a physical
+  final-signed-APK run, binds them
   to the target commit and artifact hashes/evidence, validates Android device
   QA, IME privacy QA, sync QA, and Windows clipboard privacy QA rows, and
   renders a Markdown issue comment draft. Its explicit strict mode also loads a
@@ -446,6 +478,8 @@
   GitHub, edit checklist
   rows, sign artifacts, publish a Release, or close Issue #36, and the rendered
   report explicitly does not replace signed-artifact/final-release evidence.
+  Frozen schema v2 remains readable only for its exact legacy 18-item shape and
+  can never satisfy the current release gate.
 - `tools/release_artifact_evidence.py` retains its compatible local structural
   precheck and adds explicit fail-closed `--require-live-final-draft` and
   `--require-live-published-release` modes.

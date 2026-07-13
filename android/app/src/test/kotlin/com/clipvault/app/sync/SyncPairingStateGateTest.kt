@@ -171,7 +171,7 @@ class SyncPairingStateGateTest {
     }
 
     @Test
-    fun rejectedOldTokenDoesNotInvalidateFreshPairingAttempt() {
+    fun pairingIntentInvalidatesOldAuthResponseBeforeFreshTokenCommit() {
         val processState = SyncPairingProcessState()
         val gate = SyncPairingStateGate(processState)
         var token: String? = "rejected-token"
@@ -182,19 +182,98 @@ class SyncPairingStateGateTest {
             request("desktop.local", null, revision, endpointRevision, attempt)
         }
 
-        assertTrue(
+        assertFalse(
             gate.clearRejectedIfCurrent(
                 expected = authRequest,
                 currentStoreMatches = { true },
                 clear = { token = null },
             ),
         )
+        assertEquals("rejected-token", token)
         assertTrue(
             gate.replacePairingIfCurrent(pairingRequest, endpointChanged = false) {
                 token = "fresh-token"
             },
         )
         assertEquals("fresh-token", token)
+    }
+
+    @Test
+    fun activePairingBlocksNewAuthAndInvalidatesOldCycleSideEffects() {
+        val processState = SyncPairingProcessState()
+        val gate = SyncPairingStateGate(processState)
+        var oldEffects = 0
+        val oldRequest = gate.authenticatedSnapshot { revision, endpointRevision ->
+            request("desktop.local", "old-token", revision, endpointRevision)
+        }
+        val pairingRequest = gate.beginPairingSnapshot { revision, endpointRevision, attempt ->
+            request("desktop.local", null, revision, endpointRevision, attempt)
+        }
+
+        assertFalse(
+            gate.runIfCurrent(oldRequest, currentStoreMatches = { true }) {
+                oldEffects += 1
+            },
+        )
+        assertEquals(0, oldEffects)
+        try {
+            gate.authenticatedSnapshot { revision, endpointRevision ->
+                request("desktop.local", "old-token", revision, endpointRevision)
+            }
+            fail("authenticated work must wait until pairing finishes")
+        } catch (_: SyncPairingChangedException) {
+            // Expected.
+        }
+
+        assertTrue(gate.finishPairingIfCurrent(pairingRequest))
+        val resumed = gate.authenticatedSnapshot { revision, endpointRevision ->
+            request("desktop.local", "old-token", revision, endpointRevision)
+        }
+        assertEquals("old-token", resumed.bearerToken)
+    }
+
+    @Test
+    fun onlyLatestPairingAttemptCanReleaseAuthenticatedWork() {
+        val processState = SyncPairingProcessState()
+        val gate = SyncPairingStateGate(processState)
+        val first = gate.beginPairingSnapshot { revision, endpointRevision, attempt ->
+            request("desktop.local", null, revision, endpointRevision, attempt)
+        }
+        val second = gate.beginPairingSnapshot { revision, endpointRevision, attempt ->
+            request("desktop.local", null, revision, endpointRevision, attempt)
+        }
+
+        assertFalse(gate.finishPairingIfCurrent(first))
+        try {
+            gate.authenticatedSnapshot { revision, endpointRevision ->
+                request("desktop.local", "old-token", revision, endpointRevision)
+            }
+            fail("older request must not release a newer pairing attempt")
+        } catch (_: SyncPairingChangedException) {
+            // Expected.
+        }
+        assertTrue(gate.finishPairingIfCurrent(second))
+        assertFalse(gate.finishPairingIfCurrent(second))
+    }
+
+    @Test
+    fun snapshotFailureReleasesOnlyItsOwnActivePairing() {
+        val processState = SyncPairingProcessState()
+        val gate = SyncPairingStateGate(processState)
+
+        try {
+            gate.beginPairingSnapshot { _, _, _ ->
+                throw IllegalStateException("simulated local snapshot failure")
+            }
+            fail("snapshot failure must propagate")
+        } catch (_: IllegalStateException) {
+            // Expected.
+        }
+
+        val resumed = gate.authenticatedSnapshot { revision, endpointRevision ->
+            request("desktop.local", "old-token", revision, endpointRevision)
+        }
+        assertEquals("old-token", resumed.bearerToken)
     }
 
     private fun request(

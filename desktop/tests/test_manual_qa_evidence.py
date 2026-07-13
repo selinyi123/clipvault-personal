@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -314,6 +315,25 @@ def _valid_report():
             }
             if section.key in {"android_device_qa", "ime_privacy_qa", "sync_qa"}:
                 item_data["run_ids"] = ["signed-release-physical"]
+            if item.key == "re_pair_outbox_high_water":
+                item_data["instrumented_test_class"] = (
+                    manual_qa_evidence.OUTBOX_BASE_TEST_CLASS
+                )
+                item_data["instrumented_results"] = [
+                    {
+                        "run_id": run_id,
+                        "executed": 4,
+                        "failures": 0,
+                        "errors": 0,
+                        "skipped": 0,
+                        "result_ref": f"Outbox baseline JUnit for {run_id}",
+                        "result_sha256": digest * 64,
+                    }
+                    for run_id, digest in (
+                        ("api26-cursorwindow", "a"),
+                        ("api27-cursorwindow", "b"),
+                    )
+                ]
             data["sections"][section.key]["items"][item.key] = item_data
     return data
 
@@ -321,7 +341,7 @@ def _valid_report():
 def test_template_contains_every_required_manual_qa_item():
     template = manual_qa_evidence.build_template()
 
-    assert template["schema_version"] == 2
+    assert template["schema_version"] == 3
     assert template["version"] == "v1.6.0"
     assert template["scope_note"] == manual_qa_evidence.scope_note()
     assert template["release_artifact_binding"]["artifact_evidence_type"] == (
@@ -340,6 +360,14 @@ def test_template_contains_every_required_manual_qa_item():
             item_data = template["sections"][section.key]["items"][item.key]
             assert item_data["status"] == "blocked"
             assert item_data["next_step"]
+    high_water = template["sections"]["sync_qa"]["items"][
+        "re_pair_outbox_high_water"
+    ]
+    assert high_water["instrumented_test_class"] == manual_qa_evidence.OUTBOX_BASE_TEST_CLASS
+    assert [row["run_id"] for row in high_water["instrumented_results"]] == [
+        "api26-cursorwindow",
+        "api27-cursorwindow",
+    ]
 
 
 def test_helper_is_scoped_to_issue_36_v1_6_0():
@@ -361,7 +389,7 @@ def test_legacy_all_pass_evidence_is_compatible_but_remains_release_blocked():
     assert result.structurally_complete is True
     assert result.release_ready is False
     assert result.final_draft_binding_assurance == "not_present_legacy_compatibility"
-    assert result.item_counts == {"blocked": 0, "fail": 0, "pass": 18}
+    assert result.item_counts == {"blocked": 0, "fail": 0, "pass": 19}
     assert "Manual QA evidence for Issue #36" in markdown
     assert "Status: **BLOCKED**" in markdown
     assert "final_draft_binding_assurance=not_present_legacy_compatibility" in markdown
@@ -371,9 +399,54 @@ def test_legacy_all_pass_evidence_is_compatible_but_remains_release_blocked():
     assert "Manual sync QA" in markdown
     assert "Manual Windows clipboard privacy QA" in markdown
     assert "API 26/27 CursorWindow compatibility evidence" in markdown
+    assert "API 26/27 Android outbox baseline evidence" in markdown
+    assert manual_qa_evidence.OUTBOX_BASE_TEST_CLASS in markdown
+    assert "Outbox baseline JUnit for api26-cursorwindow" in markdown
     assert "signed-release-physical" in markdown
     assert "does not replace signed artifact evidence" in markdown
     assert "Owner-attested inputs" in markdown
+
+
+def test_schema_v2_is_readable_but_cannot_satisfy_current_release_gate():
+    report = _valid_report()
+    report["schema_version"] = 2
+    del report["sections"]["sync_qa"]["items"]["re_pair_outbox_high_water"]
+    artifact_report = _final_draft_artifact_report()
+    _bind_report_to_final_draft(report, artifact_report)
+
+    result = manual_qa_evidence.validate_evidence(
+        report,
+        final_draft_artifact_evidence=artifact_report,
+        require_final_draft_binding=True,
+    )
+    markdown = manual_qa_evidence.render_markdown(report, result)
+
+    assert result.ok is True
+    assert result.structurally_complete is True
+    assert result.release_ready is False
+    assert result.final_draft_binding_assurance == "verified_external_snapshot"
+    assert result.item_counts == {"blocked": 0, "fail": 0, "pass": 18}
+    assert any("schema-v2 evidence is accepted only" in warning for warning in result.warnings)
+    assert "re-pairing preserves" not in markdown
+
+
+@pytest.mark.parametrize("invalid_schema", [3.0, 2.0, True])
+def test_non_integer_schema_version_cannot_be_release_ready(invalid_schema):
+    report = _valid_report()
+    report["schema_version"] = invalid_schema
+    artifact_report = _final_draft_artifact_report()
+    _bind_report_to_final_draft(report, artifact_report)
+
+    result = manual_qa_evidence.validate_evidence(
+        report,
+        final_draft_artifact_evidence=artifact_report,
+        require_final_draft_binding=True,
+    )
+
+    assert result.ok is False
+    assert result.structurally_complete is False
+    assert result.release_ready is False
+    assert any("schema_version must be 3, or 2" in error for error in result.errors)
     assert result.as_dict()["evidence_assurance"] == "owner_attested_structural_validation"
 
 
@@ -696,7 +769,109 @@ def test_missing_required_section_item_is_an_error():
 
     assert result.ok is False
     assert any("secret_private_isolation is required" in error for error in result.errors)
-    assert any("expected 18 QA items" in error for error in result.errors)
+    assert any("expected 19 QA items" in error for error in result.errors)
+
+
+def test_re_pair_outbox_high_water_is_required_release_evidence():
+    report = _valid_report()
+    del report["sections"]["sync_qa"]["items"]["re_pair_outbox_high_water"]
+
+    result = manual_qa_evidence.validate_evidence(report)
+
+    assert result.ok is False
+    assert result.release_ready is False
+    assert any("re_pair_outbox_high_water is required" in error for error in result.errors)
+    assert any("expected 19 QA items" in error for error in result.errors)
+
+
+def test_re_pair_outbox_high_water_requires_executed_api26_and_api27_results():
+    report = _valid_report()
+    item = report["sections"]["sync_qa"]["items"]["re_pair_outbox_high_water"]
+    item["instrumented_results"][0]["executed"] = 0
+    item["instrumented_results"][1]["result_ref"] = ""
+
+    result = manual_qa_evidence.validate_evidence(report)
+
+    assert result.ok is False
+    assert result.release_ready is False
+    assert any("instrumented_results[0].executed must be 4" in error for error in result.errors)
+    assert any("instrumented_results[1].result_ref" in error for error in result.errors)
+
+
+@pytest.mark.parametrize(
+    "reuse_kind",
+    [
+        "cursorwindow",
+        "test_apk",
+        "run_apk_name",
+        "run_test_apk_name",
+        "run_apk_source",
+        "run_artifact_ref",
+    ],
+)
+def test_re_pair_outbox_evidence_cannot_reuse_other_evidence(reuse_kind):
+    report = _valid_report()
+    artifact_report = _final_draft_artifact_report()
+    _bind_report_to_final_draft(report, artifact_report)
+    high_water_result = report["sections"]["sync_qa"]["items"][
+        "re_pair_outbox_high_water"
+    ]["instrumented_results"][0]
+    if reuse_kind == "cursorwindow":
+        cursor_result = report["android_compatibility_qa"][
+            "cursorwindow_large_payload"
+        ]["results"][0]
+        high_water_result["result_ref"] = cursor_result["result_ref"]
+        high_water_result["result_sha256"] = cursor_result["result_sha256"]
+    elif reuse_kind == "test_apk":
+        high_water_result["result_sha256"] = report["android_runs"][0][
+            "test_apk_sha256"
+        ]
+    elif reuse_kind == "run_apk_name":
+        high_water_result["result_ref"] = report["android_runs"][0]["apk_name"]
+    elif reuse_kind == "run_test_apk_name":
+        high_water_result["result_ref"] = report["android_runs"][0][
+            "test_apk_name"
+        ]
+    elif reuse_kind == "run_apk_source":
+        high_water_result["result_ref"] = report["android_runs"][0]["apk_source"]
+    else:
+        high_water_result["result_ref"] = report["android_runs"][0][
+            "artifact_evidence_ref"
+        ]
+
+    result = manual_qa_evidence.validate_evidence(
+        report,
+        final_draft_artifact_evidence=artifact_report,
+        require_final_draft_binding=True,
+    )
+
+    assert result.ok is False
+    assert result.release_ready is False
+    if reuse_kind in {
+        "cursorwindow",
+        "run_apk_name",
+        "run_test_apk_name",
+        "run_apk_source",
+        "run_artifact_ref",
+    }:
+        assert any("result_ref must differ" in error for error in result.errors)
+    if reuse_kind in {"cursorwindow", "test_apk"}:
+        assert any("result_sha256 must differ" in error for error in result.errors)
+
+
+def test_schema_v2_rejects_schema_v3_only_item_in_frozen_shape():
+    report = _valid_report()
+    report["schema_version"] = 2
+
+    result = manual_qa_evidence.validate_evidence(report)
+
+    assert result.ok is False
+    assert result.structurally_complete is False
+    assert result.release_ready is False
+    assert any(
+        "unexpected item(s) for schema v2: re_pair_outbox_high_water" in error
+        for error in result.errors
+    )
 
 
 def test_metadata_must_pin_version_and_full_target_commit():
@@ -718,7 +893,7 @@ def test_schema_v1_is_blocked_instead_of_silently_accepted():
     result = manual_qa_evidence.validate_evidence(report)
 
     assert result.release_ready is False
-    assert any("schema_version must be 2" in error for error in result.errors)
+    assert any("schema_version must be 3, or 2" in error for error in result.errors)
 
 
 def test_timestamps_and_app_versions_are_strict():
@@ -1047,6 +1222,30 @@ def test_cursorwindow_helper_contract_matches_instrumented_test_source():
     assert manual_qa_evidence.MAX_SYNC_PUSH_REQUEST_BYTES == 6 * 1024 * 1024 + 64 * 1024
 
 
+def test_outbox_base_helper_contract_matches_instrumented_test_source():
+    root = Path(__file__).resolve().parents[2]
+    source = (
+        root
+        / "android"
+        / "app"
+        / "src"
+        / "androidTest"
+        / "kotlin"
+        / "com"
+        / "clipvault"
+        / "app"
+        / "data"
+        / "OutboxBaseSeqTest.kt"
+    ).read_text(encoding="utf-8")
+
+    assert manual_qa_evidence.OUTBOX_BASE_TEST_CLASS.endswith(".OutboxBaseSeqTest")
+    assert "class OutboxBaseSeqTest" in source
+    instrumented_test_methods = tuple(
+        re.findall(r"@Test\s+fun\s+([A-Za-z0-9_]+)\s*\(", source)
+    )
+    assert instrumented_test_methods == manual_qa_evidence.OUTBOX_BASE_TEST_METHODS
+
+
 def test_template_placeholders_are_not_valid_evidence():
     report = _valid_report()
     report["tester"] = "REPLACE_WITH_TESTER_NAME"
@@ -1182,7 +1381,7 @@ def test_cli_writes_template_and_json_summary(tmp_path, capsys):
     assert output["ok"] is True
     assert output["release_ready"] is False
     assert output["final_draft_binding_assurance"] == "not_present_legacy_compatibility"
-    assert output["item_counts"]["pass"] == 18
+    assert output["item_counts"]["pass"] == 19
 
     markdown_path = tmp_path / "manual-qa-comment.md"
     assert manual_qa_evidence.main(
@@ -1215,6 +1414,52 @@ def test_cli_strict_mode_cross_checks_exact_final_draft_report(tmp_path, capsys)
     ]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["release_ready"] is True
+
+
+def test_cli_release_ready_mode_rejects_frozen_schema_v2_without_output(tmp_path):
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    report["schema_version"] = 2
+    del report["sections"]["sync_qa"]["items"]["re_pair_outbox_high_water"]
+    input_path = tmp_path / "manual-qa-v2.json"
+    artifact_path = tmp_path / "final-draft-artifacts.json"
+    output_path = tmp_path / "final-comment.md"
+    input_path.write_text(json.dumps(report), encoding="utf-8")
+    artifact_path.write_text(json.dumps(artifact_report), encoding="utf-8")
+
+    assert manual_qa_evidence.main([
+        "--input",
+        str(input_path),
+        "--final-draft-artifact-evidence",
+        str(artifact_path),
+        "--require-final-draft-binding",
+        "--require-release-ready",
+        "--output",
+        str(output_path),
+    ]) == 2
+    assert output_path.exists() is False
+
+
+def test_cli_release_ready_mode_writes_passing_schema_v3_output(tmp_path):
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_report(), artifact_report)
+    input_path = tmp_path / "manual-qa-v3.json"
+    artifact_path = tmp_path / "final-draft-artifacts.json"
+    output_path = tmp_path / "final-comment.md"
+    input_path.write_text(json.dumps(report), encoding="utf-8")
+    artifact_path.write_text(json.dumps(artifact_report), encoding="utf-8")
+
+    assert manual_qa_evidence.main([
+        "--input",
+        str(input_path),
+        "--final-draft-artifact-evidence",
+        str(artifact_path),
+        "--require-final-draft-binding",
+        "--require-release-ready",
+        "--output",
+        str(output_path),
+    ]) == 0
+    assert "Status: **PASS (OWNER-ATTESTED)**" in output_path.read_text(encoding="utf-8")
 
 
 def test_cli_strict_artifact_report_rejects_duplicate_keys_and_nonfinite_numbers(
@@ -1482,7 +1727,7 @@ def test_cli_refuses_to_overwrite_template_without_force(tmp_path):
     assert manual_qa_evidence.main(
         ["--write-template", str(template_path), "--force"]
     ) == 0
-    assert json.loads(template_path.read_text(encoding="utf-8"))["schema_version"] == 2
+    assert json.loads(template_path.read_text(encoding="utf-8"))["schema_version"] == 3
 
 
 def test_cli_refuses_to_overwrite_rendered_output_without_force(tmp_path):

@@ -8,18 +8,56 @@ outbox; my_acked_seq = how much of OUR outbox the peer has confirmed.
 import sqlite3
 
 
+_PAIRING_CURSOR_MAX = 9_223_372_036_854_775_806
+
+
 class PeersRepo:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def upsert_pair(self, device_id: str, device_name: str, token_hash: str, when: str) -> None:
-        self.conn.execute(
-            "INSERT INTO sync_peers(device_id, device_name, token_hash, paired_at) "
-            "VALUES (?,?,?,?) "
-            "ON CONFLICT(device_id) DO UPDATE SET device_name=excluded.device_name, "
-            "token_hash=excluded.token_hash, paired_at=excluded.paired_at",
-            (device_id, device_name, token_hash, when),
-        )
+    def upsert_pair(
+        self,
+        device_id: str,
+        device_name: str,
+        token_hash: str,
+        when: str,
+        *,
+        peer_cursor: int | None = None,
+    ) -> None:
+        if peer_cursor is not None and (
+            isinstance(peer_cursor, bool)
+            or not isinstance(peer_cursor, int)
+            or not 0 <= peer_cursor <= _PAIRING_CURSOR_MAX
+        ):
+            raise ValueError(
+                "pairing peer_cursor must be an integer between 0 and "
+                f"{_PAIRING_CURSOR_MAX}"
+            )
+        if peer_cursor is None:
+            # Legacy clients do not announce the first sequence retained in
+            # their outbox. Preserve an existing cursor on re-pair, and let a
+            # newly inserted row use the schema default of zero.
+            self.conn.execute(
+                "INSERT INTO sync_peers(device_id, device_name, token_hash, paired_at) "
+                "VALUES (?,?,?,?) "
+                "ON CONFLICT(device_id) DO UPDATE SET device_name=excluded.device_name, "
+                "token_hash=excluded.token_hash, paired_at=excluded.paired_at",
+                (device_id, device_name, token_hash, when),
+            )
+        else:
+            # A pairing client that announces its durable outbox base lets the
+            # desktop distinguish an intentional prefix gap from data loss.
+            # Reset exactly, including to a lower value after local app-data
+            # restore; MAX() would permanently wedge the new stream.
+            self.conn.execute(
+                "INSERT INTO sync_peers"
+                "(device_id, device_name, token_hash, paired_at, peer_cursor) "
+                "VALUES (?,?,?,?,?) "
+                "ON CONFLICT(device_id) DO UPDATE SET device_name=excluded.device_name, "
+                "token_hash=excluded.token_hash, paired_at=excluded.paired_at, "
+                "peer_cursor=excluded.peer_cursor",
+                (device_id, device_name, token_hash, when, peer_cursor),
+            )
         self.conn.commit()
 
     def by_token_hash(self, token_hash: str) -> dict | None:

@@ -8,7 +8,36 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
+import androidx.room.RawQuery
 import androidx.room.RoomDatabase
+import androidx.sqlite.db.SimpleSQLiteQuery
+import androidx.sqlite.db.SupportSQLiteQuery
+
+/**
+ * Return the first durable Android outbox sequence that a newly paired desktop
+ * must still accept.  When the pending queue is empty, sqlite_sequence keeps
+ * the AUTOINCREMENT high-water mark after acknowledged rows have been deleted.
+ *
+ * Keep this as one SQLite statement: reading MIN(seq) and sqlite_sequence in
+ * separate statements would let a concurrent capture land between snapshots
+ * and make pairing skip that new event.  Saturating at Long.MAX_VALUE avoids
+ * SQLite promoting `seq + 1` to REAL when the sequence space is exhausted; a
+ * later append will fail rather than wrap or reuse an acknowledged sequence.
+ */
+internal const val OUTBOX_BASE_SEQ_SQL = """
+SELECT COALESCE(
+    (SELECT MIN(seq) FROM outbox),
+    (
+        SELECT CASE
+            WHEN seq < 9223372036854775807 THEN seq + 1
+            ELSE 9223372036854775807
+        END
+        FROM sqlite_sequence
+        WHERE name = 'outbox'
+    ),
+    1
+)
+"""
 
 /** Local cache + outbox (DB-1 subset). The desktop SQLite remains the source
  * of truth; this mirrors only what the phone needs offline. */
@@ -98,6 +127,23 @@ interface ClipDao {
 @Dao
 interface OutboxDao {
     @Insert fun append(e: OutboxEntity): Long
+
+    /**
+     * Pairing cursor baseline for this durable outbox stream.
+     *
+     * sqlite_sequence is an SQLite-owned table rather than a Room entity, so
+     * the fixed scalar query enters Room through @RawQuery. The `Raw` suffix
+     * makes that generated adapter boundary explicit; production callers use
+     * only the fixed no-argument wrapper below.
+     */
+    @RawQuery
+    fun pairingBaseSeqRaw(query: SupportSQLiteQuery): Long
+
+    fun pairingBaseSeq(): Long {
+        val baseSeq = pairingBaseSeqRaw(SimpleSQLiteQuery(OUTBOX_BASE_SEQ_SQL))
+        check(baseSeq >= 1L) { "outbox base sequence is invalid" }
+        return baseSeq
+    }
 
     @Query("SELECT seq FROM outbox ORDER BY seq LIMIT 1")
     fun firstSeq(): Long?

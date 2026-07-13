@@ -86,7 +86,7 @@ def _validate_scope(version: str, issue_url: str = ISSUE_URL) -> None:
 
 
 def manual_qa_template(version: str) -> dict[str, Any]:
-    """Return the canonical schema-v2 template without copying its contract."""
+    """Return the canonical schema-v3 template without copying its contract."""
 
     _validate_scope(version)
     return manual_qa_evidence.build_template(version)
@@ -616,13 +616,23 @@ Owner publication approval, final publication, or Issue #36 closure.
 Fill `manual-qa-v1.6.0.template.json`. Follow
 `docs/MANUAL_QA_V1_6_0.md` exactly, including:
 
-- the named CursorWindow regression on API 26 and API 27 with non-skipped JUnit,
-  SDK-version, `app-debug.apk`, and `app-debug-androidTest.apk` SHA-256 evidence;
+- the named CursorWindow regression and `OutboxBaseSeqTest` on API 26 and API 27
+  with non-skipped JUnit, SDK-version, `app-debug.apk`, and
+  `app-debug-androidTest.apk` SHA-256 evidence;
+- run the CursorWindow method and `OutboxBaseSeqTest` as separate filtered
+  connected-test invocations, snapshotting each redacted JUnit XML immediately;
+  never reuse one aggregate XML for both evidence rows;
+- hash both debug APK inputs after each filtered invocation and require the
+  second hashes to exactly match the first; otherwise discard both results;
+- before each invocation, move any connected-test result directory aside;
+  abort on a nonzero Gradle exit or if no fresh result directory is created;
 - physical-device Android, IME privacy, and sync QA using the exact signed APK
   `ClipVault-Android-{version}-release-signed.apk` from the draft=true run;
+- the schema-v3 `re_pair_outbox_high_water` row, covering both an empty
+  acknowledged high-water mark and a pending-row re-pair without clip content;
 - Windows installer/portable and clipboard privacy QA using the exact draft assets.
 
-The schema-v2 validator machine-binds Android rows to the exact signed APK run.
+The schema-v3 validator machine-binds Android rows to the exact signed APK run.
 Populate `release_artifact_binding` from the final-draft report with this exact
 field mapping: `artifact_evidence_type <- evidence_type`,
 `artifact_binding_sha256 <- artifact_binding_sha256`,
@@ -784,6 +794,7 @@ Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
   --input "$manualQaEvidence" `
   --final-draft-artifact-evidence "$finalDraftEvidence" `
   --require-final-draft-binding `
+  --require-release-ready `
   --no-fail
 if ($LASTEXITCODE -ne 0) {{ throw "manual QA preview failed" }}
 Assert-TrackedSourceMatchesCommit "tools/manual_qa_evidence.py"
@@ -801,6 +812,7 @@ try {{
     --input "$manualQaEvidence" `
     --final-draft-artifact-evidence "$finalDraftEvidence" `
     --require-final-draft-binding `
+    --require-release-ready `
     --output "$pendingOutput"
   if ($LASTEXITCODE -ne 0) {{ throw "manual QA validation failed or remains blocked" }}
   $finalLocalCommit = (& $gitPath -C $repoRoot rev-parse HEAD).Trim()

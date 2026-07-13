@@ -12,6 +12,8 @@ internal class SyncRequestSnapshot(
     internal val revision: Long,
     internal val endpointRevision: Long,
     internal val pairingAttempt: Long?,
+    internal val pairingDeviceId: String? = null,
+    internal val outboxBaseSeq: Long? = null,
 ) {
     val baseUrl: String
         get() = "http://$host:$port/api"
@@ -27,6 +29,7 @@ internal class SyncPairingProcessState {
     internal var revision: Long = 0L
     internal var endpointRevision: Long = 0L
     internal var pairingAttempt: Long = 0L
+    internal var activePairingAttempt: Long? = null
 }
 
 private val DEFAULT_SYNC_PAIRING_PROCESS_STATE = SyncPairingProcessState()
@@ -42,6 +45,17 @@ internal class SyncPairingStateGate(
         read(state.revision, state.endpointRevision)
     }
 
+    /** Authenticated work cannot start while a pairing request is redeeming a
+     * one-time code. Otherwise a new worker could acknowledge rows after the
+     * pairing request sampled its outbox base but before the token is replaced.
+     */
+    fun authenticatedSnapshot(
+        read: (revision: Long, endpointRevision: Long) -> SyncRequestSnapshot,
+    ): SyncRequestSnapshot = synchronized(state.monitor) {
+        if (state.activePairingAttempt != null) throw SyncPairingChangedException()
+        read(state.revision, state.endpointRevision)
+    }
+
     /** Register user pairing intent before the one-time-code request starts.
      * A later attempt supersedes an earlier slow response even before either
      * response mutates stored endpoint/token state.
@@ -49,8 +63,20 @@ internal class SyncPairingStateGate(
     fun beginPairingSnapshot(
         read: (revision: Long, endpointRevision: Long, pairingAttempt: Long) -> SyncRequestSnapshot,
     ): SyncRequestSnapshot = synchronized(state.monitor) {
+        // Invalidate an older worker before sampling the outbox base. The gate
+        // remains held only for local state/SQLite reads, never network I/O.
+        state.revision += 1L
         state.pairingAttempt += 1L
-        read(state.revision, state.endpointRevision, state.pairingAttempt)
+        val attempt = state.pairingAttempt
+        state.activePairingAttempt = attempt
+        try {
+            read(state.revision, state.endpointRevision, attempt)
+        } catch (exc: Throwable) {
+            if (state.activePairingAttempt == attempt) {
+                state.activePairingAttempt = null
+            }
+            throw exc
+        }
     }
 
     /** Advance the revision before mutation. Even when persistence fails midway,
@@ -59,6 +85,7 @@ internal class SyncPairingStateGate(
     fun <T> replace(block: () -> T): T = synchronized(state.monitor) {
         state.revision += 1L
         state.pairingAttempt += 1L
+        state.activePairingAttempt = null
         block()
     }
 
@@ -66,6 +93,7 @@ internal class SyncPairingStateGate(
         state.revision += 1L
         state.endpointRevision += 1L
         state.pairingAttempt += 1L
+        state.activePairingAttempt = null
         block()
     }
 
@@ -95,15 +123,28 @@ internal class SyncPairingStateGate(
         val attempt = expected.pairingAttempt ?: return@synchronized false
         if (
             state.pairingAttempt != attempt ||
+            state.activePairingAttempt != attempt ||
             state.endpointRevision != expected.endpointRevision
         ) return@synchronized false
         state.revision += 1L
         if (endpointChanged) state.endpointRevision += 1L
         // Consume the attempt so the same response cannot be committed twice.
         state.pairingAttempt += 1L
+        state.activePairingAttempt = null
         replace()
         true
     }
+
+    /** Release only the still-active attempt. A slow older request must not
+     * resume authenticated work while a newer pairing request is in flight.
+     */
+    fun finishPairingIfCurrent(expected: SyncRequestSnapshot): Boolean =
+        synchronized(state.monitor) {
+            val attempt = expected.pairingAttempt ?: return@synchronized false
+            if (state.activePairingAttempt != attempt) return@synchronized false
+            state.activePairingAttempt = null
+            true
+        }
 
     fun isCurrent(
         expected: SyncRequestSnapshot,

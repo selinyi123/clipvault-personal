@@ -102,7 +102,7 @@ output without that assurance is not final Issue #36 release-gate evidence.
 
 The generated report must include:
 
-- `schema_version=2`, `version=v1.6.0`, and the full 40-character target commit.
+- `schema_version=3`, `version=v1.6.0`, and the full 40-character target commit.
 - `release_artifact_binding` copied from the strict final-draft artifact report,
   including its binding SHA-256, exact workflow run/attempt, draft Release ID and
   snapshot URL, and signed APK name/SHA-256. The numeric Release ID is part of the
@@ -119,6 +119,9 @@ The generated report must include:
 - non-skipped API 26 and API 27 results for
   `CaptureTransactionTest#maxControlCharacterCaptureCanBeReadThroughBoundedOutboxChunks`,
   including a result reference and SHA-256.
+- four executed, non-skipped, passing `OutboxBaseSeqTest` cases on API 26 and
+  API 27, recorded under `re_pair_outbox_high_water.instrumented_results` with
+  distinct result references and SHA-256 values.
 - Windows desktop environment/build source and source commit matching the
   report target commit.
 - Manual Android device QA rows.
@@ -133,13 +136,11 @@ Its strict-mode `PASS (OWNER-ATTESTED)` result means the required structure and 
 values are complete; the helper does not fetch or independently parse the
 referenced SDK/JUnit files and cannot prove that physical observations occurred.
 Legacy schema-v2 compatibility mode may be structurally valid (`ok=true`) but
-always remains `BLOCKED`. Its historical exit status only reports structural
-completeness; never interpret that status as Issue #36 release eligibility.
-
-Older evidence without `schema_version=2` is intentionally blocked. Regenerate
-the template instead of copying a v1 report forward: the older shape cannot
-prove the API 26/27 compatibility regression ran rather than being compiled or
-skipped.
+always remains `BLOCKED`, even when its former 18 rows pass and a binding object
+is present. Regenerate schema v3 and execute the required re-pair outbox
+high-water row. Other schema versions are intentionally blocked. Historical
+success exit status only reports structural completeness; never interpret it
+as Issue #36 release eligibility.
 
 ## API 26 and API 27 CursorWindow compatibility QA
 
@@ -165,20 +166,88 @@ report target. Record the SDK before each run:
 $sdk = (adb shell getprop ro.build.version.sdk).Trim()
 $sdk | Set-Content -NoNewline -Encoding ascii "$qaEvidenceDir\api-$sdk-sdk.txt"
 Get-FileHash -Algorithm SHA256 "$qaEvidenceDir\api-$sdk-sdk.txt"
+$connectedResults = ".\android\app\build\outputs\androidTest-results\connected"
+if (Test-Path -LiteralPath $connectedResults) {
+  $existingResults = Get-Item -LiteralPath $connectedResults -Force -ErrorAction Stop
+  if (($existingResults.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Refusing reparse-point connected-test results"
+  }
+  Rename-Item -LiteralPath $connectedResults -NewName ("connected.previous-" + [Guid]::NewGuid().ToString("N")) -ErrorAction Stop
+}
 Push-Location android
-.\gradlew.bat :app:connectedDebugAndroidTest --no-daemon "-Pandroid.testInstrumentationRunnerArguments.class=com.clipvault.app.capture.CaptureTransactionTest#maxControlCharacterCaptureCanBeReadThroughBoundedOutboxChunks"
-Pop-Location
-Get-FileHash -Algorithm SHA256 ".\android\app\build\outputs\apk\debug\app-debug.apk"
-Get-FileHash -Algorithm SHA256 ".\android\app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk"
+try {
+  .\gradlew.bat :app:connectedDebugAndroidTest --no-daemon "-Pandroid.testInstrumentationRunnerArguments.class=com.clipvault.app.capture.CaptureTransactionTest#maxControlCharacterCaptureCanBeReadThroughBoundedOutboxChunks"
+  if ($LASTEXITCODE -ne 0) { throw "CursorWindow filtered instrumentation failed" }
+} finally {
+  Pop-Location
+}
+if (-not (Test-Path -LiteralPath $connectedResults -PathType Container)) {
+  throw "CursorWindow run did not create fresh connected-test results"
+}
+$freshResults = Get-Item -LiteralPath $connectedResults -Force -ErrorAction Stop
+if (($freshResults.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+  throw "Fresh connected-test results must not be a reparse point"
+}
+$appDebugApk = ".\android\app\build\outputs\apk\debug\app-debug.apk"
+$testDebugApk = ".\android\app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk"
+$cursorAppApkSha256 = (Get-FileHash -LiteralPath $appDebugApk -Algorithm SHA256).Hash.ToLowerInvariant()
+$cursorTestApkSha256 = (Get-FileHash -LiteralPath $testDebugApk -Algorithm SHA256).Hash.ToLowerInvariant()
+$cursorAppApkSha256
+$cursorTestApkSha256
 ```
 
 Connected-test XML is written below
 `android/app/build/outputs/androidTest-results/connected/`. Locate the XML that
-contains the exact test-case name, inspect it, then copy it to a distinct
-redacted `api-26-...` or `api-27-...` file under `$qaEvidenceDir` and hash that
-copy before running the other SDK; a later connected run may replace prior
-output. `.field-test-artifacts/` is ignored by Git so retaining this local
-evidence does not make the tracked checkout dirty.
+contains the exact CursorWindow test-case name, confirm the single test passed,
+and immediately copy it to a redacted `api-$sdk-cursorwindow.xml` under
+`$qaEvidenceDir`. Hash that copy before starting another connected run because
+Gradle may replace the result directory.
+
+Then run the outbox suite as a separate filtered invocation:
+
+```powershell
+if (Test-Path -LiteralPath $connectedResults) {
+  $existingResults = Get-Item -LiteralPath $connectedResults -Force -ErrorAction Stop
+  if (($existingResults.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Refusing reparse-point connected-test results"
+  }
+  Rename-Item -LiteralPath $connectedResults -NewName ("connected.previous-" + [Guid]::NewGuid().ToString("N")) -ErrorAction Stop
+}
+Push-Location android
+try {
+  .\gradlew.bat :app:connectedDebugAndroidTest --no-daemon "-Pandroid.testInstrumentationRunnerArguments.class=com.clipvault.app.data.OutboxBaseSeqTest"
+  if ($LASTEXITCODE -ne 0) { throw "Outbox baseline filtered instrumentation failed" }
+} finally {
+  Pop-Location
+}
+if (-not (Test-Path -LiteralPath $connectedResults -PathType Container)) {
+  throw "Outbox baseline run did not create fresh connected-test results"
+}
+$freshResults = Get-Item -LiteralPath $connectedResults -Force -ErrorAction Stop
+if (($freshResults.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+  throw "Fresh connected-test results must not be a reparse point"
+}
+$outboxAppApkSha256 = (Get-FileHash -LiteralPath $appDebugApk -Algorithm SHA256).Hash.ToLowerInvariant()
+$outboxTestApkSha256 = (Get-FileHash -LiteralPath $testDebugApk -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($outboxAppApkSha256 -cne $cursorAppApkSha256 -or
+    $outboxTestApkSha256 -cne $cursorTestApkSha256) {
+  throw "Debug app or instrumentation APK changed between filtered test runs; discard both results and rerun"
+}
+```
+
+Locate the XML for `com.clipvault.app.data.OutboxBaseSeqTest`, confirm exactly
+all four baseline cases ran without skip/failure, and immediately copy it to a
+distinct redacted `api-$sdk-outbox-base.xml` under `$qaEvidenceDir`. Hash that
+copy before changing devices. Never point both evidence rows at one aggregate
+XML or duplicate the same file: CursorWindow and outbox-baseline JUnit evidence
+must be independently filtered snapshots with different references and hashes.
+The post-outbox digest comparison must pass so both results are bound to the
+same debug app and instrumentation APK bytes; otherwise discard both snapshots.
+The pre-run rename and post-run directory check prevent a failed Gradle command
+from reusing an older PASS XML; keep both commands in the same PowerShell
+session so the saved paths and APK digests remain bound.
+`.field-test-artifacts/` is ignored by Git so retaining this local evidence does
+not make the tracked checkout dirty.
 
 Run once with an API 26 target and once with an API 27 target. For each run:
 
@@ -230,6 +299,18 @@ passing Android, IME, and sync row:
 6. Confirm public clips and memory sync desktop <-> Android.
 7. Confirm secret/private content remains isolated according to the current
    contracts.
+8. Create and fully sync several explicit Android saves so the local outbox is
+   empty but its sequence high-water mark is greater than zero. Unpair that
+   device on Desktop, generate a new one-time code, and pair the same Android
+   installation again. Make one more explicit save and confirm Desktop receives
+   it, Android clears the acknowledged outbox row, and later saves continue in
+   order. Then disconnect networking, create at least one pending explicit save,
+   re-pair, reconnect, and confirm that pending row and a later row both arrive
+   in order. Repeat once after clearing/rebuilding the Desktop database if that
+   is part of the final Windows upgrade scenario. Record safe test labels,
+   Desktop receive/ACK observations, and whether the Android pending indicator
+   cleared; do not require release-APK internal database access and never record
+   clip content.
 
 ## Manual IME privacy QA
 

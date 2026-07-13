@@ -330,6 +330,7 @@ def test_manual_qa_evidence_helper_is_documented_without_release_overclaim():
     runbook = _read("docs/RELEASE_RUNBOOK_V1_6_0.md")
     research = _read("docs/RESEARCH_AND_ROADMAP.md")
     handoff = _read("docs/HANDOFF.md")
+    evidence_readme = _read("docs/EVIDENCE/v1.6.0/README.md")
 
     assert script.exists()
     script_text = script.read_text(encoding="utf-8")
@@ -353,6 +354,16 @@ def test_manual_qa_evidence_helper_is_documented_without_release_overclaim():
         assert "release-owner-action-guide-v1.6.0.md" not in doc
         assert "final_draft_binding_assurance=verified_external_snapshot" in doc
         assert "app-debug-androidTest.apk" in doc
+        assert "OutboxBaseSeqTest" in doc
+        assert "separate" in doc
+        assert "aggregate" in doc
+        assert "changed between filtered test runs" in doc
+        assert "discard both" in doc
+        assert doc.count("Rename-Item -LiteralPath $connectedResults") == 2
+        assert "CursorWindow filtered instrumentation failed" in doc
+        assert "Outbox baseline filtered instrumentation failed" in doc
+        assert doc.count("did not create fresh connected-test results") == 2
+        assert doc.count("Fresh connected-test results must not be a reparse point") == 2
         assert "git status --short" in doc
         assert "does not replace signed artifact evidence" in doc
         assert "Issue #36" in doc
@@ -361,8 +372,23 @@ def test_manual_qa_evidence_helper_is_documented_without_release_overclaim():
     assert "does not run device QA" in research
     assert "does not replace signed artifact evidence" in research
     assert "tools/manual_qa_evidence.py" in handoff
+    assert "fail-closed schema v3" in handoff
+    assert "Frozen schema v2" in handoff
     assert "does not run device QA" in handoff
     assert "does not replace signed-artifact/final-release evidence" in handoff
+    assert "OutboxBaseSeqTest" in evidence_readme
+    assert "API 26/27 outbox baseline QA" in evidence_readme
+
+
+def test_release_runbook_uses_powershell_safe_secret_stdin_and_checks_failures():
+    runbook = _read("docs/RELEASE_RUNBOOK_V1_6_0.md")
+
+    assert "--env release <" not in runbook
+    assert "Get-Content -LiteralPath keystore.b64 -Raw -ErrorAction Stop |" in runbook
+    assert "Failed to set the release keystore secret" in runbook
+    assert "Failed to set the keystore password secret" in runbook
+    assert "Failed to set the key alias secret" in runbook
+    assert "Failed to set the key password secret" in runbook
 
 
 def test_release_artifact_evidence_helper_is_documented_without_release_overclaim():

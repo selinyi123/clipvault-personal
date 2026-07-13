@@ -22,8 +22,10 @@ one exact current-main commit:
 5. The final `draft=true` run produces the draft Release asset set.
 6. Downloaded bytes, manifests, attestations, APK signer identity, and SHA-256
    values are verified from that same run and draft.
-7. API 26 and API 27 execute the named non-skipped CursorWindow regression with
-   SDK, JUnit, debug app APK, and instrumentation APK evidence.
+7. API 26 and API 27 execute the named non-skipped CursorWindow regression and
+   all four `OutboxBaseSeqTest` cases with SDK, JUnit, debug app APK, and
+   instrumentation APK evidence. The schema-v3 high-water row binds distinct
+   result references and SHA-256 values.
 8. Physical Android/IME/sync and Windows QA use the exact final draft assets.
 9. Owner approval binds the target commit, draft URL, and final digest set.
 10. The existing draft is published without rebuilding, and the resulting
@@ -77,10 +79,12 @@ pack file is replaced, and a failed replacement attempts to restore every
 previous known file before returning an error.
 
 The manual template is generated directly from
-`tools/manual_qa_evidence.py`, so it uses schema v2 and the exact 18-item gate.
-Its optional compatibility mode still accepts an older schema-v2 report without
-the new binding object, but the generated Owner path always requires strict
-cross-checking against `final-draft-artifact-evidence.json`.
+`tools/manual_qa_evidence.py`, so it uses schema v3 and the exact 19-item gate.
+Its read-only compatibility mode accepts an older schema-v2 report with the
+former 18-item shape, but it can never become release-ready. Regenerate the
+schema-v3 template and execute the required re-pair outbox high-water row. The
+generated Owner path always requires strict cross-checking against
+`final-draft-artifact-evidence.json`.
 The release-artifact JSON is explicitly a coordination worksheet and is not
 accepted as validator evidence.
 

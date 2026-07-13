@@ -4,6 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import com.clipvault.app.ClipVaultApp
 import com.clipvault.app.data.AppDatabase
 import com.clipvault.app.data.ClipEntity
 import com.clipvault.app.data.MemoryPrivacy
@@ -121,6 +122,45 @@ private fun JSONObject.strictOptionalBoolean(name: String): Boolean? {
     if (!has(name)) return null
     return get(name) as? Boolean
         ?: throw org.json.JSONException("$name must be a Boolean")
+}
+
+/** Pairing cursor negotiation is security/data-loss sensitive. JSON helpers
+ * such as optLong coerce strings, booleans, and floating-point values, so only
+ * actual positive integral JSON number representations are accepted.
+ */
+internal fun strictPairingBaseSeq(value: Any?): Long? {
+    val parsed = when (value) {
+        is Int -> value.toLong()
+        is Long -> value
+        else -> return null
+    }
+    return parsed.takeIf { it > 0L }
+}
+
+/** Validated subset of a pairing response. This deliberately is not a data
+ * class so accidental logging cannot include the bearer token through a
+ * generated toString().
+ */
+internal class ValidatedPairingResponse(
+    val token: String,
+    val serverDevice: String?,
+)
+
+internal fun parsePairingResponse(
+    text: String,
+    expectedOutboxBaseSeq: Long,
+): ValidatedPairingResponse? {
+    val parsed = JSONObject(text)
+    if (strictPairingBaseSeq(parsed.opt("outbox_base_seq")) != expectedOutboxBaseSeq) {
+        return null
+    }
+    val token = (parsed.opt("token") as? String)?.takeIf { it.isNotEmpty() } ?: return null
+    val serverDevice = when (val value = parsed.opt("server_device")) {
+        null, JSONObject.NULL -> null
+        is String -> value.ifEmpty { null }
+        else -> return null
+    }
+    return ValidatedPairingResponse(token, serverDevice)
 }
 
 /** Keystore-backed bearer-token storage.
@@ -241,10 +281,16 @@ class Settings(context: Context) {
             return if (seq > 0L && reason != null) SyncPushBlockedState(seq, reason) else null
         }
     val deviceId: String
-        get() = sp.getString("device_id", null) ?: run {
-            val id = "android-" + UUID.randomUUID().toString().take(8)
-            sp.edit().putString("device_id", id).apply(); id
+        get() = pairingGate.read { readOrCreateDeviceId() }
+
+    private fun readOrCreateDeviceId(): String {
+        sp.getString("device_id", null)?.let { return it }
+        val id = "android-" + UUID.randomUUID().toString().take(8)
+        if (!sp.edit().putString("device_id", id).commit()) {
+            throw IOException("sync device identity write failed")
         }
+        return id
+    }
 
     internal fun markSyncPushBlocked(state: SyncPushBlockedState) {
         require(state.seq > 0L) { "blocked sync sequence must be positive" }
@@ -359,8 +405,8 @@ class Settings(context: Context) {
         if (!stored) throw IOException("sync server identity write failed")
     }
 
-    internal fun requestSnapshot(hostOverride: String?, auth: Boolean): SyncRequestSnapshot =
-        pairingGate.snapshot { revision, endpointRevision ->
+    internal fun requestSnapshot(hostOverride: String?, auth: Boolean): SyncRequestSnapshot {
+        val read = { revision: Long, endpointRevision: Long ->
             readRequestSnapshot(
                 hostOverride = hostOverride,
                 auth = auth,
@@ -369,6 +415,12 @@ class Settings(context: Context) {
                 pairingAttempt = null,
             )
         }
+        return if (auth) {
+            pairingGate.authenticatedSnapshot(read)
+        } else {
+            pairingGate.snapshot(read)
+        }
+    }
 
     internal fun beginPairingSnapshot(hostOverride: String?): SyncRequestSnapshot =
         pairingGate.beginPairingSnapshot { revision, endpointRevision, pairingAttempt ->
@@ -378,6 +430,8 @@ class Settings(context: Context) {
                 revision = revision,
                 endpointRevision = endpointRevision,
                 pairingAttempt = pairingAttempt,
+                pairingDeviceId = readOrCreateDeviceId(),
+                outboxBaseSeq = ClipVaultApp.db(appCtx).outbox().pairingBaseSeq(),
             )
         }
 
@@ -387,6 +441,8 @@ class Settings(context: Context) {
         revision: Long,
         endpointRevision: Long,
         pairingAttempt: Long?,
+        pairingDeviceId: String? = null,
+        outboxBaseSeq: Long? = null,
     ): SyncRequestSnapshot {
         val storedHost = normalizeSyncHostOrNull(sp.getString("host", null))
         val host = normalizeSyncHostOrNull(hostOverride ?: storedHost)
@@ -403,6 +459,8 @@ class Settings(context: Context) {
             revision = revision,
             endpointRevision = endpointRevision,
             pairingAttempt = pairingAttempt,
+            pairingDeviceId = pairingDeviceId,
+            outboxBaseSeq = outboxBaseSeq,
         )
     }
 
@@ -422,6 +480,9 @@ class Settings(context: Context) {
             currentStoreMatches = { currentEndpointMatches(expected) },
             block = block,
         )
+
+    internal fun finishPairingIfCurrent(expected: SyncRequestSnapshot): Boolean =
+        pairingGate.finishPairingIfCurrent(expected)
 
     private fun currentEndpointMatches(expected: SyncRequestSnapshot): Boolean =
         normalizeSyncHostOrNull(sp.getString("host", null)) == expected.host &&
@@ -536,7 +597,15 @@ class SyncClient private constructor(
     fun pair(code: String): Boolean {
         return try {
             val redemption = requestPairToken(code) ?: return false
-            s.replaceTokenIfCurrent(redemption.request, redemption.token, redemption.serverDevice)
+            try {
+                s.replaceTokenIfCurrent(
+                    redemption.request,
+                    redemption.token,
+                    redemption.serverDevice,
+                )
+            } finally {
+                s.finishPairingIfCurrent(redemption.request)
+            }
         } catch (e: Exception) {
             android.util.Log.w("clipvault.sync", "pair failed: ${e.javaClass.simpleName}")
             false
@@ -551,12 +620,16 @@ class SyncClient private constructor(
         return try {
             val h = normalizeSyncHostOrNull(host) ?: return false
             val redemption = SyncClient(s, h).requestPairToken(code) ?: return false
-            s.replacePairingIfCurrent(
-                redemption.request,
-                h,
-                redemption.token,
-                redemption.serverDevice,
-            )
+            try {
+                s.replacePairingIfCurrent(
+                    redemption.request,
+                    h,
+                    redemption.token,
+                    redemption.serverDevice,
+                )
+            } finally {
+                s.finishPairingIfCurrent(redemption.request)
+            }
         } catch (e: Exception) {
             android.util.Log.w("clipvault.sync", "pair failed: ${e.javaClass.simpleName}")
             false
@@ -564,16 +637,31 @@ class SyncClient private constructor(
     }
 
     private fun requestPairToken(code: String): PairingRedemption? {
-        val body = JSONObject().put("code", code).put("device_id", s.deviceId)
-            .put("device_name", android.os.Build.MODEL ?: "Android").toString()
         val pairingSnapshot = s.beginPairingSnapshot(hostOverride)
-        val response = req("POST", "/pair", body, auth = false, requestOverride = pairingSnapshot)
-        if (response.code != 200) return null
-        val parsed = JSONObject(response.text)
-        val token = parsed.optString("token", "")
-        val serverDevice = parsed.optString("server_device", "").ifEmpty { null }
-        return token.takeIf { it.isNotEmpty() }
-            ?.let { PairingRedemption(it, serverDevice, response.request) }
+        var handedOff = false
+        try {
+            val deviceId = pairingSnapshot.pairingDeviceId ?: return null
+            val outboxBaseSeq = pairingSnapshot.outboxBaseSeq ?: return null
+            val body = JSONObject()
+                .put("code", code)
+                .put("device_id", deviceId)
+                .put("device_name", android.os.Build.MODEL ?: "Android")
+                .put("outbox_base_seq", outboxBaseSeq)
+                .toString()
+            val response = req(
+                "POST",
+                "/pair",
+                body,
+                auth = false,
+                requestOverride = pairingSnapshot,
+            )
+            if (response.code != 200) return null
+            val parsed = parsePairingResponse(response.text, outboxBaseSeq) ?: return null
+            handedOff = true
+            return PairingRedemption(parsed.token, parsed.serverDevice, response.request)
+        } finally {
+            if (!handedOff) s.finishPairingIfCurrent(pairingSnapshot)
+        }
     }
 
     fun push(events: JSONArray): Long {

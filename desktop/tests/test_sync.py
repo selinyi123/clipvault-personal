@@ -94,6 +94,183 @@ def test_h1_pairing(api):
     assert api.pair({"code": code, "device_id": PEER})[0] == 403  # single use
 
 
+def test_h1_pair_outbox_base_starts_at_announced_sequence(api):
+    code = api.pairing.mint_code()
+    status, body = api.pair({
+        "code": code,
+        "device_id": PEER,
+        "device_name": "Pixel",
+        "outbox_base_seq": 101,
+    })
+
+    assert status == 200
+    assert body["outbox_base_seq"] == 101
+    assert api.peers.get(PEER)["peer_cursor"] == 100
+
+    push_status, push_body = api.sync_push(
+        body["token"],
+        {"events": [_clip_new_event(101, "first retained Android event")]},
+    )
+    assert push_status == 200
+    assert push_body["acked_upto"] == 101
+    assert api.peers.get(PEER)["peer_cursor"] == 101
+
+
+def test_h1_pair_outbox_base_survives_unpair_and_repair(api):
+    first_code = api.pairing.mint_code()
+    first_status, _ = api.pair({
+        "code": first_code,
+        "device_id": PEER,
+        "outbox_base_seq": 101,
+    })
+    assert first_status == 200
+    assert api.peers.get(PEER)["peer_cursor"] == 100
+    assert api.unpair(PEER) == (200, {"device_id": PEER, "unpaired": True})
+
+    second_code = api.pairing.mint_code()
+    second_status, second_body = api.pair({
+        "code": second_code,
+        "device_id": PEER,
+        "outbox_base_seq": 205,
+    })
+    assert second_status == 200
+    assert second_body["outbox_base_seq"] == 205
+    assert api.peers.get(PEER)["peer_cursor"] == 204
+
+
+def test_h1_pair_lower_outbox_base_replays_idempotently_and_advances(
+    api, conn, tmp_path, monkeypatch
+):
+    dispatched_ids = []
+    dispatch = api.service.dispatch_obsidian_work
+
+    def track_dispatch(clip):
+        dispatched_ids.append(clip.id)
+        return dispatch(clip)
+
+    monkeypatch.setattr(api.service, "dispatch_obsidian_work", track_dispatch)
+    first_code = api.pairing.mint_code()
+    first_status, first_body = api.pair({
+        "code": first_code,
+        "device_id": PEER,
+        "outbox_base_seq": 5,
+    })
+    assert first_status == 200
+    replayed = [
+        _clip_new_event(5, "re-pair replay A"),
+        _clip_new_event(6, "re-pair replay B"),
+    ]
+    first_push = api.sync_push(first_body["token"], {"events": replayed})
+    assert first_push == (200, {"acked_upto": 6})
+    assert api.peers.get(PEER)["peer_cursor"] == 6
+    assert conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM backup_queue").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM sync_outbox").fetchone()[0] == 0
+    assert len(list((tmp_path / "vault").rglob("*.md"))) == 2
+    assert dispatched_ids == [replayed[0]["data"]["id"], replayed[1]["data"]["id"]]
+    dispatched_ids.clear()
+
+    second_code = api.pairing.mint_code()
+    second_status, second_body = api.pair({
+        "code": second_code,
+        "device_id": PEER,
+        "outbox_base_seq": 5,
+    })
+    assert second_status == 200
+    assert second_body["outbox_base_seq"] == 5
+    assert api.peers.get(PEER)["peer_cursor"] == 4
+
+    second_push = api.sync_push(
+        second_body["token"],
+        {"events": [*replayed, _clip_new_event(7, "re-pair new C")]},
+    )
+    assert second_push == (200, {"acked_upto": 7})
+    assert api.peers.get(PEER)["peer_cursor"] == 7
+    assert conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0] == 3
+    assert conn.execute("SELECT COUNT(*) FROM backup_queue").fetchone()[0] == 3
+    assert conn.execute("SELECT COUNT(*) FROM sync_outbox").fetchone()[0] == 0
+    assert len(list((tmp_path / "vault").rglob("*.md"))) == 3
+    assert dispatched_ids == ["01CLIP00000000000000000007"]
+
+
+def test_h1_pair_accepts_maximum_sqlite_outbox_base(api):
+    max_base = 9_223_372_036_854_775_807
+    code = api.pairing.mint_code()
+
+    status, body = api.pair({
+        "code": code,
+        "device_id": PEER,
+        "outbox_base_seq": max_base,
+    })
+
+    assert status == 200
+    assert body["outbox_base_seq"] == max_base
+    assert api.peers.get(PEER)["peer_cursor"] == max_base - 1
+
+
+def test_h1_pair_without_outbox_base_preserves_legacy_cursor_behavior(api):
+    first_code = api.pairing.mint_code()
+    first_status, _ = api.pair({
+        "code": first_code,
+        "device_id": PEER,
+        "outbox_base_seq": 101,
+    })
+    assert first_status == 200
+    api.peers.set_peer_cursor(PEER, 150)
+
+    legacy_code = api.pairing.mint_code()
+    legacy_status, legacy_body = api.pair({
+        "code": legacy_code,
+        "device_id": PEER,
+        "device_name": "Legacy Android",
+    })
+    assert legacy_status == 200
+    assert "outbox_base_seq" not in legacy_body
+    assert api.peers.get(PEER)["peer_cursor"] == 150
+
+
+@pytest.mark.parametrize(
+    "invalid_cursor",
+    [True, False, 1.0, "0", -1, 9_223_372_036_854_775_807],
+)
+def test_h1_pair_repo_rejects_invalid_negotiated_cursor(api, invalid_cursor):
+    with pytest.raises(ValueError, match="pairing peer_cursor"):
+        api.peers.upsert_pair(
+            PEER,
+            "Pixel",
+            "token-hash",
+            "2026-07-13T00:00:00Z",
+            peer_cursor=invalid_cursor,
+        )
+
+    assert api.peers.get(PEER) is None
+
+
+@pytest.mark.parametrize(
+    "invalid_base",
+    [None, True, False, 1.0, "1", 0, -1, 9_223_372_036_854_775_808],
+)
+def test_h1_pair_rejects_bad_outbox_base_without_redeeming_code(api, invalid_base):
+    code = api.pairing.mint_code()
+
+    status, body = api.pair({
+        "code": code,
+        "device_id": PEER,
+        "outbox_base_seq": invalid_base,
+    })
+
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+    corrected_status, corrected_body = api.pair({
+        "code": code,
+        "device_id": PEER,
+        "outbox_base_seq": 1,
+    })
+    assert corrected_status == 200
+    assert corrected_body["outbox_base_seq"] == 1
+    assert api.peers.get(PEER)["peer_cursor"] == 0
+
+
 def test_h1_pair_rejects_unsafe_device_id(api):
     code = api.pairing.mint_code()
     for device_id in (
