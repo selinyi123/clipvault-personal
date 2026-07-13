@@ -6,6 +6,7 @@ logic is unit-testable without a real clipboard.
 """
 
 import ctypes
+import logging
 import threading
 import time
 from ctypes import wintypes
@@ -43,6 +44,14 @@ _kernel32.QueryFullProcessImageNameW.argtypes = [
 _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
 _registered_formats: dict[str, int] = {}
+log = logging.getLogger("clipvault.watcher")
+_MAX_DISPATCH_RETRY_DELAY_S = 30.0
+
+
+def _dispatch_retry_delay(interval_ms: int, failures: int) -> float:
+    base = max(0.001, interval_ms / 1000.0)
+    exponent = max(0, min(int(failures) - 1, 10))
+    return min(_MAX_DISPATCH_RETRY_DELAY_S, base * (2 ** exponent))
 
 
 def get_clipboard_seq() -> int:
@@ -170,12 +179,14 @@ class PollingWatcher:
         get_text: Callable[[], str | None] = get_clipboard_text,
         get_app: Callable[[], str | None] = get_foreground_app,
         interval_ms: int = 500,
+        on_error: Callable[[str | None, int], None] | None = None,
     ):
         self._on_text = on_text
         self._get_seq = get_seq
         self._get_text = get_text
         self._get_app = get_app
         self.interval_ms = interval_ms
+        self._on_error = on_error
         self._last_seq: int | None = None
 
     def tick(self) -> bool:
@@ -186,13 +197,34 @@ class PollingWatcher:
             return False
         if seq == self._last_seq:
             return False
-        self._last_seq = seq
         text = self._get_text()
         if not text:
+            # Non-text, producer-excluded, or repeatedly unreadable clipboard
+            # state is intentionally skipped for this sequence.
+            self._last_seq = seq
             return False
         self._on_text(text, self._get_app())
+        # A dispatch failure keeps the previous sequence so the loop can retry.
+        # Ingest hash dedup makes an after-commit retry idempotent.
+        self._last_seq = seq
         return True
 
     def run(self, stop_event: threading.Event) -> None:
-        while not stop_event.wait(self.interval_ms / 1000):
-            self.tick()
+        failures = 0
+        delay_s = self.interval_ms / 1000
+        while not stop_event.wait(delay_s):
+            try:
+                self.tick()
+            except Exception as exc:
+                failures += 1
+                # Never include the exception message: an adapter error could
+                # contain clipboard text or a private path.
+                log.error("clipboard dispatch failed err=%s", exc.__class__.__name__)
+                if self._on_error is not None:
+                    self._on_error(exc.__class__.__name__, failures)
+                delay_s = _dispatch_retry_delay(self.interval_ms, failures)
+            else:
+                if failures and self._on_error is not None:
+                    self._on_error(None, 0)
+                failures = 0
+                delay_s = self.interval_ms / 1000

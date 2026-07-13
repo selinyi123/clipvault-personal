@@ -9,45 +9,18 @@ import logging
 import logging.handlers
 import signal
 import sys
-import threading
-import time
 from pathlib import Path
 
 from clipvault import config as config_mod
 from clipvault import launcher
-from clipvault.api import server as api_server
-from clipvault.backup.github_backup import BackupWorker
 from clipvault.instance_lock import AlreadyRunningError, InstanceLock
-from clipvault.runtime.obsidian_worker import ObsidianWorker
+from clipvault.runtime.app import ClipVaultRuntime, RuntimeStopRequested
 from clipvault.service import ClipVaultService
-from clipvault.store.outbox_repo import OutboxRepo
-from clipvault.store.peers_repo import PeersRepo
 from clipvault.store import db
 from clipvault.watcher.win_clipboard import (
-    PollingWatcher,
     get_clipboard_text,
     get_foreground_app,
 )
-
-_SWEEP_INTERVAL_S = 60
-
-
-def _handle_clipboard_text_with_fresh_connection(
-    cfg: config_mod.Config,
-    text: str,
-    source_app: str | None,
-    obsidian_notify=None,
-):
-    """Handle a watcher event using a connection owned by the watcher thread."""
-    conn = db.connect(cfg.db_path)
-    try:
-        return ClipVaultService(
-            conn,
-            cfg,
-            obsidian_notify=obsidian_notify,
-        ).handle_clipboard_text(text, source_app)
-    finally:
-        conn.close()
 
 
 def setup_logging(cfg: config_mod.Config) -> None:
@@ -112,120 +85,50 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         with InstanceLock():
-            conn = db.connect(cfg.db_path)
-            try:
-                db.migrate(conn)
-            finally:
-                conn.close()
-
-            stop = threading.Event()
-            obsidian_worker = ObsidianWorker(cfg, interval_s=_SWEEP_INTERVAL_S)
+            runtime = ClipVaultRuntime(cfg)
 
             def request_stop(*_args) -> None:
-                stop.set()
-                obsidian_worker.notify()
+                runtime.request_stop()
 
             signal.signal(signal.SIGINT, request_stop)
             signal.signal(signal.SIGTERM, request_stop)
 
-            threads: list[threading.Thread] = []
+            runtime_error: str | None = None
+            try:
+                runtime.start()
+                log.info(
+                    "clipvault started device=%s poll=%dms panel=http://127.0.0.1:%d/",
+                    cfg.device_name,
+                    cfg.poll_ms,
+                    cfg.port,
+                )
 
-            def maintenance_loop() -> None:
-                sweep_conn = db.connect(cfg.db_path)
-                peers = PeersRepo(sweep_conn)
-                outbox = OutboxRepo(sweep_conn)
-                try:
-                    while not stop.wait(_SWEEP_INTERVAL_S):
-                        try:
-                        # Keep the sync outbox bounded: drop events every peer has acked.
-                            min_acked = peers.min_my_acked()
-                            if min_acked:
-                                pruned = outbox.prune_acked(min_acked)
-                                if pruned:
-                                    log.info("outbox pruned %d acked events", pruned)
-                        except Exception:  # maintenance must never kill the service
-                            log.exception("maintenance sweep failed")
-                finally:
-                    sweep_conn.close()
-
-            threads.append(threading.Thread(
-                target=obsidian_worker.run,
-                args=(stop,),
-                daemon=True,
-                name="obsidian-worker",
-            ))
-            threads.append(threading.Thread(
-                target=maintenance_loop,
-                daemon=True,
-                name="maintenance",
-            ))
-
-            if cfg.backup_enabled and cfg.backup_repo_path:
-                def backup_loop() -> None:
-                    backup_conn = db.connect(cfg.db_path)
-                    try:
-                        worker = BackupWorker(backup_conn, cfg.backup_repo_path)
-                        interval_s = max(60, cfg.backup_interval_minutes * 60)
-                        while not stop.wait(interval_s):
-                            try:
-                                stats = worker.run_once(monotonic=time.monotonic())
-                                if stats["written"] or stats["dropped"]:
-                                    log.info("backup: wrote=%d dropped=%d pushed=%s",
-                                             stats["written"], stats["dropped"], stats["pushed"])
-                            except Exception:  # worker must never kill the service
-                                log.exception("backup worker failed")
-                    finally:
-                        backup_conn.close()
-
-                threads.append(threading.Thread(
-                    target=backup_loop,
-                    daemon=True,
-                    name="backup-worker",
-                ))
-                log.info("backup worker enabled repo=%s interval=%dmin",
-                         cfg.backup_repo_path, cfg.backup_interval_minutes)
-
-            threads.append(threading.Thread(
-                target=api_server.serve, args=(cfg, stop),
-                kwargs={"obsidian_notify": obsidian_worker.notify},
-                daemon=True, name="api",
-            ))
-
-            watcher = PollingWatcher(
-                lambda text, app: _handle_clipboard_text_with_fresh_connection(
-                    cfg, text, app, obsidian_worker.notify
-                ),
-                interval_ms=cfg.poll_ms,
-            )
-            threads.append(threading.Thread(
-                target=watcher.run,
-                args=(stop,),
-                daemon=True,
-                name="watcher",
-            ))
-            for thread in threads:
-                thread.start()
-            log.info("clipvault started device=%s poll=%dms panel=http://127.0.0.1:%d/",
-                     cfg.device_name, cfg.poll_ms, cfg.port)
-
-            if args.headless:
-                stop.wait()
-            else:
-                if not args.no_open:
-                    launcher.open_panel(cfg.port)
-                # Tray is the main-thread blocker; quitting it stops the service.
-                if launcher.run_tray(cfg.port, config_path.parent, request_stop) is False:
-                    stop.wait()  # no pystray (e.g. dev without deps) -> just run
-            request_stop()
-            shutdown_deadline = time.monotonic() + 5.0
-            for thread in threads:
-                thread.join(timeout=max(0.0, shutdown_deadline - time.monotonic()))
-            alive = [thread.name for thread in threads if thread.is_alive()]
+                if args.headless:
+                    runtime.wait()
+                else:
+                    if not args.no_open:
+                        launcher.open_panel(cfg.port)
+                    # Tray is the main-thread blocker; quitting requests a
+                    # coordinated runtime shutdown.
+                    if launcher.run_tray(
+                        cfg.port,
+                        config_path.parent,
+                        runtime.request_stop,
+                        runtime.stop_event,
+                    ) is False:
+                        runtime.wait()  # no pystray in minimal dev environments
+            except RuntimeStopRequested:
+                pass
+            except Exception as exc:
+                runtime_error = exc.__class__.__name__
+                log.error("clipvault runtime failed err=%s", runtime_error)
+            finally:
+                alive = runtime.close()
             if alive:
                 log.warning("shutdown incomplete workers=%s", ",".join(alive))
             else:
                 log.info("clipvault stopped")
-            return 0
+            return 1 if runtime_error or runtime.terminal_errors() or alive else 0
     except AlreadyRunningError:
         # Second launch: surface the already-running instance instead of erroring.
         launcher.open_panel(cfg.port)

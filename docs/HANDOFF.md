@@ -87,6 +87,29 @@
 - This slice does not change schema, HTTP payloads, Secret Guard policy, version
   metadata, Issue #36 state, or release authority.
 
+## Current development note - 2026-07-13 / R000 runtime composition root
+
+- This development branch is based on the merged dedicated-worker PR #99 at
+  `66154a01a7c717e3948540728a6f5de94487514e`; that merge does not itself contain
+  the runtime composition-root changes below.
+- The proposed `runtime/app.py` owns service-mode thread creation, per-thread SQLite
+  connection ownership, API readiness, partial-start cleanup, coordinated stop,
+  a shared join deadline, and content-free terminal health. `main.py` remains the
+  compatibility CLI/composition shell for config, single instance, signals, and
+  tray behavior.
+- API bind is a startup gate. The clipboard watcher starts last, so a failed or
+  timed-out API startup cannot consume a clipboard sequence. A terminal worker
+  error or unexpected normal return stores only worker name/error class, wakes
+  shutdown, stops the tray, and makes the CLI return nonzero.
+- Watcher dispatch failures no longer consume the clipboard sequence. The same
+  sequence is retried in-process with capped exponential backoff, and ingest
+  hash dedup protects after-commit retries. Runtime health exposes only the
+  recoverable exception class and clears it after recovery; logs never retain
+  the exception message or clipboard content.
+- Existing adapter package paths, `ClipVaultService`, CLI flags, config, schema,
+  REST/sync contracts, IME/privacy boundaries, and release authority remain
+  unchanged. Application-command extraction is intentionally a separate PR.
+
 ## Current development note - 2026-07-04 / v1.6 release gate and v1.7 stability gates in progress
 
 - `docs/V1_7_FIELD_TEST_PACKAGES.md` now defines the v1.7 field-test package
