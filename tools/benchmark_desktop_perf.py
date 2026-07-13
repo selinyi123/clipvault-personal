@@ -50,6 +50,9 @@ SYNC_EVENT_COUNT = 100
 _SEED_BATCH_SIZE = 1_000
 _MIN_ROWS = 10
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+_SEED_RECENCY_DAYS = 28
+_OLD_SKEW_START_DAY = 14
+_OLD_SKEW_TOKEN = "old-skew-token"
 
 # These intentionally generous ceilings are for the 10k hosted-CI smoke test.
 # They catch order-of-magnitude regressions while tolerating shared-runner
@@ -58,6 +61,7 @@ CI_REGRESSION_CEILINGS_MS = {
     "api_search_cjk_1_char": 250.0,
     "api_search_cjk_2_char": 250.0,
     "api_search_cjk_3_char_common": 300.0,
+    "api_search_trigram_old_skew": 300.0,
     "api_search_trigram_medium": 300.0,
     "api_search_trigram_rare": 300.0,
     "api_search_trigram_none": 300.0,
@@ -84,6 +88,10 @@ def _percentile(samples: list[float], fraction: float) -> float:
     ordered = sorted(samples)
     index = max(0, math.ceil(fraction * len(ordered)) - 1)
     return ordered[index]
+
+
+def _is_old_skew_seed(index: int) -> bool:
+    return index % _SEED_RECENCY_DAYS >= _OLD_SKEW_START_DAY
 
 
 def _summary(samples: list[float]) -> dict:
@@ -149,7 +157,9 @@ def _measure(operation: Callable[[], None], iterations: int) -> dict:
 def _clip_seed_row(index: int, *, seen: str, created: str) -> tuple[tuple, tuple]:
     clip_id = f"P{index:025d}"
     medium_token = " medium-fallback-token" if index % 250 == 0 else ""
+    old_skew_token = f" {_OLD_SKEW_TOKEN}" if _is_old_skew_seed(index) else ""
     content = f"记录 {index:06d} 服务器部署文档 alpha beta{medium_token}"
+    content += old_skew_token
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
     # New clips start with times_seen=1 in production. Keep the suggestion
     # population deliberately sparse so a recency-only index cannot hide an
@@ -200,9 +210,11 @@ def _seed_dataset(conn: sqlite3.Connection, rows: int) -> None:
     reference_now = datetime.now(timezone.utc).replace(microsecond=0)
     seen_values = [
         (reference_now - timedelta(days=day)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        for day in range(28)
+        for day in range(_SEED_RECENCY_DAYS)
     ]
-    created = (reference_now - timedelta(days=28)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    created = (reference_now - timedelta(days=_SEED_RECENCY_DAYS)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
     last_search_id = int(
         conn.execute("SELECT COALESCE(MAX(search_id), 0) FROM clip_search_map")
         .fetchone()[0]
@@ -381,6 +393,13 @@ def run_benchmark(
         search_1 = lambda: _api_search(api, "部", common_count)
         search_2 = lambda: _api_search(api, "部署", common_count)
         search_3_common = lambda: _api_search(api, "服务器", common_count)
+        old_skew_count = min(
+            50,
+            sum(1 for index in range(rows) if _is_old_skew_seed(index)),
+        )
+        search_old_skew = lambda: _api_search(
+            api, _OLD_SKEW_TOKEN, old_skew_count
+        )
         medium_count = min(50, ((rows - 1) // 250) + 1)
         search_medium = lambda: _api_search(
             api, "medium-fallback-token", medium_count
@@ -391,6 +410,7 @@ def run_benchmark(
             search_1,
             search_2,
             search_3_common,
+            search_old_skew,
             search_medium,
             search_rare,
             search_none,
@@ -402,6 +422,9 @@ def run_benchmark(
             "api_search_cjk_2_char": _measure(search_2, iterations),
             "api_search_cjk_3_char_common": _measure(
                 search_3_common, iterations
+            ),
+            "api_search_trigram_old_skew": _measure(
+                search_old_skew, iterations
             ),
             "api_search_trigram_medium": _measure(
                 search_medium, iterations

@@ -48,6 +48,10 @@ real recent-candidate path instead of becoming an empty fast path as a fixed
 fixture date ages. Every 250th clip also contains a distributed medium-density
 trigram token. At 100k rows this produces 400 matches and therefore measures
 the exact map fallback between the common-probe and rare/no-match extremes.
+Half of each 28-day seed cycle also contains `old-skew-token`, restricted to
+days 14 through 27. At 10k rows that creates 4,998 historical matches while
+the newest 256 public rows contain none, exercising the common-term path whose
+matches are concentrated outside the bounded recent candidate window.
 
 Each repeated operation gets one untimed warm-up. Seven measured iterations
 produce median, nearest-rank p95, and maximum values. New ingest uses one
@@ -63,6 +67,7 @@ ingest p95.
 | one-character CJK API `LIKE` fallback | 250ms median |
 | two-character CJK API `LIKE` fallback | 250ms median |
 | common three-character API trigram query | 300ms median |
+| historical-skew common trigram query | 300ms median |
 | medium-density trigram query | 300ms median |
 | rare trigram API query | 300ms median |
 | no-match trigram API query | 300ms median |
@@ -125,13 +130,18 @@ reviewable PR with before/after output from this tool.
 - Schema 9 gives public FTS rows stable integer IDs. Terms with more than 4096
   matches can use a bounded 256-candidate exact probe; medium/rare/no-match
   terms and any probe that cannot fill the requested page use the exact
-  FTS-first fallback. Both paths
-  retain explicit Secret Guard filters and one read snapshot. Type/cursor-
+  FTS-first fallback. A bounded literal-LIKE hint checks only the first 4,096
+  characters of each of at most 256 recent candidates, and skips the 256
+  per-candidate FTS checks when that window clearly cannot fill a page. LIKE
+  never supplies result rows, so prefix or Unicode false negatives safely use
+  the exact fallback and FTS search semantics remain unchanged. All
+  paths retain explicit Secret Guard filters and one read snapshot. Type/cursor-
   filtered and oversized repo requests skip the probe so filtering cannot hide
   an unbounded pre-sort behind its candidate limit. A high-frequency term whose
-  matches are concentrated in much older records can fail to fill the recent
-  probe and then pay the exact fallback sort; this adversarial distribution is
-  a known manual-benchmark case, not hidden by the hosted-CI ceiling.
+  matches are concentrated in much older records still pays the exact fallback
+  sort. `api_search_trigram_old_skew` makes that adversarial distribution visible
+  in both the 10k smoke and 100k manual report; its hosted-CI ceiling is not the
+  architecture reference budget.
 - Suggestion output is bounded, and schema v8 uses a partial index containing
   only eligible, non-secret, non-deleted clips in deterministic recency order.
   Memory ordering has no matching composite index; legacy-secret defence can
@@ -139,7 +149,9 @@ reviewable PR with before/after output from this tool.
 - Public sync pull permits 100 events but deliberately materialises at most eight
   outbox rows per internal page. The 100-event metric therefore exercises the
   complete multi-page loop, but only with small events.
-- Search/list results materialise full clip content. Max-size clips and the
+- Search/list results materialise full clip content. The path hint inspects at
+  most 1,048,576 characters across its 256 fixed-size prefixes, but SQLite may
+  still touch pages containing larger stored values. Max-size clips and the
   worst-case escaped 1 MiB sync payload need separate manual memory/IO profiling;
   the lightweight CI dataset intentionally does not allocate them.
 
