@@ -415,16 +415,29 @@ class Api:
                 }}
         if self.pairing.is_rate_limited():
             return 429, {"error": {"code": "rate_limited", "message": "too many attempts, try again shortly"}}
-        token = self.pairing.redeem(code)
+        def persist_token(token: str) -> None:
+            # A pairing response must represent a durable peer row. A nested
+            # SAVEPOINT would let an outer rollback consume the one-time code
+            # after this callback returns, so fail closed on a dirty connection.
+            if self.conn.in_transaction:
+                raise RuntimeError("pairing requires an idle database connection")
+            with unit_of_work(self.conn):
+                self.peers.upsert_pair(
+                    device_id,
+                    device_name,
+                    hash_token(token),
+                    _now_iso(),
+                    peer_cursor=(
+                        outbox_base_seq - 1
+                        if outbox_base_seq is not None
+                        else None
+                    ),
+                    commit=False,
+                )
+
+        token = self.pairing.redeem(code, persist_token=persist_token)
         if token is None:
             return 403, {"error": {"code": "bad_code", "message": "invalid or expired code"}}
-        self.peers.upsert_pair(
-            device_id,
-            device_name,
-            hash_token(token),
-            _now_iso(),
-            peer_cursor=(outbox_base_seq - 1 if outbox_base_seq is not None else None),
-        )
         response = {"token": token, "server_device": self.service.config.device_id}
         if outbox_base_seq is not None:
             response["outbox_base_seq"] = outbox_base_seq
