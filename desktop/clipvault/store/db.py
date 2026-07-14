@@ -2,8 +2,16 @@
 
 import re
 import sqlite3
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
+
+from clipvault.store.migration_lock import (
+    DatabaseMigrationLock,
+    DatabaseMigrationLockCleanupError,
+    DatabaseMigrationLockTimeout,
+    DatabaseMigrationLockUnavailable,
+)
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 LATEST_SCHEMA_VERSION = 9
@@ -32,6 +40,29 @@ class MigrationConnectionError(DatabaseStartupError):
     """Migration was requested on a connection with shadow schemas."""
 
 
+class MigrationLockError(DatabaseStartupError):
+    """Migration ownership could not be established or released safely."""
+
+
+class MigrationLockTimeout(MigrationLockError):
+    """Another process retained migration ownership past the deadline."""
+
+
+class MigrationLockCleanupError(MigrationLockError):
+    """Migration lock cleanup could not be proven complete."""
+
+
+class _ClipVaultConnection(sqlite3.Connection):
+    """SQLite connection retaining the lexical path used to open ``main``.
+
+    SQLite may canonicalize ``PRAGMA database_list`` on some VFSes. Keeping
+    the original absolute access path lets the migration lock detect a symlink
+    or symlinked parent that is retargeted while a process waits for ownership.
+    """
+
+    _clipvault_main_access_path: Path | None
+
+
 @dataclass(frozen=True)
 class _Migration:
     number: int
@@ -40,10 +71,15 @@ class _Migration:
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
     p = str(db_path)
-    if p != ":memory:":
-        Path(p).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(p)
+    access_path = None if p in {"", ":memory:"} else Path(p).absolute()
+    if access_path is not None:
+        access_path.parent.mkdir(parents=True, exist_ok=True)
+    connect_target = p if access_path is None else str(access_path)
+    conn = None
     try:
+        conn = sqlite3.connect(connect_target, factory=_ClipVaultConnection)
+        if isinstance(conn, _ClipVaultConnection):
+            conn._clipvault_main_access_path = access_path
         conn.row_factory = sqlite3.Row
         # Install the wait policy before the first PRAGMA that may need a write
         # lock. Concurrent startup must not fail immediately while another
@@ -66,11 +102,13 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
         if foreign_keys is None or foreign_keys[0] != 1:
             raise DatabaseStartupError("database foreign keys are unavailable")
     except BaseException:
-        try:
-            conn.close()
-        except BaseException:
-            pass
+        if conn is not None:
+            try:
+                conn.close()
+            except BaseException:
+                pass
         raise
+    assert conn is not None
     return conn
 
 
@@ -192,6 +230,7 @@ def migrate(
     migrations_dir: Path = MIGRATIONS_DIR,
     *,
     expected_latest: int = LATEST_SCHEMA_VERSION,
+    lock_timeout_s: float = 30.0,
 ) -> int:
     if conn.in_transaction:
         # sqlite3.executescript() implicitly commits a pending transaction.
@@ -202,29 +241,69 @@ def migrate(
         )
     _assert_clean_migration_connection(conn)
     manifest = _migration_manifest(migrations_dir, expected_latest)
+    target = None
+    target_error = None
+    try:
+        # Capture the no-side-effect path/identity snapshot before the first
+        # schema read.  If the database is already current, preserve the old
+        # behavior and do not require or create a migration lock artifact.
+        target = DatabaseMigrationLock.target_for_connection(conn)
+    except DatabaseMigrationLockUnavailable as exc:
+        target_error = exc
     current = schema_version(conn)
     latest = manifest[-1].number
     if current > latest:
         raise SchemaCompatibilityError(
             "database schema is newer than this application"
         )
-    for migration in manifest:
-        number = migration.number
-        if number <= current:
-            continue
-        try:
-            conn.executescript(
-                "BEGIN;\n"
-                f"{migration.sql}\n"
-                "DELETE FROM main.schema_meta;\n"
-                f"INSERT INTO main.schema_meta(version) VALUES ({number});\n"
-                "COMMIT;"
+    if current == latest:
+        return current
+
+    try:
+        if target_error is not None:
+            raise target_error
+        lock = (
+            None
+            if target is None
+            else DatabaseMigrationLock.for_target(
+                target,
+                timeout_s=lock_timeout_s,
             )
-        except BaseException:
-            try:
-                conn.rollback()
-            except BaseException:
-                pass
-            raise
-        current = number
-    return current
+        )
+        guard = lock if lock is not None else nullcontext()
+        with guard:
+            # A competing process may have completed one or all migrations
+            # while this process waited. Re-read only after ownership is held.
+            current = schema_version(conn)
+            if current > latest:
+                raise SchemaCompatibilityError(
+                    "database schema is newer than this application"
+                )
+            for migration in manifest:
+                number = migration.number
+                if number <= current:
+                    continue
+                try:
+                    conn.executescript(
+                        "BEGIN;\n"
+                        f"{migration.sql}\n"
+                        "DELETE FROM main.schema_meta;\n"
+                        f"INSERT INTO main.schema_meta(version) VALUES ({number});\n"
+                        "COMMIT;"
+                    )
+                except BaseException:
+                    try:
+                        conn.rollback()
+                    except BaseException:
+                        pass
+                    raise
+                current = number
+            return current
+    except DatabaseMigrationLockTimeout:
+        raise MigrationLockTimeout("database migration lock timed out") from None
+    except DatabaseMigrationLockUnavailable:
+        raise MigrationLockError("database migration lock is unavailable") from None
+    except DatabaseMigrationLockCleanupError:
+        raise MigrationLockCleanupError(
+            "database migration lock cleanup failed"
+        ) from None

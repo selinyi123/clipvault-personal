@@ -61,7 +61,7 @@ def _write_migration(path, name: str) -> None:
 
 def test_connect_installs_busy_timeout_before_wal(monkeypatch):
     tracked = _TrackedConnection()
-    monkeypatch.setattr(db.sqlite3, "connect", lambda _path: tracked)
+    monkeypatch.setattr(db.sqlite3, "connect", lambda _path, **_kwargs: tracked)
 
     assert db.connect(":memory:") is tracked
     assert tracked.calls == [
@@ -77,7 +77,7 @@ def test_connect_installs_busy_timeout_before_wal(monkeypatch):
 @pytest.mark.parametrize("fail_at", [1, 2, 3, 4])
 def test_connect_closes_connection_when_a_pragma_fails(monkeypatch, fail_at):
     tracked = _TrackedConnection(fail_at=fail_at)
-    monkeypatch.setattr(db.sqlite3, "connect", lambda _path: tracked)
+    monkeypatch.setattr(db.sqlite3, "connect", lambda _path, **_kwargs: tracked)
 
     with pytest.raises(sqlite3.OperationalError, match="pragma failure"):
         db.connect(":memory:")
@@ -95,7 +95,7 @@ def test_connect_closes_connection_when_a_pragma_fails(monkeypatch, fail_at):
 )
 def test_connect_rejects_unapplied_pragma_settings(monkeypatch, overrides):
     tracked = _TrackedConnection(**overrides)
-    monkeypatch.setattr(db.sqlite3, "connect", lambda _path: tracked)
+    monkeypatch.setattr(db.sqlite3, "connect", lambda _path, **_kwargs: tracked)
 
     with pytest.raises(db.DatabaseStartupError):
         db.connect(":memory:")
@@ -105,7 +105,7 @@ def test_connect_rejects_unapplied_pragma_settings(monkeypatch, overrides):
 
 def test_connect_cleanup_error_does_not_hide_setup_error(monkeypatch):
     tracked = _TrackedConnection(fail_at=1, close_error=True)
-    monkeypatch.setattr(db.sqlite3, "connect", lambda _path: tracked)
+    monkeypatch.setattr(db.sqlite3, "connect", lambda _path, **_kwargs: tracked)
 
     with pytest.raises(sqlite3.OperationalError, match="pragma failure"):
         db.connect(":memory:")
