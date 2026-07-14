@@ -16,7 +16,37 @@
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
-| Last updated | 2026-07-13 |
+| Last updated | 2026-07-14 |
+
+## Current development note - 2026-07-14 / R000 SQLite schema compatibility
+
+- Desktop startup now validates the complete packaged migration manifest before
+  executing any SQL. Migration files must start at `0001`, remain contiguous,
+  use one unambiguous version each, end at the code-owned schema version, and
+  follow the established filename shape; a missing tail, duplicate, gap,
+  non-regular file, or malformed name fails closed.
+- `schema_meta` is no longer treated as a best-effort integer. An existing
+  database must contain exactly one positive SQLite INTEGER version row. A
+  non-empty database without metadata, malformed metadata, or a schema version
+  newer than this binary is rejected before any migration or application write.
+  This prevents an older ClipVault build from modifying data owned by a newer
+  schema. Metadata reads and writes are explicitly bound to `main`, so a temp or
+  attached object cannot shadow the durable version. Because already-published
+  migration SQL contains historical unqualified table references, migration is
+  permitted only on a dedicated connection with no temp objects or attached
+  databases; otherwise it fails before executing a script.
+- Connection initialization installs `busy_timeout` before requesting WAL mode
+  and verifies the applied timeout, journal mode, and foreign-key enforcement;
+  it closes the new connection if any setup step fails. Migration also rejects
+  an active caller transaction because Python `executescript()` would otherwise
+  commit unrelated business writes. These checks narrow concurrent startup races
+  and prevent a failed initialization from returning a usable handle.
+- This slice deliberately adds no migration, automatic repair, restore, rename,
+  schema downgrade, dependency, version bump, release artifact, or authority to
+  close Issue #36. Pre-migration integrity validation, a consistent SQLite
+  Online Backup snapshot, and a cross-process per-database migration guard remain
+  separate fail-closed slices so each recovery boundary can be reviewed and
+  rolled back independently.
 
 ## Current development note - 2026-07-13 / R000 pairing outbox baseline
 
