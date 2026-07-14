@@ -14,6 +14,8 @@ import socket
 import threading
 from email.message import Message
 
+import pytest
+
 from clipvault.api import server as api_server
 
 
@@ -31,9 +33,18 @@ class _FakeClock:
 class _FakeSocket:
     def __init__(self) -> None:
         self.shutdown_calls: list[int] = []
+        self.timeout = 10.0
+        self.timeout_calls: list[float | None] = []
 
     def shutdown(self, how: int) -> None:
         self.shutdown_calls.append(how)
+
+    def gettimeout(self) -> float | None:
+        return self.timeout
+
+    def settimeout(self, value: float | None) -> None:
+        self.timeout = value
+        self.timeout_calls.append(value)
 
 
 class _TrickleReader:
@@ -182,6 +193,219 @@ def test_default_maximum_body_budget_is_fixed_at_120_seconds():
         assert deadline.check() == "deadline"
     finally:
         deadline.finish()
+
+
+def test_unauthorized_small_push_sends_401_before_bounded_body_drain():
+    events: list[str] = []
+
+    class UnauthorizedApi:
+        @staticmethod
+        def auth_ok(_token):
+            return False
+
+    class Reader:
+        data = bytearray(b"{}")
+
+        def read1(self, size: int) -> bytes:
+            events.append("drain")
+            chunk = bytes(self.data[:size])
+            del self.data[:size]
+            return chunk
+
+        read = read1
+
+    class Writer:
+        @staticmethod
+        def flush() -> None:
+            events.append("flush")
+
+    connection = _FakeSocket()
+    deadline = api_server._RequestDeadline(
+        connection,
+        10.0,
+        None,
+        monotonic=_FakeClock(),
+    )
+    reader = Reader()
+    handler, sent = _bare_handler(UnauthorizedApi(), deadline, reader)
+    handler.path = "/api/sync/push"
+    handler.headers = {
+        "Host": "127.0.0.1",
+        "Content-Type": "application/json",
+        "Content-Length": "2",
+    }
+    handler.wfile = Writer()
+
+    def record_response(code, body):
+        events.append("response")
+        sent.append((code, body))
+
+    handler._send_json = record_response
+
+    handler.do_POST()
+
+    assert sent[0][0] == 401
+    assert events == ["response", "flush", "drain"]
+    assert reader.data == b""
+    assert connection.timeout_calls[0] == pytest.approx(
+        api_server._AUTH_REJECT_DRAIN_BUDGET_S
+    )
+    assert connection.timeout_calls[-1] == 10.0
+    assert handler.close_connection is True
+
+
+def test_unauthorized_partial_small_push_keeps_401_and_restores_timeout():
+    class UnauthorizedApi:
+        @staticmethod
+        def auth_ok(_token):
+            return False
+
+    class TimeoutReader:
+        @staticmethod
+        def read1(_size: int) -> bytes:
+            raise TimeoutError("injected bounded drain timeout")
+
+        read = read1
+
+    class Writer:
+        @staticmethod
+        def flush() -> None:
+            pass
+
+    connection = _FakeSocket()
+    deadline = api_server._RequestDeadline(
+        connection,
+        10.0,
+        None,
+        monotonic=_FakeClock(),
+    )
+    handler, sent = _bare_handler(
+        UnauthorizedApi(),
+        deadline,
+        TimeoutReader(),
+    )
+    handler.path = "/api/sync/push"
+    handler.headers = {
+        "Host": "127.0.0.1",
+        "Content-Type": "application/json",
+        "Content-Length": "2",
+    }
+    handler.wfile = Writer()
+
+    handler.do_POST()
+
+    assert [code for code, _body in sent] == [401]
+    assert connection.timeout_calls[0] == pytest.approx(
+        api_server._AUTH_REJECT_DRAIN_BUDGET_S
+    )
+    assert connection.timeout_calls[-1] == 10.0
+    assert handler.close_connection is True
+
+
+def test_unauthorized_reject_drain_has_one_absolute_time_budget(monkeypatch):
+    clock = _FakeClock()
+
+    class UnauthorizedApi:
+        @staticmethod
+        def auth_ok(_token):
+            return False
+
+    class TrickleReader:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def read1(self, _size: int) -> bytes:
+            self.calls += 1
+            clock.advance(0.06)
+            return b"x"
+
+        read = read1
+
+    class Writer:
+        @staticmethod
+        def flush() -> None:
+            pass
+
+    monkeypatch.setattr(api_server.time, "monotonic", clock)
+    connection = _FakeSocket()
+    deadline = api_server._RequestDeadline(
+        connection,
+        10.0,
+        None,
+        monotonic=clock,
+    )
+    reader = TrickleReader()
+    handler, sent = _bare_handler(UnauthorizedApi(), deadline, reader)
+    handler.path = "/api/sync/push"
+    handler.headers = {
+        "Host": "127.0.0.1",
+        "Content-Type": "application/json",
+        "Content-Length": "10",
+    }
+    handler.wfile = Writer()
+
+    handler.do_POST()
+
+    assert [code for code, _body in sent] == [401]
+    assert reader.calls == 2
+    assert clock.value == pytest.approx(0.12)
+    assert connection.timeout_calls[0] == pytest.approx(0.1)
+    assert connection.timeout_calls[1] == pytest.approx(0.04)
+    assert connection.timeout_calls[-1] == 10.0
+    assert handler.close_connection is True
+
+
+@pytest.mark.parametrize(
+    "framing",
+    ["transfer_encoding", "duplicate_length", "oversized"],
+)
+def test_unauthorized_ambiguous_or_unsupported_body_is_not_drained(framing):
+    class UnauthorizedApi:
+        @staticmethod
+        def auth_ok(_token):
+            return False
+
+    class Writer:
+        @staticmethod
+        def flush() -> None:
+            pass
+
+    headers = Message()
+    headers.add_header("Host", "127.0.0.1")
+    headers.add_header("Content-Type", "application/json")
+    if framing == "transfer_encoding":
+        headers.add_header("Content-Length", "2")
+        headers.add_header("Transfer-Encoding", "chunked")
+    elif framing == "duplicate_length":
+        headers.add_header("Content-Length", "2")
+        headers.add_header("Content-Length", "2")
+    else:
+        headers.add_header(
+            "Content-Length",
+            str(api_server._MAX_SYNC_PUSH_BODY + 1),
+        )
+
+    connection = _FakeSocket()
+    deadline = api_server._RequestDeadline(
+        connection,
+        10.0,
+        None,
+        monotonic=_FakeClock(),
+    )
+    handler, sent = _bare_handler(
+        UnauthorizedApi(),
+        deadline,
+        _NoReadExpected(),
+    )
+    handler.path = "/api/sync/push"
+    handler.headers = headers
+    handler.wfile = Writer()
+
+    handler.do_POST()
+
+    assert [code for code, _body in sent] == [401]
+    assert connection.timeout_calls == []
+    assert handler.close_connection is True
 
 
 def test_stop_during_body_drain_prevents_bodyless_route_side_effect():

@@ -1688,18 +1688,36 @@ def test_h2_socket_auth_end_to_end(cfg, tmp_path):
                 c.request(method, path, body=body, headers=headers or {})
                 response = c.getresponse()
                 status = response.status
-                response.read()
-                return status
+                response_headers = dict(response.getheaders())
+                payload = response.read()
+                return status, response_headers, payload
             finally:
                 c.close()
 
-        assert request(
+        for _ in range(25):
+            status, response_headers, payload = request(
+                "POST",
+                "/api/sync/push",
+                body="{}",
+                headers={"Content-Type": "application/json"},
+            )
+            assert status == 401  # no token
+            assert response_headers["Connection"] == "close"
+            assert json.loads(payload)["error"]["code"] == "unauthorized"
+
+        # Android writes the complete push body before reading responseCode.
+        # Keep the Windows graceful-close regression covered above the former
+        # 64 KiB drain cap and close to Android's supported request budget.
+        status, response_headers, payload = request(
             "POST",
             "/api/sync/push",
-            body="{}",
+            body=b"x" * 6_300_000,
             headers={"Content-Type": "application/json"},
-        ) == 401  # no token
-        assert request("GET", "/api/health") == 200
+        )
+        assert status == 401
+        assert response_headers["Connection"] == "close"
+        assert json.loads(payload)["error"]["code"] == "unauthorized"
+        assert request("GET", "/api/health")[0] == 200
     finally:
         stop.set()
         server_thread.join(2)
