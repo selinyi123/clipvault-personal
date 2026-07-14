@@ -238,7 +238,7 @@ def test_populated_v6_upgrades_to_bounded_v7_reconciliation(tmp_path):
 
     conn = db.connect(tmp_path / "upgrade.db")
     try:
-        assert db.migrate(conn, v6_migrations) == 6
+        assert db.migrate(conn, v6_migrations, expected_latest=6) == 6
         # Populate a real v6 shape directly.  Current production repositories
         # require the latest schema and must not be used to fabricate legacy
         # databases in migration tests.
@@ -260,7 +260,7 @@ def test_populated_v6_upgrades_to_bounded_v7_reconciliation(tmp_path):
         conn.execute("DELETE FROM obsidian_queue WHERE clip_id=?", (clip_ids[1],))
         conn.commit()
 
-        assert db.migrate(conn, v7_migrations) == 7
+        assert db.migrate(conn, v7_migrations, expected_latest=7) == 7
         indexes = {
             row[0]
             for row in conn.execute(

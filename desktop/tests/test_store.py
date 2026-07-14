@@ -50,7 +50,7 @@ def test_a1_v5_to_v6_backfills_only_eligible_obsidian_rows(tmp_path):
         )
 
     raw = db.connect(":memory:")
-    assert db.migrate(raw, v5_migrations) == 5
+    assert db.migrate(raw, v5_migrations, expected_latest=5) == 5
     created = "2026-07-01T00:00:00Z"
     rows = (
         ("public-pending", "public", "hash-public", 0, 0, None),
@@ -76,7 +76,7 @@ def test_a1_v5_to_v6_backfills_only_eligible_obsidian_rows(tmp_path):
         migration_0006.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
-    assert db.migrate(raw, v5_migrations) == 6
+    assert db.migrate(raw, v5_migrations, expected_latest=6) == 6
     queued = raw.execute(
         "SELECT clip_id, state, attempts, next_attempt_at "
         "FROM obsidian_queue ORDER BY clip_id"
@@ -84,7 +84,7 @@ def test_a1_v5_to_v6_backfills_only_eligible_obsidian_rows(tmp_path):
     assert [tuple(row) for row in queued] == [
         ("public-pending", "pending", 0, created),
     ]
-    assert db.migrate(raw, v5_migrations) == 6
+    assert db.migrate(raw, v5_migrations, expected_latest=6) == 6
     assert raw.execute("SELECT COUNT(*) FROM obsidian_queue").fetchone()[0] == 1
 
 
@@ -114,7 +114,7 @@ def test_a1_populated_v7_to_v8_indexes_suggestion_candidates_without_reordering(
 
     raw = db.connect(tmp_path / "v7-upgrade.db")
     try:
-        assert db.migrate(raw, v7_migrations) == 7
+        assert db.migrate(raw, v7_migrations, expected_latest=7) == 7
         created = "2026-07-01T00:00:00Z"
         rows = [
             (
@@ -190,7 +190,7 @@ def test_a1_populated_v7_to_v8_indexes_suggestion_candidates_without_reordering(
         before = [row[0] for row in raw.execute(query, params).fetchall()]
         assert before == ["public-favorite", "public-repeated"]
 
-        assert db.migrate(raw, v8_migrations) == 8
+        assert db.migrate(raw, v8_migrations, expected_latest=8) == 8
         after = [row[0] for row in raw.execute(query, params).fetchall()]
         after_plan = " ".join(
             row[3]
@@ -335,7 +335,7 @@ def test_a1_failed_migration_rolls_back_script_and_schema_version(tmp_path):
     raw = sqlite3.connect(":memory:")
 
     with pytest.raises(sqlite3.OperationalError):
-        db.migrate(raw, migrations)
+        db.migrate(raw, migrations, expected_latest=1)
 
     names = {
         r[0]

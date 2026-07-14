@@ -111,7 +111,7 @@ def test_populated_v8_to_v9_repairs_and_stabilizes_search_rows(tmp_path):
 
     path = tmp_path / "populated-v8.db"
     conn = db.connect(path)
-    assert db.migrate(conn, v8_migrations) == 8
+    assert db.migrate(conn, v8_migrations, expected_latest=8) == 8
     rows = (
         ("public-valid", "valid searchable text", 0, 0),
         ("public-missing", "missing searchable text", 0, 0),
@@ -139,8 +139,8 @@ def test_populated_v8_to_v9_repairs_and_stabilizes_search_rows(tmp_path):
     conn.close()
     conn = db.connect(path)
 
-    assert db.migrate(conn, v9_migrations) == 9
-    assert db.migrate(conn, v9_migrations) == 9
+    assert db.migrate(conn, v9_migrations, expected_latest=9) == 9
+    assert db.migrate(conn, v9_migrations, expected_latest=9) == 9
     mapped = {
         row["clip_id"]: row["search_id"]
         for row in conn.execute(
