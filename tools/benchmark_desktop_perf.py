@@ -58,6 +58,7 @@ _OLD_SKEW_TOKEN = "old-skew-token"
 # They catch order-of-magnitude regressions while tolerating shared-runner
 # scheduling noise.  They are not the product budgets from ARCHITECTURE.md.
 CI_REGRESSION_CEILINGS_MS = {
+    "api_status_backlog": 100.0,
     "api_search_cjk_1_char": 250.0,
     "api_search_cjk_2_char": 250.0,
     "api_search_cjk_3_char_common": 300.0,
@@ -273,6 +274,27 @@ def _seed_dataset(conn: sqlite3.Connection, rows: int) -> None:
     conn.commit()
 
 
+def _seed_status_backlog(conn: sqlite3.Connection) -> None:
+    """Populate worst-case status queues without changing other workloads."""
+
+    conn.execute(
+        "INSERT INTO backup_queue(clip_id, state, created_at) "
+        "SELECT id, 'pending', created_at FROM clips"
+    )
+    conn.execute(
+        "INSERT INTO obsidian_queue("
+        "clip_id, state, attempts, next_attempt_at, created_at, updated_at"
+        ") SELECT id, 'pending', 0, created_at, created_at, created_at FROM clips"
+    )
+    conn.commit()
+
+
+def _clear_status_backlog(conn: sqlite3.Connection) -> None:
+    conn.execute("DELETE FROM backup_queue")
+    conn.execute("DELETE FROM obsidian_queue")
+    conn.commit()
+
+
 def _api_search(api: Api, query: str, expected: int) -> None:
     status, body = api.list_clips({"q": query, "limit": "50"})
     clips = body.get("clips") if isinstance(body, dict) else None
@@ -281,6 +303,12 @@ def _api_search(api: Api, query: str, expected: int) -> None:
         raise RuntimeError(
             f"API search benchmark expected {expected} results, got {actual}"
         )
+
+
+def _api_status(api: Api, expected_pending: int) -> None:
+    status, body = api.status()
+    if status != 200 or body.get("backup_pending") != expected_pending:
+        raise RuntimeError("API status benchmark did not preserve queue depth")
 
 
 def _measure_ingest(service: ClipVaultService, rows: int, samples: int) -> dict:
@@ -456,6 +484,27 @@ def run_benchmark(
         metrics["sync_pull_100_events"] = _measure(
             lambda: _pull_100_events(conn, sync_start_seq), iterations
         )
+
+        # Run the new workload only after every pre-existing metric.  This
+        # preserves their logical and physical database conditions so reports
+        # remain comparable without a schema-version bump.
+        status_setup_started = time.perf_counter_ns()
+        _clear_status_backlog(conn)
+        _seed_status_backlog(conn)
+        expected_pending = int(
+            conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0]
+        )
+        setup_seconds += (
+            time.perf_counter_ns() - status_setup_started
+        ) / 1_000_000_000.0
+        metrics["api_status_backlog"] = _measure(
+            lambda: _api_status(api, expected_pending), iterations
+        )
+        status_cleanup_started = time.perf_counter_ns()
+        _clear_status_backlog(conn)
+        setup_seconds += (
+            time.perf_counter_ns() - status_cleanup_started
+        ) / 1_000_000_000.0
 
         return {
             "report_schema_version": 2,

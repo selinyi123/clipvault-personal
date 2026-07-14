@@ -492,17 +492,14 @@ class Api:
         return 200, result
 
     def status(self) -> tuple[int, dict]:
-        counts = self.clips.counts()
-        pending = len(BackupQueueRepo(self.conn).pending_clip_ids())
-        last_backup = self.conn.execute(
-            "SELECT MAX(backed_up_at) FROM clips"
-        ).fetchone()[0]
+        summary = self.clips.status_summary()
+        pending = BackupQueueRepo(self.conn).pending_count()
         return 200, {
             "version": __version__,
-            "clips_total": counts["total"],
-            "quarantined": counts["secret"],
+            "clips_total": summary["total"],
+            "quarantined": summary["secret"],
             "backup_pending": pending,
-            "last_backup_at": last_backup,
+            "last_backup_at": summary["last_backup_at"],
             # Aggregate-only queue health. Never expose clip ids, content,
             # Vault paths, or stored error details through the status API.
             "obsidian_retry": self.service.obsidian_retry_stats(),

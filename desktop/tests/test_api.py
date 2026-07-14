@@ -249,6 +249,46 @@ def test_d7_status_matches_db(api):
     assert st["obsidian_retry"]["ready"] == 0
 
 
+def test_d7_status_does_not_materialize_pending_backup_ids(api, monkeypatch):
+    api.create_clip({"content": "bounded status query"})
+
+    def fail_if_called(self):
+        raise AssertionError("status must not load every pending clip id")
+
+    from clipvault.store.backup_queue_repo import BackupQueueRepo
+
+    monkeypatch.setattr(BackupQueueRepo, "pending_clip_ids", fail_if_called)
+
+    code, status = api.status()
+
+    assert code == 200
+    assert status["backup_pending"] == 1
+
+
+def test_d7_status_summary_preserves_deleted_backup_timestamp(api, conn):
+    _, active = api.create_clip({"content": "active status clip"})
+    _, deleted = api.create_clip({"content": "deleted status clip"})
+    api.create_clip({"content": FAKE_AWS_KEY})
+    older = "2026-07-13T00:00:00Z"
+    newest = "2026-07-14T00:00:00Z"
+    conn.execute(
+        "UPDATE clips SET backed_up_at=? WHERE id=?",
+        (older, active["clip"]["id"]),
+    )
+    conn.execute(
+        "UPDATE clips SET deleted=1, backed_up_at=? WHERE id=?",
+        (newest, deleted["clip"]["id"]),
+    )
+    conn.commit()
+
+    code, status = api.status()
+
+    assert code == 200
+    assert status["clips_total"] == 2
+    assert status["quarantined"] == 1
+    assert status["last_backup_at"] == newest
+
+
 def test_d7_status_exposes_only_aggregate_obsidian_retry_health(api, conn):
     content = "private status payload must stay hidden"
     outcome = pipeline.ingest(
