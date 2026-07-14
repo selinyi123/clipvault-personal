@@ -23,6 +23,7 @@ class PeersRepo:
         when: str,
         *,
         peer_cursor: int | None = None,
+        commit: bool = True,
     ) -> None:
         if peer_cursor is not None and (
             isinstance(peer_cursor, bool)
@@ -58,7 +59,8 @@ class PeersRepo:
                 "peer_cursor=excluded.peer_cursor",
                 (device_id, device_name, token_hash, when, peer_cursor),
             )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def by_token_hash(self, token_hash: str) -> dict | None:
         r = self.conn.execute(

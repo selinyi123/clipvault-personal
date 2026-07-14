@@ -18,6 +18,23 @@
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-14 |
 
+## Current development note - 2026-07-14 / R000 atomic pairing redemption
+
+- A valid one-time pairing code now enters an in-flight reservation while the
+  peer token hash and negotiated cursor are committed. The code is consumed and
+  the plaintext token is returned only after that top-level SQLite transaction
+  succeeds. A SQL or commit failure rolls back the peer row and restores the
+  still-unexpired code, so an unknown token cannot be made durable by a later
+  unrelated commit.
+- Pair-code state is lock-protected. Concurrent redemption of the same code can
+  run at most one persistence callback, duplicate attempts do not poison the
+  brute-force window, and expired reservations are never revived. Existing
+  callers of `Pairing.redeem(code)` and `PeersRepo.upsert_pair(...)` retain their
+  prior defaults.
+- This slice changes no database schema, pairing request/response fields, token
+  hash format, sync payload, Android IME boundary, version metadata, release
+  artifact, or Issue #36 authority.
+
 ## Current development note - 2026-07-14 / R000 sync reject delivery
 
 - An unauthorised `/api/sync/push` is still rejected from headers before its

@@ -5,6 +5,7 @@ real-socket auth check (H2)."""
 import http.client
 import json
 import queue
+import sqlite3
 import sys
 import threading
 
@@ -17,6 +18,7 @@ from clipvault.config import Config
 from clipvault.core import normalize
 from clipvault.core.models import Clip
 from clipvault.service import ClipVaultService
+from clipvault.store import db
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.outbox_repo import OutboxRepo
@@ -26,6 +28,26 @@ from clipvault.sync.pairing import Pairing, hash_token
 
 FAKE_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
 PEER = "android-pixel"
+
+
+class _FailOnceCommitConnection(sqlite3.Connection):
+    fail_next_commit = False
+
+    def commit(self) -> None:
+        if self.fail_next_commit:
+            self.fail_next_commit = False
+            raise sqlite3.OperationalError("PRIVATE-PAIRING-COMMIT-DETAIL")
+        super().commit()
+
+
+def _failing_commit_api(cfg):
+    conn = sqlite3.connect(":memory:", factory=_FailOnceCommitConnection)
+    conn.row_factory = sqlite3.Row
+    db.migrate(conn)
+    return conn, Api(
+        ClipVaultService(conn, cfg),
+        pairing=Pairing(clock=lambda: 0.0),
+    )
 
 
 @pytest.fixture
@@ -92,6 +114,221 @@ def test_h1_pairing(api):
     # bad / reused code rejected
     assert api.pair({"code": "00000000", "device_id": PEER})[0] == 403
     assert api.pair({"code": code, "device_id": PEER})[0] == 403  # single use
+
+
+def test_h1_pair_commit_failure_rolls_back_and_preserves_code(cfg):
+    conn, failing_api = _failing_commit_api(cfg)
+    try:
+        code = failing_api.pairing.mint_code()
+        conn.fail_next_commit = True
+
+        with pytest.raises(sqlite3.OperationalError, match="PAIRING-COMMIT"):
+            failing_api.pair({"code": code, "device_id": PEER})
+
+        assert conn.in_transaction is False
+        assert failing_api.peers.get(PEER) is None
+
+        status, body = failing_api.pair({"code": code, "device_id": PEER})
+        assert status == 200
+        assert failing_api.auth_ok(body["token"]) is True
+    finally:
+        conn.close()
+
+
+def test_h1_repair_commit_failure_preserves_old_peer_until_retry(cfg):
+    conn, failing_api = _failing_commit_api(cfg)
+    try:
+        first_code = failing_api.pairing.mint_code()
+        first_status, first_body = failing_api.pair({
+            "code": first_code,
+            "device_id": PEER,
+            "device_name": "Old Pixel",
+            "outbox_base_seq": 101,
+        })
+        assert first_status == 200
+        old_peer = failing_api.peers.get(PEER)
+
+        retry_code = failing_api.pairing.mint_code()
+        conn.fail_next_commit = True
+        with pytest.raises(sqlite3.OperationalError, match="PAIRING-COMMIT"):
+            failing_api.pair({
+                "code": retry_code,
+                "device_id": PEER,
+                "device_name": "New Pixel",
+                "outbox_base_seq": 205,
+            })
+
+        assert conn.in_transaction is False
+        assert failing_api.auth_ok(first_body["token"]) is True
+        assert failing_api.peers.get(PEER) == old_peer
+
+        retry_status, retry_body = failing_api.pair({
+            "code": retry_code,
+            "device_id": PEER,
+            "device_name": "New Pixel",
+            "outbox_base_seq": 205,
+        })
+        assert retry_status == 200
+        assert failing_api.auth_ok(first_body["token"]) is False
+        assert failing_api.auth_ok(retry_body["token"]) is True
+        assert failing_api.peers.get(PEER)["peer_cursor"] == 204
+    finally:
+        conn.close()
+
+
+def test_h1_pair_rejects_outer_transaction_without_consuming_code(api, conn):
+    code = api.pairing.mint_code()
+    conn.execute("BEGIN")
+
+    with pytest.raises(RuntimeError, match="idle database connection"):
+        api.pair({"code": code, "device_id": PEER})
+
+    assert conn.in_transaction is True
+    assert api.peers.get(PEER) is None
+    conn.rollback()
+    assert api.pair({"code": code, "device_id": PEER})[0] == 200
+
+
+def test_h1_pairing_persistence_failure_does_not_revive_expired_code():
+    clock = {"now": 0.0}
+    pairing = Pairing(ttl_seconds=300, clock=lambda: clock["now"])
+    code = pairing.mint_code()
+
+    def fail_after_expiry(_token: str) -> None:
+        clock["now"] = 301.0
+        raise RuntimeError("injected persistence failure")
+
+    with pytest.raises(RuntimeError, match="persistence failure"):
+        pairing.redeem(code, persist_token=fail_after_expiry)
+
+    assert pairing.redeem(code) is None
+
+
+def test_h1_concurrent_pairing_runs_one_persistence_callback():
+    pairing = Pairing(clock=lambda: 0.0, max_failures=1)
+    code = pairing.mint_code()
+    entered = threading.Event()
+    release = threading.Event()
+    results = []
+    errors = []
+
+    def persist(_token: str) -> None:
+        entered.set()
+        assert release.wait(2)
+
+    def redeem_first() -> None:
+        try:
+            results.append(pairing.redeem(code, persist_token=persist))
+        except BaseException as exc:  # pragma: no cover - assertion aid
+            errors.append(exc)
+
+    first = threading.Thread(target=redeem_first)
+    first.start()
+    assert entered.wait(2)
+    duplicate_callbacks = []
+    try:
+        duplicate = pairing.redeem(
+            code,
+            persist_token=lambda _token: duplicate_callbacks.append(True),
+        )
+        assert duplicate is None
+        assert duplicate_callbacks == []
+        assert pairing.is_rate_limited() is False
+    finally:
+        release.set()
+        first.join(2)
+
+    assert not first.is_alive()
+    assert errors == []
+    assert len(results) == 1 and results[0]
+    assert pairing.redeem(code) is None
+
+
+def test_h1_pair_commit_failure_http_500_then_same_code_succeeds(cfg, caplog):
+    pairing = Pairing(clock=lambda: 0.0)
+    code = pairing.mint_code()
+    stop = threading.Event()
+    ready = queue.Queue(maxsize=1)
+    errors = queue.Queue()
+
+    def run_server():
+        conn = None
+        httpd = None
+        announced = False
+        try:
+            conn = sqlite3.connect(
+                ":memory:",
+                factory=_FailOnceCommitConnection,
+            )
+            conn.row_factory = sqlite3.Row
+            db.migrate(conn)
+            conn.fail_next_commit = True
+            socket_api = Api(ClipVaultService(conn, cfg), pairing=pairing)
+            httpd = api_server.build_server(
+                socket_api,
+                "127.0.0.1",
+                0,
+                stop_event=stop,
+            )
+            httpd.timeout = 0.1
+            ready.put(("ready", httpd.server_address[1]))
+            announced = True
+            while not stop.is_set():
+                httpd.handle_request()
+        except BaseException as exc:  # pragma: no cover - assertion aid
+            errors.put(exc.__class__.__name__)
+            if not announced:
+                ready.put(("error", exc.__class__.__name__))
+        finally:
+            if httpd is not None:
+                httpd.server_close()
+            if conn is not None:
+                conn.close()
+
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    caplog.set_level("ERROR", logger="clipvault.api")
+    server_thread.start()
+    try:
+        state, value = ready.get(timeout=5)
+        assert state == "ready", f"test server failed: {value}"
+        port = int(value)
+
+        def request(method, path, body=None):
+            connection = http.client.HTTPConnection(
+                "127.0.0.1",
+                port,
+                timeout=5,
+            )
+            try:
+                headers = (
+                    {"Content-Type": "application/json"}
+                    if body is not None
+                    else {}
+                )
+                payload = json.dumps(body) if body is not None else None
+                connection.request(method, path, body=payload, headers=headers)
+                response = connection.getresponse()
+                return response.status, json.loads(response.read())
+            finally:
+                connection.close()
+
+        pair_body = {"code": code, "device_id": PEER}
+        first_status, first_body = request("POST", "/api/pair", pair_body)
+        assert first_status == 500
+        assert first_body["error"]["code"] == "internal_error"
+
+        second_status, second_body = request("POST", "/api/pair", pair_body)
+        assert second_status == 200
+        assert len(second_body["token"]) > 20
+        assert request("GET", "/api/health")[0] == 200
+    finally:
+        stop.set()
+        server_thread.join(2)
+
+    assert not server_thread.is_alive()
+    assert errors.empty()
+    assert "PRIVATE-PAIRING-COMMIT-DETAIL" not in caplog.text
+    assert "OperationalError" in caplog.text
 
 
 def test_h1_pair_outbox_base_starts_at_announced_sequence(api):
