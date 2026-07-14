@@ -56,6 +56,14 @@ class BackupQueueRepo:
         ).fetchall()
         return [r[0] for r in rows]
 
+    def pending_count(self) -> int:
+        """Return queue depth without materializing every pending clip id."""
+
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM backup_queue WHERE state = 'pending'"
+        ).fetchone()
+        return int(row[0])
+
     def claim_pending(self, limit: int = 200) -> list[str]:
         rows = self.conn.execute(
             "SELECT clip_id FROM backup_queue WHERE state = 'pending' ORDER BY id LIMIT ?",

@@ -71,6 +71,19 @@ def test_backup_enqueue_idempotent(conn):
     assert queue.pending_clip_ids() == [outcome.clip.id]
 
 
+def test_backup_pending_count_excludes_terminal_rows(conn):
+    first = pipeline.ingest(conn, "first backup state", source_device="d").clip
+    second = pipeline.ingest(conn, "second backup state", source_device="d").clip
+    third = pipeline.ingest(conn, "third backup state", source_device="d").clip
+    queue = BackupQueueRepo(conn)
+
+    assert queue.mark_done(first.id, "2026-07-14T00:00:00Z") is True
+    assert queue.mark_dropped(second.id, "safe-test-reason") is True
+
+    assert queue.pending_count() == 1
+    assert queue.pending_clip_ids() == [third.id]
+
+
 def _write_counts(conn) -> dict[str, int]:
     return {
         "clips": conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0],

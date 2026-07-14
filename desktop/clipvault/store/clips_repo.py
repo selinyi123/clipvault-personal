@@ -645,3 +645,24 @@ class ClipsRepo:
             "SELECT COUNT(*) FROM clips WHERE deleted = 0 AND is_secret = 1"
         ).fetchone()[0]
         return {"total": total, "secret": secret}
+
+    def status_summary(self) -> dict:
+        """Return the clip aggregates used by the local status endpoint.
+
+        ``last_backup_at`` intentionally retains the endpoint's historical
+        all-row semantics, including deleted clips.  Combining the aggregates
+        avoids three independent full scans as the personal database grows.
+        """
+
+        row = self.conn.execute(
+            "SELECT "
+            "COUNT(CASE WHEN deleted = 0 THEN 1 END), "
+            "COUNT(CASE WHEN deleted = 0 AND is_secret = 1 THEN 1 END), "
+            "MAX(backed_up_at) "
+            "FROM clips"
+        ).fetchone()
+        return {
+            "total": int(row[0]),
+            "secret": int(row[1]),
+            "last_backup_at": row[2],
+        }

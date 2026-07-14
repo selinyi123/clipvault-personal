@@ -18,6 +18,22 @@
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-14 |
 
+## Current development note - 2026-07-14 / R000 bounded status queries
+
+- `/api/status` now counts pending backup work with a scalar aggregate instead
+  of loading every pending clip id into Python. Clip totals, quarantined totals,
+  and the latest backup timestamp are obtained in one scan while preserving the
+  existing rule that `last_backup_at` covers all historical clips, including a
+  deleted row.
+- The stdlib-only Desktop benchmark now measures `api_status_backlog` against a
+  synthetic database where every seeded clip is pending in both backup and
+  Obsidian queues. Dataset construction remains excluded from latency, and the
+  hosted-CI ceiling is explicitly a broad 10k regression guard rather than a
+  product SLA.
+- Existing list-returning queue and clip-count APIs remain available. This
+  slice adds no index, migration, dependency, response field, personal-data
+  telemetry, version bump, release artifact, or authority to close Issue #36.
+
 ## Current development note - 2026-07-14 / R000 atomic pairing redemption
 
 - A valid one-time pairing code now enters an in-flight reservation while the

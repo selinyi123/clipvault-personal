@@ -44,6 +44,7 @@ def test_10k_setup_is_excluded_and_database_is_ephemeral(report):
 @pytest.mark.parametrize(
     ("metric", "statistic"),
     [
+        ("api_status_backlog", "median_ms"),
         ("api_search_cjk_1_char", "median_ms"),
         ("api_search_cjk_2_char", "median_ms"),
         ("api_search_cjk_3_char_common", "median_ms"),

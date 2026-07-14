@@ -78,6 +78,23 @@ def test_synthetic_suggestion_population_is_sparse_but_has_ten_results():
     assert 10 <= eligible < 50
 
 
+def test_status_backlog_workload_is_isolated_from_other_metrics():
+    conn = benchmark.db.connect(":memory:")
+    try:
+        benchmark.db.migrate(conn)
+        benchmark._seed_dataset(conn, 10)
+
+        benchmark._seed_status_backlog(conn)
+        assert conn.execute("SELECT COUNT(*) FROM backup_queue").fetchone()[0] == 10
+        assert conn.execute("SELECT COUNT(*) FROM obsidian_queue").fetchone()[0] == 10
+
+        benchmark._clear_status_backlog(conn)
+        assert conn.execute("SELECT COUNT(*) FROM backup_queue").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM obsidian_queue").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 def test_old_skew_seed_is_common_old_only_and_hash_consistent():
     matching = 0
     for index in range(10_000):
