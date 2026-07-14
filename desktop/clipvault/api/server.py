@@ -43,6 +43,7 @@ _MAX_JSON_BODY = 2 * 1_048_576
 _MAX_PAIR_BODY = 4_096
 _MAX_SYNC_PUSH_BODY = _MAX_CONTENT_JSON_BODY
 _MAX_REJECT_DRAIN = 64 * 1024
+_AUTH_REJECT_DRAIN_BUDGET_S = 0.1
 _JSON_CONTENT_TYPES = ("application/json", "application/problem+json")
 _DEFAULT_SOCKET_READ_TIMEOUT_S = 10.0
 _MIN_BODY_READ_RATE_BYTES_S = 64 * 1024
@@ -365,6 +366,83 @@ def make_handler(
             except OSError:
                 pass
 
+        def _best_effort_drain_rejected_body(self) -> None:
+            """Give a small rejected request a bounded graceful-close window.
+
+            Windows may reset a TCP connection when the server closes it with
+            unread inbound data, discarding the response that was just sent.
+            Authentication is still decided from headers and the 401 is sent
+            first.  Only one unambiguous, small Content-Length is then drained
+            for a very short grace period; ambiguous, chunked, oversized, or
+            stalled bodies keep the immediate-close behavior.
+            """
+
+            try:
+                self.wfile.flush()
+            except OSError:
+                return
+
+            get_all = getattr(self.headers, "get_all", None)
+            if get_all is None:
+                transfer_values = (
+                    [self.headers.get("Transfer-Encoding")]
+                    if "Transfer-Encoding" in self.headers
+                    else []
+                )
+                content_value = self.headers.get("Content-Length")
+                content_values = (
+                    [] if content_value is None else [content_value]
+                )
+            else:
+                transfer_values = get_all("Transfer-Encoding") or []
+                content_values = get_all("Content-Length") or []
+            if transfer_values or len(content_values) != 1:
+                return
+
+            value = content_values[0]
+            raw_value = value.strip() if isinstance(value, str) else ""
+            if not re.fullmatch(r"[0-9]+", raw_value):
+                return
+            try:
+                length = int(raw_value)
+            except ValueError:
+                return
+            if length <= 0 or length > _MAX_SYNC_PUSH_BODY:
+                return
+
+            try:
+                original_timeout = self.connection.gettimeout()
+            except OSError:
+                return
+            deadline = time.monotonic() + _AUTH_REJECT_DRAIN_BUDGET_S
+            timeout_changed = False
+            try:
+                remaining = length
+                read_chunk = getattr(self.rfile, "read1", self.rfile.read)
+                while remaining:
+                    budget = deadline - time.monotonic()
+                    if budget <= 0:
+                        return
+                    read_timeout = (
+                        min(original_timeout, budget)
+                        if original_timeout is not None and original_timeout > 0
+                        else budget
+                    )
+                    self.connection.settimeout(read_timeout)
+                    timeout_changed = True
+                    chunk = read_chunk(min(64 * 1024, remaining))
+                    if not chunk:
+                        return
+                    remaining -= len(chunk)
+            except (TimeoutError, OSError):
+                return
+            finally:
+                if timeout_changed:
+                    try:
+                        self.connection.settimeout(original_timeout)
+                    except OSError:
+                        pass
+
         def _reject_transfer_encoding(self) -> bool:
             """Reject framing this stdlib server does not decode.
 
@@ -642,11 +720,13 @@ def make_handler(
             if route == "/api/sync/push":
                 token = self._bearer()
                 if not api.auth_ok(token):
-                    # Authentication is decided from headers. Do not block the
-                    # single serving thread draining an untrusted body that will
-                    # be discarded; the connection is closed after the 401.
+                    # Authentication is decided from headers.  Send the 401
+                    # before a bounded best-effort drain so a normal small push
+                    # receives the response without letting an untrusted body
+                    # monopolise the single serving thread.
                     self.close_connection = True
                     self._send_json(401, {"error": {"code": "unauthorized", "message": "bad token"}})
+                    self._best_effort_drain_rejected_body()
                     return
                 body = self._body(_MAX_SYNC_PUSH_BODY)
                 if body is None:

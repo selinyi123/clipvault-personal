@@ -18,6 +18,23 @@
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-14 |
 
+## Current development note - 2026-07-14 / R000 sync reject delivery
+
+- An unauthorised `/api/sync/push` is still rejected from headers before its
+  JSON is parsed or reaches the sync service. After sending and flushing the
+  `401`, the server now gives only one unambiguous request body within the
+  existing 7 MiB sync limit one absolute 100 ms best-effort drain window before
+  closing the connection.
+  This avoids Windows resetting an otherwise normal small push before the
+  Android peer can read the authentication result.
+- Transfer-encoded, duplicate or malformed length, oversized, stalled, and
+  partial bodies remain fail-closed. The drain itself cannot make the single
+  serving thread wait beyond the short absolute grace period, and no content,
+  token, path, or exception detail is logged or persisted.
+- This compatibility fix changes no sync payload, authentication decision,
+  database schema, IME boundary, version metadata, release artifact, or Issue
+  #36 authority.
+
 ## Current development note - 2026-07-14 / R000 SQLite schema compatibility
 
 - Desktop startup now validates the complete packaged migration manifest before
