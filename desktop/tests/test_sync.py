@@ -2,11 +2,11 @@
 The Android peer is simulated with the handler API directly (H1-H9) plus one
 real-socket auth check (H2)."""
 
-import threading
 import http.client
 import json
-import tempfile
-import os
+import queue
+import sys
+import threading
 
 import pytest
 
@@ -1620,31 +1620,104 @@ def test_unpair_unknown_device_returns_404(api):
     assert api.unpair("not-a-device")[0] == 404
 
 
-def test_h2_socket_auth_end_to_end(cfg):
+def test_h2_socket_auth_end_to_end(cfg, tmp_path):
     """Real socket: unauthorized sync push is 401; management route from
     loopback still works on a fresh connection after the rejected request."""
     import clipvault.store.db as db
-    t = tempfile.mkdtemp()
-    cfg.db_path = os.path.join(t, "cv.db")
-    cfg.port = 8795
-    stop = threading.Event()
-    threading.Thread(target=api_server.serve, args=(cfg, stop), daemon=True).start()
-    import time
-    time.sleep(0.5)
-    try:
-        c = http.client.HTTPConnection("127.0.0.1", 8795, timeout=5)
-        c.request("POST", "/api/sync/push", body="{}",
-                  headers={"Content-Type": "application/json"})
-        assert c.getresponse().status == 401  # no token
-        c.close()
 
-        c = http.client.HTTPConnection("127.0.0.1", 8795, timeout=5)
-        c.request("GET", "/api/health")
-        assert c.getresponse().status == 200
-        c.close()
+    cfg.db_path = str(tmp_path / "socket-auth.db")
+    stop = threading.Event()
+    ready = queue.Queue(maxsize=1)
+    errors = queue.Queue()
+
+    def run_server():
+        conn = None
+        httpd = None
+        announced = False
+        try:
+            conn = db.connect(cfg.db_path)
+            api_server._prepare_database(conn)
+            socket_api = Api(ClipVaultService(conn, cfg))
+            httpd = api_server.build_server(
+                socket_api,
+                "127.0.0.1",
+                0,
+                stop_event=stop,
+            )
+            httpd.timeout = 0.1
+            ready.put(("ready", httpd.server_address[1]))
+            announced = True
+            while not stop.is_set():
+                httpd.handle_request()
+        except BaseException as exc:
+            error_class = exc.__class__.__name__
+            errors.put(error_class)
+            if not announced:
+                ready.put(("error", error_class))
+        finally:
+            cleanup_error = None
+            try:
+                if httpd is not None:
+                    httpd.server_close()
+            except BaseException as exc:
+                cleanup_error = exc.__class__.__name__
+            finally:
+                try:
+                    if conn is not None:
+                        conn.close()
+                except BaseException as exc:
+                    if cleanup_error is None:
+                        cleanup_error = exc.__class__.__name__
+            if cleanup_error is not None:
+                errors.put(cleanup_error)
+
+    server_thread = threading.Thread(
+        target=run_server,
+        name="socket-auth-test-server",
+        daemon=True,
+    )
+    server_thread.start()
+    try:
+        state, value = ready.get(timeout=5)
+        assert state == "ready", f"test server failed: {value}"
+        port = int(value)
+
+        def request(method, path, *, body=None, headers=None):
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            try:
+                c.request(method, path, body=body, headers=headers or {})
+                response = c.getresponse()
+                status = response.status
+                response.read()
+                return status
+            finally:
+                c.close()
+
+        assert request(
+            "POST",
+            "/api/sync/push",
+            body="{}",
+            headers={"Content-Type": "application/json"},
+        ) == 401  # no token
+        assert request("GET", "/api/health") == 200
     finally:
         stop.set()
-        time.sleep(0.6)
+        server_thread.join(2)
+        teardown_errors = []
+        if server_thread.is_alive():
+            teardown_errors.append("server thread did not stop")
+        while True:
+            try:
+                teardown_errors.append(f"server error: {errors.get_nowait()}")
+            except queue.Empty:
+                break
+        if teardown_errors:
+            detail = "; ".join(teardown_errors)
+            active_error = sys.exc_info()[1]
+            if active_error is not None:
+                active_error.add_note(f"socket server teardown: {detail}")
+            else:
+                pytest.fail(detail, pytrace=False)
 
 
 def test_h10_malformed_event_does_not_wedge_batch(api, conn):
