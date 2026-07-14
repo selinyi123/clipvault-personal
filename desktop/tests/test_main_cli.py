@@ -174,6 +174,42 @@ def test_headless_service_starts_waits_and_closes_runtime(tmp_path, monkeypatch)
     assert calls == ["start", "wait", "close"]
 
 
+def test_service_drains_persistent_backup_writer_before_return(tmp_path, monkeypatch):
+    cfg = _service_cfg(tmp_path)
+    calls = []
+
+    class Runtime:
+        def __init__(self, _cfg):
+            self.stop_event = threading.Event()
+
+        def start(self):
+            calls.append("start")
+
+        def wait(self):
+            calls.append("wait")
+
+        def request_stop(self):
+            self.stop_event.set()
+
+        def close(self):
+            calls.append("close")
+            self.request_stop()
+            return ["backup-worker"]
+
+        def drain_backup_before_exit(self):
+            calls.append("drain-backup")
+            return []
+
+        def terminal_errors(self):
+            return {}
+
+    _prepare_service_main(monkeypatch, tmp_path, cfg)
+    monkeypatch.setattr(clipvault_main, "ClipVaultRuntime", Runtime)
+
+    assert clipvault_main.main(["--headless"]) == 0
+    assert calls == ["start", "wait", "close", "drain-backup"]
+
+
 def test_no_open_tray_fallback_waits_and_closes(tmp_path, monkeypatch):
     cfg = _service_cfg(tmp_path)
     calls = []

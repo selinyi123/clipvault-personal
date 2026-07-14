@@ -112,6 +112,17 @@ desktop/
   partial start、terminal worker error 或未预期提前退出统一触发 stop + bounded join。
 - 启动 migration 使用主线程短连接；API、Obsidian、maintenance、backup 各自在线程
   内创建/关闭长连接；watcher 每次捕获创建短连接。任何 SQLite connection 都不跨线程。
+- runtime stop 同时唤醒等待中的 worker，并把取消信号传到 repo-lock 等待和在途
+  backup remote/read/object/temporary-index Git 命令；已启动的 `update-ref` ref durability
+  point 或 persistent real-index critical section 不得被 shutdown 强杀，以免遗留 Git `.lock`，
+  它们可完成或到达既有 60 秒命令上限；runtime 的首轮 bounded join 会如实报告尚存
+  worker，进程入口随后只对 non-daemon backup worker 执行 safe exit drain，确认线程和
+  owned process boundary 已退出后才允许 Python 结束；命令和回收各自已有内部上限。被取消命令中
+  属于 owned Windows Job 或 POSIX process group 的 Git/SSH/helper descendants，必须在
+  backup 线程释放 repo lock 和 SQLite connection 前终止；自行 `setsid()` 脱离 POSIX
+  process group 的第三方 daemon 不属于此跨平台保证。正常 cancellation 不进入 terminal
+  health 或网络退避；无法证明 OS ownership boundary 已受控，或 repo lock 的 OS 句柄已
+  完整释放时，必须作为 terminal failure 可观测并停止 runtime，不能退化为普通重试。
 
 **core/ 与 IO 严格分层**是给 Codex 的硬要求：core 内不允许 import sqlite3 / pathlib 写文件 / 网络库，保证合同级逻辑 100% 可单测。
 
@@ -186,6 +197,14 @@ Ctrl+C → Watcher 捕获 → normalize/hash → 去重（命中则 times_seen+1
 
 - 每 15 分钟（可配）排空 backup_queue → 按日期追加 `clips/YYYY/MM/YYYY-MM-DD.jsonl` → 单次 commit → push。
 - push 失败：保留队列、指数退避（1m→2m→…→30m 封顶）、Web UI 亮红灯。本地 JSONL 已 commit，不丢。
+- 每条 Git 命令仍有 60 秒故障上限；SIGINT/SIGTERM/tray stop 会更早取消在途
+  remote/read/object/temporary-index Git/SSH owned process boundary；已启动的 ref durability
+  point 和 persistent real-index critical section 不因 shutdown 被强杀，最迟由同一命令上限
+  收束；若首轮 join 尚未结束，main 必须完成 non-daemon backup worker 的专用 safe exit
+  drain 后才可退出，以避免留下使后续备份永久阻塞的 `.lock` 或 POSIX orphan writer。配置好的
+  非交互 AskPass/credential helper 继续可用，终端提示仍被禁用。
+  取消发生在 local commit 后时保留该 durable commit，由下次 exact-tip
+  preflight 幂等确认远端已接受或继续 push，不把正常退出误报为 push failure。
 - **永不 pull / 永不 force push / 永不 rebase**。备份仓库是只追加日志。
 - 恢复工具（v1.0）：从 JSONL 重建 SQLite 与 Markdown，这是"备份可用"的唯一证明，列入 v1.0 门禁。
 - 若密钥事后泄漏入库：执行 docs/RUNBOOK_PURGE.md（git filter-repo + 远端强推 + token 轮换）——这是唯一允许改写历史的场景。

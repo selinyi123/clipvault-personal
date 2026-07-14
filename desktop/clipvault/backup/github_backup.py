@@ -4,11 +4,12 @@ that slipped past gates A/B (older rules) is still dropped here.
 """
 
 import logging
+import threading
 from dataclasses import replace
 from datetime import datetime, timezone
 
 from clipvault.core import secret_guard
-from clipvault.backup import git_repo, jsonl_store
+from clipvault.backup import cancellation, git_repo, jsonl_store
 from clipvault.backup.repo_lock import RepoLockTimeout, RepoWriteLock
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
@@ -44,44 +45,54 @@ class BackupWorker:
         self.queue = BackupQueueRepo(conn)
         self._backoff_s = _BACKOFF_START_S
         self._monotonic_blocked_until = 0.0  # set by caller's clock; 0 = ready
+        self._stop_event = threading.Event()
+
+    def request_stop(self) -> None:
+        """Idempotently cancel in-flight local/remote backup work."""
+
+        self._stop_event.set()
 
     def run_once(self, monotonic: float = 0.0) -> dict:
         """Serialize pending clips, commit, push. Returns a small stats dict.
         `monotonic` lets the scheduler honour push backoff deterministically."""
-        try:
-            with RepoWriteLock(self.repo_path):
-                stats = self._persist_pending()
-        except RepoLockTimeout:
-            # Another process owns the same backup repository. Nothing was
-            # claimed or acknowledged, so a later maintenance pass can retry.
-            log.info("backup repository busy; local write deferred")
-            return {
-                "written": 0,
-                "dropped": 0,
-                "committed": None,
-                "pushed": False,
-            }
-        except git_repo.GitWorktreeRecoveryRequired:
-            if not self.push_enabled:
-                raise
-            # A prior recovery may have scrubbed managed files before its CAS
-            # durability point. Do not create a non-append child of the old
-            # contaminated ref; let the recovery path resume from Git objects.
-            log.info("managed backup worktree requires push recovery")
-            stats = {
-                "written": 0,
-                "dropped": 0,
-                "committed": None,
-                "pushed": False,
-            }
+        with cancellation.cancellation_scope(self._stop_event):
+            try:
+                with RepoWriteLock(
+                    self.repo_path,
+                    cancel_event=self._stop_event,
+                ):
+                    stats = self._persist_pending()
+            except RepoLockTimeout:
+                # Another process owns the same backup repository. Nothing was
+                # claimed or acknowledged, so a later maintenance pass can retry.
+                log.info("backup repository busy; local write deferred")
+                return {
+                    "written": 0,
+                    "dropped": 0,
+                    "committed": None,
+                    "pushed": False,
+                }
+            except git_repo.GitWorktreeRecoveryRequired:
+                if not self.push_enabled:
+                    raise
+                # A prior recovery may have scrubbed managed files before its CAS
+                # durability point. Do not create a non-append child of the old
+                # contaminated ref; let the recovery path resume from Git objects.
+                log.info("managed backup worktree requires push recovery")
+                stats = {
+                    "written": 0,
+                    "dropped": 0,
+                    "committed": None,
+                    "pushed": False,
+                }
 
-        pushed = False
-        # Retry push even when this run had no new commits; a previous push may
-        # have failed after data was safely committed locally.
-        if self.push_enabled and git_repo.head_commit(self.repo_path) is not None:
-            pushed = self._try_push(monotonic)
-        stats["pushed"] = pushed
-        return stats
+            pushed = False
+            # Retry push even when this run had no new commits; a previous push may
+            # have failed after data was safely committed locally.
+            if self.push_enabled and git_repo.head_commit(self.repo_path) is not None:
+                pushed = self._try_push(monotonic)
+            stats["pushed"] = pushed
+            return stats
 
     def _persist_pending(self) -> dict:
         """Persist and acknowledge one queue batch while holding the repo lock."""
@@ -94,6 +105,7 @@ class BackupWorker:
         mark_after_commit: list[tuple[str, str, str, str]] = []
 
         for clip_id in pending:
+            cancellation.checkpoint(self._stop_event)
             clip = self.clips.get(clip_id)
             if clip is None:
                 with unit_of_work(self.conn):
@@ -140,6 +152,7 @@ class BackupWorker:
         committed = None
         if by_day:
             for relpath, lines in by_day.items():
+                cancellation.checkpoint(self._stop_event)
                 jsonl_store.append_latest_clip_states(
                     self.repo_path,
                     relpath,
@@ -196,7 +209,10 @@ class BackupWorker:
             log.info("push deferred (backoff)")
             return False
         try:
-            with RepoWriteLock(self.repo_path):
+            with RepoWriteLock(
+                self.repo_path,
+                cancel_event=self._stop_event,
+            ):
                 if self.conn.in_transaction:
                     raise git_repo.GitPushError(
                         "backup database transaction already active"
@@ -278,7 +294,10 @@ class BackupWorker:
         """Authorize a candidate, rebuilding at most one contaminated suffix."""
 
         if not repo_lock_held:
-            with RepoWriteLock(self.repo_path):
+            with RepoWriteLock(
+                self.repo_path,
+                cancel_event=self._stop_event,
+            ):
                 return self._authorize_with_safe_recovery(repo_lock_held=True)
 
         recovery_attempted = False
