@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from clipvault.api import server as api_server
+from clipvault.backup import cancellation as backup_cancellation
 from clipvault.backup.github_backup import BackupWorker
 from clipvault.config import Config
 from clipvault.runtime.obsidian_worker import ObsidianWorker
@@ -73,6 +74,8 @@ class ClipVaultRuntime:
         self._api_ready = threading.Event()
         self._started = False
         self._obsidian_worker = None
+        self._backup_worker = None
+        self._backup_worker_lock = threading.Lock()
 
     def _record_terminal_error(self, name: str, exc: BaseException) -> None:
         error_class = exc.__class__.__name__
@@ -108,10 +111,17 @@ class ClipVaultRuntime:
 
         return run
 
-    def _new_thread(self, name: str, target: Callable, *args, **kwargs):
+    def _new_thread(
+        self,
+        name: str,
+        target: Callable,
+        *args,
+        daemon: bool = True,
+        **kwargs,
+    ):
         return self.adapters.thread_factory(
             target=self._guarded_target(name, target, *args, **kwargs),
-            daemon=True,
+            daemon=daemon,
             name=name,
         )
 
@@ -155,11 +165,18 @@ class ClipVaultRuntime:
 
     def _backup_loop(self) -> None:
         conn = self.adapters.connect(self.config.db_path)
+        worker = None
         try:
             worker = self.adapters.backup_worker_factory(
                 conn,
                 self.config.backup_repo_path,
             )
+            with self._backup_worker_lock:
+                self._backup_worker = worker
+            if self.stop_event.is_set():
+                request_stop = getattr(worker, "request_stop", None)
+                if callable(request_stop):
+                    request_stop()
             interval_s = max(60, self.config.backup_interval_minutes * 60)
             while not self.stop_event.wait(interval_s):
                 try:
@@ -171,9 +188,16 @@ class ClipVaultRuntime:
                             stats["dropped"],
                             stats["pushed"],
                         )
+                except backup_cancellation.BackupCancelled:
+                    if not self.stop_event.is_set():
+                        raise
+                    break
                 except Exception as exc:
                     log.error("backup worker failed err=%s", exc.__class__.__name__)
         finally:
+            with self._backup_worker_lock:
+                if self._backup_worker is worker:
+                    self._backup_worker = None
             conn.close()
 
     def _build_threads(self) -> list[threading.Thread]:
@@ -207,7 +231,15 @@ class ClipVaultRuntime:
             self._new_thread("maintenance", self._maintenance_loop),
         ]
         if self.config.backup_enabled and self.config.backup_repo_path:
-            threads.append(self._new_thread("backup-worker", self._backup_loop))
+            # A persistent Git ref/index critical section must outlive main's
+            # first bounded join rather than be killed by interpreter teardown.
+            threads.append(
+                self._new_thread(
+                    "backup-worker",
+                    self._backup_loop,
+                    daemon=False,
+                )
+            )
         # Watcher is deliberately last: partial startup cannot consume a
         # clipboard sequence before every required runtime thread exists.
         threads.append(self._new_thread("watcher", watcher.run, self.stop_event))
@@ -271,7 +303,11 @@ class ClipVaultRuntime:
                     self._raise_if_terminal()
             except BaseException:
                 self.request_stop()
-                self._join_started(_DEFAULT_JOIN_TIMEOUT_S)
+                alive = self._join_started(_DEFAULT_JOIN_TIMEOUT_S)
+                if "backup-worker" in alive:
+                    # Preserve the original startup failure, but do not return
+                    # control while a non-daemon persistent Git writer survives.
+                    self.drain_backup_before_exit()
                 raise
 
         if self.config.backup_enabled and self.config.backup_repo_path:
@@ -284,6 +320,18 @@ class ClipVaultRuntime:
         """Idempotently request shutdown and wake the sleeping Vault worker."""
 
         self.stop_event.set()
+        with self._backup_worker_lock:
+            backup_worker = self._backup_worker
+        if backup_worker is not None:
+            try:
+                request_stop = getattr(backup_worker, "request_stop", None)
+                if callable(request_stop):
+                    request_stop()
+            except Exception as exc:
+                log.error(
+                    "runtime backup stop failed err=%s",
+                    exc.__class__.__name__,
+                )
         worker = self._obsidian_worker
         if worker is not None:
             try:
@@ -310,6 +358,36 @@ class ClipVaultRuntime:
 
         self.request_stop()
         return self.join(timeout)
+
+    def drain_backup_before_exit(
+        self,
+        timeout: float | None = None,
+    ) -> list[str]:
+        """Wait out a persistent Git critical section before Python exits.
+
+        A ref or real-index writer is intentionally not hard-cancelled because
+        doing so can strand a Git lock. Its normal command ceiling is 60 seconds
+        and process cleanup is independently bounded, so main waits to completion
+        instead of allowing interpreter teardown to kill or orphan the writer.
+        Tests/embedded callers may supply a bounded timeout. Other unhealthy
+        workers do not consume this dedicated drain.
+        """
+
+        self.request_stop()
+        deadline = (
+            None
+            if timeout is None
+            else self.adapters.monotonic() + max(0.0, float(timeout))
+        )
+        for thread in self._threads:
+            if thread.name == "backup-worker" and thread.is_alive():
+                if deadline is None:
+                    thread.join()
+                else:
+                    thread.join(
+                        timeout=max(0.0, deadline - self.adapters.monotonic())
+                    )
+        return [thread.name for thread in self._threads if thread.is_alive()]
 
     def health(self) -> dict[str, dict[str, str | bool | None]]:
         """Return content-free worker lifecycle state for diagnostics/tests."""

@@ -137,20 +137,25 @@ def test_c7_source_has_no_force_or_pull():
         assert token not in source, f"git_repo must not reference {token}"
 
 
-def _timeout(*args, **kwargs):
-    raise subprocess.TimeoutExpired(kwargs.get("args") or args[0], kwargs.get("timeout", 60))
+def _timeout_result(*_args, **_kwargs):
+    return subprocess.CompletedProcess(
+        ["git"],
+        returncode=124,
+        stdout="",
+        stderr="git timed out",
+    )
 
 
 def test_push_candidate_timeout_raises_gitpush_error_not_timeout(monkeypatch):
-    # A hung remote inspection must become a GitPushError so BackupWorker backs
-    # off instead of dying on an uncaught subprocess.TimeoutExpired.
-    monkeypatch.setattr(subprocess, "run", _timeout)
+    # The runner's synthetic timeout result must become a GitPushError so
+    # BackupWorker backs off instead of leaking TimeoutExpired.
+    monkeypatch.setattr(git_repo, "_run", _timeout_result)
     with pytest.raises(git_repo.GitPushError):
         git_repo.prepare_push("/tmp/whatever")
 
 
 def test_add_timeout_raises_git_error(monkeypatch):
-    monkeypatch.setattr(subprocess, "run", _timeout)
+    monkeypatch.setattr(git_repo, "_run", _timeout_result)
     with pytest.raises(git_repo.GitError):
         git_repo.add_commit("/tmp/whatever", "msg", paths=[ALLOWED_PATH])
 

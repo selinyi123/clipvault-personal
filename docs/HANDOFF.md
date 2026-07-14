@@ -330,6 +330,40 @@
   REST/sync contracts, IME/privacy boundaries, and release authority remain
   unchanged. Application-command extraction is intentionally a separate PR.
 
+## Current development note - 2026-07-14 / R000 cancellable backup shutdown
+
+- `BackupWorker` now owns an idempotent stop event. Runtime publishes the live
+  worker before its first scheduled run and forwards process shutdown to it
+  without changing the existing adapter-factory or `run_once(monotonic=...)`
+  call shapes.
+- Backup cancellation is distinct from Git failure. It does not increase push
+  backoff, add a terminal worker error, or log Git argv/output, the remote URL,
+  a local path, or clip content.
+- Git commands use an OS-owned `Popen` runner. Normal timeout remains the
+  established synthetic return code 124; shutdown terminates descendants in the
+  owned Windows Job or POSIX process group before releasing the repository
+  writer lock. A third-party daemon that deliberately starts a new POSIX session
+  is outside that portable boundary. An already-started `update-ref` ref
+  durability point or persistent real-index critical section is not hard-killed
+  by shutdown because that can strand a Git `.lock`; it may finish or reach the
+  existing 60-second command ceiling. The first bounded join reports a surviving
+  worker, then the process entry drains the non-daemon backup worker to completion
+  before Python may exit (the command and tree-reap operations have their own
+  bounds); the next command checkpoint exits. Temporary-index updates remain interruptible. Existing
+  non-interactive AskPass helpers remain supported while terminal prompts stay
+  disabled.
+- Repo-lock acquisition polls the same worker cancellation event, so lock
+  contention cannot consume the runtime's complete bounded-join window. Cleanup
+  always attempts every OS/thread-lock layer; an unprovable unlock/close becomes
+  terminal runtime health rather than an endless recoverable retry loop.
+- Cancellation preserves GHB-1 durability: an interrupted uncommitted append
+  remains a retryable under-claim; a local commit completed before cancellation
+  is retained and the next run converges through durable-blob verification and
+  exact remote-tip preflight. No pull, force, rebase, amend, or remote rewrite
+  was introduced.
+- This slice changes no schema, HTTP/sync payload, Secret Guard policy, version
+  metadata, Issue #36 state, or release authority.
+
 ## Current development note - 2026-07-13 / R000 Obsidian application command
 
 - This development branch starts from the merged runtime-composition PR #100 at

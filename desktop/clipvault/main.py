@@ -129,6 +129,9 @@ def main(argv: list[str] | None = None) -> int:
                 log.error("clipvault runtime failed err=%s", runtime_error)
             finally:
                 alive = runtime.close()
+            if "backup-worker" in alive:
+                log.info("waiting for backup critical section before exit")
+                alive = runtime.drain_backup_before_exit()
             if alive:
                 log.warning("shutdown incomplete workers=%s", ",".join(alive))
             else:

@@ -92,6 +92,22 @@ def test_runtime_start_stop_join_are_idempotent_and_content_free(tmp_path):
     assert all(row["error_class"] is None for row in runtime.health().values())
 
 
+def test_backup_worker_is_non_daemon_interpreter_exit_guard(tmp_path):
+    runtime = ClipVaultRuntime(
+        _cfg(tmp_path, backup_enabled=True),
+        adapters=_adapters(),
+    )
+
+    threads = {thread.name: thread for thread in runtime._build_threads()}
+
+    assert threads["backup-worker"].daemon is False
+    assert all(
+        thread.daemon is True
+        for name, thread in threads.items()
+        if name != "backup-worker"
+    )
+
+
 def test_runtime_capture_does_not_repeat_full_search_index_audit(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     conn = db.connect(cfg.db_path)
@@ -225,6 +241,89 @@ def test_runtime_partial_start_failure_stops_and_joins_started_threads(tmp_path)
     assert runtime._obsidian_worker.notify_count >= 1
 
 
+def test_partial_start_failure_drains_backup_before_raising(tmp_path, monkeypatch):
+    factory_started = threading.Event()
+    release_factory = threading.Event()
+    backup_connection_closed = threading.Event()
+    worker_stop_forwarded = threading.Event()
+    timers = []
+
+    class TrackedConnection:
+        def __init__(self, path):
+            self.inner = db.connect(path)
+            self.owner = threading.current_thread().name
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def close(self):
+            self.inner.close()
+            if self.owner == "backup-worker":
+                backup_connection_closed.set()
+
+    class Worker:
+        def request_stop(self):
+            worker_stop_forwarded.set()
+
+        def run_once(self, monotonic=0.0):
+            pytest.fail("stopped partial start must not run backup work")
+
+    def backup_worker_factory(_conn, _path):
+        factory_started.set()
+        release_factory.wait(2)
+        return Worker()
+
+    class FailingWatcherThread:
+        name = "watcher"
+
+        def start(self):
+            assert factory_started.wait(1)
+            timer = threading.Timer(0.05, release_factory.set)
+            timers.append(timer)
+            timer.start()
+            raise RuntimeError("simulated watcher start failure")
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            return False
+
+    def thread_factory(*, target, daemon, name):
+        if name == "watcher":
+            return FailingWatcherThread()
+        return threading.Thread(target=target, daemon=daemon, name=name)
+
+    base = _adapters(thread_factory=thread_factory)
+    adapters = RuntimeAdapters(
+        connect=lambda path: TrackedConnection(path),
+        migrate=base.migrate,
+        api_serve=base.api_serve,
+        watcher_factory=base.watcher_factory,
+        obsidian_worker_factory=base.obsidian_worker_factory,
+        backup_worker_factory=backup_worker_factory,
+        thread_factory=thread_factory,
+        monotonic=base.monotonic,
+    )
+    runtime = ClipVaultRuntime(
+        _cfg(tmp_path, backup_enabled=True),
+        adapters=adapters,
+    )
+    monkeypatch.setattr(runtime_app, "_DEFAULT_JOIN_TIMEOUT_S", 0.01)
+
+    try:
+        with pytest.raises(RuntimeError, match="watcher start failure"):
+            runtime.start()
+    finally:
+        release_factory.set()
+        for timer in timers:
+            timer.cancel()
+
+    assert backup_connection_closed.is_set()
+    assert worker_stop_forwarded.is_set()
+    assert runtime.join(0) == []
+
+
 def test_runtime_closes_every_connection_it_opens(tmp_path):
     opened = 0
     closed = 0
@@ -342,6 +441,34 @@ def test_runtime_join_uses_one_shared_deadline(tmp_path):
     assert timeouts[0] == pytest.approx(1.0)
     assert timeouts[1] == pytest.approx(0.4)
     assert timeouts[2] == 0.0
+
+
+def test_backup_exit_drain_waits_only_for_backup_worker(tmp_path):
+    joins = []
+
+    class WaitingThread:
+        def __init__(self, name, alive=True):
+            self.name = name
+            self.alive = alive
+
+        def join(self, timeout=None):
+            joins.append((self.name, timeout))
+            self.alive = False
+
+        def is_alive(self):
+            return self.alive
+
+    runtime = ClipVaultRuntime(_cfg(tmp_path), adapters=_adapters())
+    api = WaitingThread("api")
+    backup = WaitingThread("backup-worker")
+    runtime._threads = [api, backup]
+
+    assert not runtime.stop_event.is_set()
+    assert runtime.drain_backup_before_exit(3.0) == ["api"]
+    assert runtime.stop_event.is_set()
+    assert len(joins) == 1
+    assert joins[0][0] == "backup-worker"
+    assert joins[0][1] == pytest.approx(3.0)
 
 
 def test_watcher_callback_closes_short_connection_after_dispatch_failure(

@@ -10,16 +10,22 @@ the forbidden public operations.
 
 import os
 import re
+import math
 import stat
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from clipvault.backup import jsonl_store
+from clipvault.backup import cancellation, jsonl_store
+from clipvault.backup.process_tree import ProcessTreeController
 
 _TIMEOUT = 60
+_PROCESS_POLL_S = 0.05
+_PROCESS_TERMINATE_GRACE_S = 0.25
+_PROCESS_REAP_TIMEOUT_S = 2.0
 _DISABLED_HOOKS_PATH = "NUL" if os.name == "nt" else "/dev/null"
 _OBJECT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _CONTENT_ATTRIBUTES = (
@@ -119,6 +125,13 @@ def _run(
 ) -> subprocess.CompletedProcess:
     # Backup is an unattended data path. Repository/global hooks must not turn
     # a misconfigured worktree into arbitrary side effects during add/commit/push.
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout < 0
+    ):
+        raise ValueError("invalid Git command timeout")
     cmd = [
         "git",
         "-c",
@@ -141,6 +154,12 @@ def _run(
     for name in tuple(process_env):
         if name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
             process_env.pop(name, None)
+    if env:
+        process_env.update(env)
+    # These values are policy, not caller preferences. Apply them last so a
+    # temporary-index environment cannot restore terminal prompts. Deliberately
+    # preserve configured AskPass helpers: they are also a standard unattended
+    # credential source for existing HTTPS remotes and encrypted SSH keys.
     process_env.update(
         {
             "GIT_TERMINAL_PROMPT": "0",
@@ -148,37 +167,142 @@ def _run(
             "GIT_NO_REPLACE_OBJECTS": "1",
         }
     )
-    if env:
-        process_env.update(env)
+    cancellation.checkpoint()
+    controller = ProcessTreeController(grace_s=_PROCESS_TERMINATE_GRACE_S)
+    popen_kwargs = {
+        "stdin": subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "env": process_env,
+    }
+    popen_kwargs.update(controller.popen_kwargs)
+    process = None
     try:
-        text_mode = input_bytes is None
-        result = subprocess.run(
+        process = subprocess.Popen(cmd, **popen_kwargs)
+        controller.attach(process)
+    except BaseException:
+        try:
+            if process is not None:
+                try:
+                    controller.terminate(process)
+                finally:
+                    if process.poll() is None:
+                        try:
+                            process.kill()
+                        except OSError:
+                            pass
+                    _reap_process(process)
+        finally:
+            controller.close()
+        raise
+
+    deadline = time.monotonic() + float(timeout)
+    first_input = input_bytes
+    # Hard-cancelling persistent ref/index writers can strand Git lock files.
+    # Temporary-index updates are disposable and remain interruptible; an
+    # already-started ref or real-index write may finish (or reach the existing
+    # command timeout) before the next checkpoint observes shutdown.
+    persistent_writer = bool(args) and (
+        args[0] == "update-ref"
+        or (
+            args[0] == "update-index"
+            and (env is None or "GIT_INDEX_FILE" not in env)
+        )
+    )
+    interruptible = not persistent_writer
+    aborted = False
+    try:
+        while True:
+            now = time.monotonic()
+            if interruptible:
+                cancellation.checkpoint()
+            remaining = deadline - now
+            if remaining <= 0:
+                aborted = True
+                _stop_and_reap_process(process, controller)
+                event = cancellation.current_event()
+                if event is not None and event.is_set():
+                    raise cancellation.BackupCancelled(
+                        "backup shutdown requested"
+                    )
+                # Keep the established timeout contract: callers turn 124 into
+                # GitError/GitPushError and retain their existing retry policy.
+                return subprocess.CompletedProcess(
+                    cmd,
+                    returncode=124,
+                    stdout="",
+                    stderr=f"git timed out after {timeout}s",
+                )
+            try:
+                stdout, stderr = process.communicate(
+                    input=first_input,
+                    timeout=min(_PROCESS_POLL_S, remaining),
+                )
+                break
+            except subprocess.TimeoutExpired:
+                # communicate() may be retried after TimeoutExpired, but input
+                # must only be supplied on the first call.
+                first_input = None
+
+        return subprocess.CompletedProcess(
             cmd,
-            stdin=subprocess.DEVNULL if text_mode else None,
-            input=input_bytes,
-            capture_output=True,
-            text=text_mode,
-            encoding="utf-8" if text_mode else None,
-            errors="surrogateescape" if text_mode else None,
-            timeout=timeout,
-            env=process_env,
+            process.returncode,
+            stdout=stdout.decode("utf-8", errors="surrogateescape"),
+            stderr=stderr.decode("utf-8", errors="replace"),
         )
-        if input_bytes is None:
-            return result
-        return subprocess.CompletedProcess(
-            result.args,
-            result.returncode,
-            stdout=result.stdout.decode("utf-8", errors="surrogateescape"),
-            stderr=result.stderr.decode("utf-8", errors="replace"),
-        )
+    except BaseException:
+        # Popen succeeded, so every exit path must reap it before the repo lock
+        # can be released. This also covers unexpected decoder/test failures.
+        if not aborted:
+            aborted = True
+            _stop_and_reap_process(process, controller)
+        raise
+    finally:
+        # KILL_ON_JOB_CLOSE (Windows) and the owned process group (POSIX) keep a
+        # helper that closed its pipe but outlived Git from escaping this scope.
+        controller.close()
+
+
+def _stop_and_reap_process(
+    process: subprocess.Popen,
+    controller: ProcessTreeController,
+) -> None:
+    """Terminate the owned tree and prove the direct process was reaped."""
+
+    termination_error = None
+    try:
+        controller.terminate(process)
+    except cancellation.BackupProcessTerminationError as exc:
+        termination_error = exc
+    finally:
+        _reap_process(process)
+    if termination_error is not None:
+        raise termination_error
+
+
+def _reap_process(process: subprocess.Popen) -> None:
+    """Close pipes and wait for the direct Git process after tree termination."""
+
+    try:
+        process.communicate(timeout=_PROCESS_REAP_TIMEOUT_S)
     except subprocess.TimeoutExpired:
-        # A hung git op (most likely a network push) must surface as a normal
-        # non-zero result so callers handle it through their existing returncode
-        # paths — push() -> GitPushError (backoff), add_commit() -> GitError
-        # (queue stays pending, retried) — instead of an uncaught TimeoutExpired
-        # crashing the backup worker thread.
-        return subprocess.CompletedProcess(
-            cmd, returncode=124, stdout="", stderr=f"git timed out after {timeout}s",
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.communicate(timeout=_PROCESS_REAP_TIMEOUT_S)
+        except (OSError, subprocess.SubprocessError):
+            raise cancellation.BackupProcessTerminationError(
+                "Git process reap failed"
+            ) from None
+    except OSError:
+        raise cancellation.BackupProcessTerminationError(
+            "Git process reap failed"
+        ) from None
+    if process.poll() is None:
+        raise cancellation.BackupProcessTerminationError(
+            "Git process reap failed"
         )
 
 

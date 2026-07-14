@@ -1,3 +1,4 @@
+import gc
 import os
 import subprocess
 import sys
@@ -6,6 +7,7 @@ import time
 
 import pytest
 
+from clipvault.backup import cancellation, repo_lock
 from clipvault.backup.repo_lock import RepoLockTimeout, RepoWriteLock
 
 
@@ -54,6 +56,72 @@ def test_wait_is_bounded_and_times_out(tmp_path):
 
     assert not thread.is_alive()
     assert 0.08 <= result[0] < 0.75
+
+
+def test_wait_can_be_cancelled_and_releases_thread_lock(tmp_path):
+    repo = _repo(tmp_path)
+    stop = threading.Event()
+    started = threading.Event()
+    result = []
+
+    def contender():
+        started.set()
+        try:
+            with RepoWriteLock(
+                repo,
+                timeout_s=5.0,
+                poll_interval_s=0.01,
+                cancel_event=stop,
+            ):
+                pass
+        except cancellation.BackupCancelled:
+            result.append("cancelled")
+
+    with RepoWriteLock(repo):
+        thread = threading.Thread(target=contender)
+        thread.start()
+        assert started.wait(1.0)
+        stop.set()
+        thread.join(1.0)
+
+    assert not thread.is_alive()
+    assert result == ["cancelled"]
+    with RepoWriteLock(repo, timeout_s=0.1):
+        pass
+
+
+def test_carrier_close_failure_still_releases_thread_lock(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    real_open = repo_lock._open_private_carrier
+
+    class CloseFailureCarrier:
+        def __init__(self, carrier):
+            self.carrier = carrier
+
+        def __getattr__(self, name):
+            return getattr(self.carrier, name)
+
+        def close(self):
+            raise OSError("injected carrier close failure")
+
+    monkeypatch.setattr(
+        repo_lock,
+        "_open_private_carrier",
+        lambda path: CloseFailureCarrier(real_open(path)),
+    )
+    lock = RepoWriteLock(repo)
+    lock.acquire()
+    with pytest.raises(cancellation.BackupLockCleanupError) as error:
+        lock.release()
+    assert isinstance(error.value.__cause__, OSError)
+    assert str(error.value.__cause__) == "injected carrier close failure"
+
+    monkeypatch.setattr(repo_lock, "_open_private_carrier", real_open)
+    del error
+    del lock
+    gc.collect()
+    with RepoWriteLock(repo, timeout_s=0.1):
+        pass
 
 
 def test_release_allows_reacquire_and_lock_file_persists(tmp_path):

@@ -10,6 +10,8 @@ import threading
 import time
 from pathlib import Path
 
+from clipvault.backup import cancellation
+
 if os.name == "nt":  # pragma: no cover - the opposite branch runs on CI hosts
     import msvcrt
 else:  # pragma: no cover - the opposite branch runs on CI hosts
@@ -97,6 +99,7 @@ class RepoWriteLock:
         *,
         timeout_s: float = 5.0,
         poll_interval_s: float = 0.05,
+        cancel_event: cancellation.CancellationEvent | None = None,
     ):
         if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)):
             raise TypeError("timeout_s must be a non-negative number")
@@ -125,6 +128,7 @@ class RepoWriteLock:
         self.lock_path = git_dir / _LOCK_FILENAME
         self.timeout_s = float(timeout_s)
         self.poll_interval_s = float(poll_interval_s)
+        self.cancel_event = cancel_event
         self._thread_lock = _thread_lock_for(self.lock_path)
         self._file = None
         self._dir_fd = None
@@ -153,11 +157,18 @@ class RepoWriteLock:
             raise RuntimeError("repository lock is already acquired")
 
         deadline = time.monotonic() + self.timeout_s
-        remaining = _remaining(deadline)
-        if not self._thread_lock.acquire(timeout=remaining):
-            raise RepoLockTimeout("backup repository writer lock timed out")
+        while True:
+            cancellation.checkpoint(self.cancel_event)
+            remaining = _remaining(deadline)
+            if self._thread_lock.acquire(
+                timeout=min(self.poll_interval_s, remaining),
+            ):
+                break
+            if remaining <= 0:
+                raise RepoLockTimeout("backup repository writer lock timed out")
 
         try:
+            cancellation.checkpoint(self.cancel_event)
             self._file = _open_private_carrier(self.lock_path)
             # msvcrt locks a byte range. Keep one stable byte in the persistent
             # carrier file; its value has no ownership or stale-state meaning.
@@ -177,12 +188,20 @@ class RepoWriteLock:
                 self._dir_fd = os.open(self.git_dir, directory_flags)
 
             while not self._try_os_lock():
+                cancellation.checkpoint(self.cancel_event)
                 remaining = _remaining(deadline)
                 if remaining <= 0:
                     raise RepoLockTimeout(
                         "backup repository writer lock timed out"
                     )
-                time.sleep(min(self.poll_interval_s, remaining))
+                wait_s = min(self.poll_interval_s, remaining)
+                if self.cancel_event is None:
+                    time.sleep(wait_s)
+                elif self.cancel_event.wait(wait_s):
+                    raise cancellation.BackupCancelled(
+                        "backup shutdown requested"
+                    )
+            cancellation.checkpoint(self.cancel_event)
             carrier = os.fstat(self._file.fileno())
             current_carrier = self.lock_path.lstat()
             if (
@@ -203,34 +222,51 @@ class RepoWriteLock:
             self._locked = True
             return self
         except BaseException:
-            if self._dir_fd is not None:
-                directory_fd = self._dir_fd
-                self._dir_fd = None
-                os.close(directory_fd)
-            if self._file is not None:
-                self._file.close()
-                self._file = None
-            self._thread_lock.release()
+            self._cleanup(unlock=False)
             raise
 
-    def release(self) -> None:
-        if not self._locked or self._file is None:
-            return
-        try:
+    def _cleanup(self, *, unlock: bool) -> None:
+        """Release every owned layer, preserving the first cleanup failure."""
+
+        carrier = self._file
+        directory_fd = self._dir_fd
+        was_locked = self._locked
+        self._file = None
+        self._dir_fd = None
+        self._locked = False
+        first_error: BaseException | None = None
+
+        def attempt(action) -> None:
+            nonlocal first_error
+            try:
+                action()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+
+        if unlock and was_locked and carrier is not None:
             if os.name == "nt":
-                self._file.seek(0)
-                msvcrt.locking(self._file.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                assert self._dir_fd is not None
-                fcntl.flock(self._dir_fd, fcntl.LOCK_UN)
-        finally:
-            self._locked = False
-            if self._dir_fd is not None:
-                os.close(self._dir_fd)
-                self._dir_fd = None
-            self._file.close()
-            self._file = None
-            self._thread_lock.release()
+                def unlock_windows() -> None:
+                    carrier.seek(0)
+                    msvcrt.locking(carrier.fileno(), msvcrt.LK_UNLCK, 1)
+
+                attempt(unlock_windows)
+            elif directory_fd is not None:
+                attempt(lambda: fcntl.flock(directory_fd, fcntl.LOCK_UN))
+        if directory_fd is not None:
+            attempt(lambda: os.close(directory_fd))
+        if carrier is not None:
+            attempt(carrier.close)
+        attempt(self._thread_lock.release)
+        if first_error is not None:
+            raise cancellation.BackupLockCleanupError(
+                "backup repository lock cleanup failed"
+            ) from first_error
+
+    def release(self) -> None:
+        if not self._locked:
+            return
+        self._cleanup(unlock=True)
 
     def __enter__(self) -> "RepoWriteLock":
         return self.acquire()
