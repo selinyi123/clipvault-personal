@@ -195,11 +195,20 @@ def test_single_wake_drains_more_than_one_bounded_batch(tmp_path, monkeypatch):
     monkeypatch.setattr(writer, "write_clip", fast_write)
 
     stop = threading.Event()
-    worker = ObsidianWorker(cfg, interval_s=60, limit=50)
+    # Exercise the queue-size bound, not the separate 500 ms soft budget. On a
+    # loaded shared Windows runner the soft budget can expire after a partial
+    # first batch, making this scheduling test wait for additional thread time
+    # even though its wake/coalescing behavior is correct.
+    worker = ObsidianWorker(
+        cfg,
+        interval_s=60,
+        limit=50,
+        soft_runtime_budget_ms=10_000,
+    )
     thread = threading.Thread(target=worker.run, args=(stop,), daemon=True)
     thread.start()
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 10
         pending = 51
         while pending and time.monotonic() < deadline:
             pending = setup_conn.execute(
