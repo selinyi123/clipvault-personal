@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import re
 
 from clipvault import __version__
-from clipvault.core import secret_guard
+from clipvault.core import origin_metadata, secret_guard
 from clipvault.core import suggest as suggest_core
 from clipvault.service import ClipVaultService
 from clipvault.store.backup_queue_repo import BackupQueueRepo
@@ -36,6 +36,13 @@ def _now_iso() -> str:
 
 def _clip_dict(clip, *, redact: bool) -> dict:
     content = secret_guard.redact_preview(clip.content) if redact else clip.content
+    source_app = (
+        clip.source_app
+        if origin_metadata.origin_metadata_is_safe(
+            clip.source_device, clip.source_app
+        )
+        else None
+    )
     return {
         "id": clip.id,
         "content": content,
@@ -48,7 +55,10 @@ def _clip_dict(clip, *, redact: bool) -> dict:
         "times_seen": clip.times_seen,
         "pinned": clip.pinned,
         "favorite": clip.favorite,
-        "source_app": clip.source_app,
+        # Re-check legacy rows at the response boundary. Keep the stable field
+        # shape, but never serialize origin metadata that current Secret Guard
+        # rules would quarantine.
+        "source_app": source_app,
         "obsidian_path": clip.obsidian_path,
         # Secret previews must not leak exact content length (CONTRACTS §4.3).
         "length": None if redact else len(clip.content),
@@ -145,7 +155,14 @@ class Api:
         content = body.get("content")
         if not isinstance(content, str) or not content.strip():
             return 400, {"error": {"code": "bad_request", "message": "content required"}}
-        outcome = self.service.handle_clipboard_text(content, body.get("source_app"))
+        source_app = body.get("source_app")
+        if not origin_metadata.source_app_is_safe(source_app):
+            return _bad_param(
+                "source_app",
+                "must be a content-safe string of at most "
+                f"{origin_metadata.SOURCE_APP_MAX_CHARS} characters without control characters",
+            )
+        outcome = self.service.handle_clipboard_text(content, source_app)
         if outcome.clip is None:
             return 422, {"error": {"code": outcome.status, "message": "clip rejected"}}
         return 201, {"status": outcome.status,

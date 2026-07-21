@@ -20,6 +20,7 @@ from clipvault.store.unit_of_work import unit_of_work
 _BACKOFF_SECONDS = (60, 120, 300, 900, 1800)
 _DEFAULT_LEASE_SECONDS = 300
 _CLAIMED_PREFIX = "claimed:"
+_BLOCKED_ORIGIN_METADATA_STATE = "blocked_origin_metadata"
 _ERROR_CLASS = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,79}$")
 
 
@@ -153,14 +154,26 @@ class ObsidianQueueRepo:
             "WHERE singleton=1"
         ).fetchone()
         last_updated_at, last_clip_id = cursor if cursor else ("", "")
-        rows = self.conn.execute(
-            "SELECT q.clip_id, q.updated_at, c.id AS existing_id, c.is_secret, "
-            "c.deleted, c.obsidian_path FROM obsidian_queue q "
-            "LEFT JOIN clips c ON c.id = q.clip_id "
-            "WHERE q.state='pending' AND (q.updated_at, q.clip_id) > (?, ?) "
-            "ORDER BY q.updated_at, q.clip_id LIMIT ?",
-            (last_updated_at, last_clip_id, limit),
-        ).fetchall()
+        # Query each indexed state separately, then merge at most 2 * limit
+        # rows in memory. A single ``state IN (...)`` query cannot use the
+        # (state, updated_at, clip_id) index to satisfy the global ordering and
+        # may sort the entire queue before applying LIMIT.
+        rows = []
+        for state in ("pending", _BLOCKED_ORIGIN_METADATA_STATE):
+            rows.extend(
+                self.conn.execute(
+                    "SELECT q.clip_id, q.updated_at, c.id AS existing_id, "
+                    "c.is_secret, c.deleted, c.obsidian_path "
+                    "FROM obsidian_queue q LEFT JOIN clips c ON c.id = q.clip_id "
+                    "WHERE q.state=? AND (q.updated_at, q.clip_id) > (?, ?) "
+                    "ORDER BY q.updated_at, q.clip_id LIMIT ?",
+                    (state, last_updated_at, last_clip_id, limit),
+                ).fetchall()
+            )
+        rows = sorted(
+            rows,
+            key=lambda row: (row["updated_at"], row["clip_id"]),
+        )[:limit]
         ids = [
             row["clip_id"]
             for row in rows
@@ -310,6 +323,32 @@ class ObsidianQueueRepo:
         if commit:
             self.conn.commit()
         return attempts if cur.rowcount else 0
+
+    def block_origin_metadata(
+        self,
+        claim: ObsidianClaim,
+        now: str,
+        *,
+        commit: bool = True,
+    ) -> bool:
+        """Consume an owned claim into a durable, non-ready privacy state."""
+
+        if commit:
+            with unit_of_work(self.conn):
+                return self.block_origin_metadata(claim, now, commit=False)
+        cur = self.conn.execute(
+            "UPDATE obsidian_queue SET state=?, next_attempt_at=?, last_error=?, "
+            "updated_at=? WHERE clip_id=? AND state=?",
+            (
+                _BLOCKED_ORIGIN_METADATA_STATE,
+                now,
+                "OriginMetadataSecret",
+                now,
+                claim.clip_id,
+                claim.state,
+            ),
+        )
+        return cur.rowcount > 0
 
     def stats(self, now: str) -> dict[str, int | str | None]:
         total = self.conn.execute("SELECT COUNT(*) FROM obsidian_queue").fetchone()[0]

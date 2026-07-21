@@ -13,6 +13,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+from clipvault.core import origin_metadata
 from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.obsidian_queue_repo import ObsidianClaim, ObsidianQueueRepo
 from clipvault.store.unit_of_work import unit_of_work
@@ -58,6 +59,13 @@ class ObsidianCommands:
 
     def try_write(self, clip) -> tuple[str | None, str | None]:
         refusal_type = self._secret_write_refused()
+        if (
+            hasattr(clip, "source_device")
+            and not origin_metadata.origin_metadata_is_safe(
+                clip.source_device, getattr(clip, "source_app", None)
+            )
+        ):
+            raise refusal_type(clip.id)
         try:
             path = self._write_clip(clip, self.vault_path, self.type_dirs)
         except refusal_type:
@@ -131,6 +139,30 @@ class ObsidianCommands:
         if skip_write:
             return False
         if clip is None:  # Kept explicit for injected repository implementations.
+            return False
+
+        # Older extension/test facades may provide a clip-shaped object without
+        # origin fields. Real persisted Clips always have source_device; retain
+        # that compatibility while enforcing the gate for every durable row.
+        has_origin = hasattr(clip, "source_device")
+        if has_origin and not origin_metadata.origin_metadata_is_safe(
+            clip.source_device, getattr(clip, "source_app", None)
+        ):
+            try:
+                blocked = self.queue.block_origin_metadata(claim, now)
+            except Exception as exc:
+                self.log.error(
+                    "obsidian unsafe-origin block failed id=%s err=%s",
+                    claim.clip_id,
+                    exc.__class__.__name__,
+                )
+            else:
+                self.log.error(
+                    "obsidian write blocked for unsafe origin metadata "
+                    "id=%s owned=%s",
+                    claim.clip_id,
+                    blocked,
+                )
             return False
 
         path, error = try_write(clip)

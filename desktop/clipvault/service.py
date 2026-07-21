@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from clipvault.application.obsidian_commands import ObsidianCommands
 from clipvault.config import Config
+from clipvault.core import origin_metadata
 from clipvault.obsidian import writer
 from clipvault.pipeline import ingest as pipeline
 from clipvault.store.backup_queue_repo import BackupQueueRepo
@@ -84,6 +85,11 @@ class ClipVaultService:
         return False
 
     def handle_clipboard_text(self, text: str, source_app: str | None = None) -> pipeline.IngestOutcome:
+        # OS/window metadata is best-effort context, not user content. Drop an
+        # unsafe optional value without rejecting the actual clipboard capture.
+        if not origin_metadata.source_app_is_safe(source_app):
+            source_app = None
+            log.warning("discarded unsafe clipboard source metadata")
         outcome = pipeline.ingest(
             self.conn,
             text,
@@ -103,9 +109,9 @@ class ClipVaultService:
             return outcome
 
         log.info(
-            "captured id=%s type=%s len=%d hash=%s app=%s",
+            "captured id=%s type=%s len=%d hash=%s",
             clip.id, clip.content_type, len(clip.content),
-            clip.content_hash[:8], source_app or "-",
+            clip.content_hash[:8],
         )
         if clip.is_secret:
             log.warning(

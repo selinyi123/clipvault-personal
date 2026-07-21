@@ -108,6 +108,31 @@ def test_owner_release_reactivates_dropped_intent_and_can_push(conn, tmp_path):
     assert roundtrip.released_at == released.released_at
 
 
+def test_owner_release_never_exempts_secret_origin_metadata(conn, tmp_path):
+    service = _service(conn, tmp_path)
+    outcome = service.handle_clipboard_text(FAKE_AWS_KEY)
+    clip_id = outcome.clip.id
+    origin_marker = "password=OriginMetadataSecret123"
+    conn.execute("UPDATE clips SET source_app=? WHERE id=?", (origin_marker, clip_id))
+    conn.commit()
+
+    assert service.release_clip(clip_id) is True
+    released = ClipsRepo(conn).get(clip_id)
+    assert released.released is True and released.is_secret is False
+    assert conn.execute("SELECT COUNT(*) FROM sync_outbox").fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT state FROM obsidian_queue WHERE clip_id=?", (clip_id,)
+    ).fetchone()[0] == "blocked_origin_metadata"
+    assert not (tmp_path / "vault").exists()
+
+    repo, _ = _repo(tmp_path)
+    result = BackupWorker(conn, str(repo), push_enabled=False, now_fn=lambda: NOW).run_once()
+
+    assert result["written"] == 0 and result["dropped"] == 1
+    assert BackupQueueRepo(conn).state_of(clip_id) == "dropped_secret"
+    assert not (repo / "clips").exists()
+
+
 def test_release_between_gate_scan_and_drop_is_serialized_as_public(
     conn,
     tmp_path,
