@@ -135,7 +135,7 @@ class ClipVaultFullKeyboardService : InputMethodService() {
                 editorAction.keyLabel,
                 weight = 1.5f,
                 accessibilityLabel = editorAction.accessibilityLabel,
-            ) { performEditorActionOrEnter() },
+            ) { enter() },
         )
         keys.addView(bottom)
     }
@@ -173,7 +173,7 @@ class ClipVaultFullKeyboardService : InputMethodService() {
 
     private fun commit(s: String) { currentInputConnection?.commitText(s, 1) }
     private fun backspace() { currentInputConnection?.deleteSurroundingText(1, 0) }
-    private fun performEditorActionOrEnter() {
+    private fun enter() {
         val ic = currentInputConnection ?: return
         editorAction.perform(
             performEditorAction = { actionId -> ic.performEditorAction(actionId) },
