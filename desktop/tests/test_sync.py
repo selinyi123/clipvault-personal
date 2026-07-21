@@ -1991,6 +1991,59 @@ def test_h10_malformed_event_does_not_wedge_batch(api, conn):
     assert ClipsRepo(conn).get_by_hash(normalize.content_hash("after bad")) is not None
 
 
+def test_h10_privacy_noop_advances_ack_without_business_side_effects(
+    api,
+    conn,
+    caplog,
+):
+    token = _pair(api)
+    events = [
+        _clip_new_event(1, "before privacy noop"),
+        {
+            "origin_device": PEER,
+            "seq": 2,
+            "kind": "privacy_noop",
+            "ts": "1970-01-01T00:00:00Z",
+            "data": {},
+        },
+        _clip_new_event(3, "after privacy noop"),
+    ]
+
+    with caplog.at_level("ERROR", logger="clipvault.sync"):
+        status, body = api.sync_push(token, {"events": events})
+
+    assert status == 200 and body["acked_upto"] == 3
+    assert {
+        row[0] for row in conn.execute("SELECT content FROM clips").fetchall()
+    } == {"before privacy noop", "after privacy noop"}
+    assert conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM sync_outbox").fetchone()[0] == 0
+    assert not [record for record in caplog.records if record.levelname == "ERROR"]
+
+
+def test_h10_malformed_privacy_noop_is_acked_without_payload_log_leak(
+    api,
+    conn,
+    caplog,
+):
+    token = _pair(api)
+    marker = "privacy-noop-payload-must-not-leak"
+    event = {
+        "origin_device": PEER,
+        "seq": 1,
+        "kind": "privacy_noop",
+        "ts": "1970-01-01T00:00:00Z",
+        "data": {"content": marker},
+    }
+
+    with caplog.at_level("ERROR", logger="clipvault.sync"):
+        status, body = api.sync_push(token, {"events": [event]})
+
+    assert status == 200 and body["acked_upto"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0] == 0
+    assert marker not in caplog.text
+
+
 def test_h10_integrity_conflict_event_does_not_wedge_batch(api, conn):
     # A seq-valid event that violates local DB constraints is permanently bad.
     # Ack it as a no-op so the peer does not retry it forever, but keep applying

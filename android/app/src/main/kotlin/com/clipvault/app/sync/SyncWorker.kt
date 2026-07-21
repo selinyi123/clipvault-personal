@@ -17,7 +17,6 @@ import com.clipvault.app.data.OutboxEntity
 import com.clipvault.app.data.OutboxMetadata
 import com.clipvault.core.Normalize
 import org.json.JSONArray
-import org.json.JSONException
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -91,9 +90,15 @@ internal fun buildSyncPushBatch(
     var requestBytes = EMPTY_SYNC_PUSH_REQUEST_BYTES
 
     for (row in batch) {
-        val data = try {
-            JSONObject(row.payload)
-        } catch (e: JSONException) {
+        val data = parseStrictJsonObject(row.payload)
+        if (data == null) {
+            if (selected.isEmpty()) {
+                throw SyncPushBlockedException(row.seq, SyncPushBlockReason.INVALID_PAYLOAD)
+            }
+            break
+        }
+        val projection = projectOutboxRowForWire(row, data)
+        if (projection == null) {
             if (selected.isEmpty()) {
                 throw SyncPushBlockedException(row.seq, SyncPushBlockReason.INVALID_PAYLOAD)
             }
@@ -102,9 +107,9 @@ internal fun buildSyncPushBatch(
         val event = JSONObject()
             .put("origin_device", deviceId)
             .put("seq", row.seq)
-            .put("kind", row.kind)
-            .put("ts", row.createdAt)
-            .put("data", data)
+            .put("kind", projection.kind)
+            .put("ts", projection.timestamp)
+            .put("data", projection.data)
         val eventBytes = event.toString().toByteArray(Charsets.UTF_8).size
         val separatorBytes = if (selected.isEmpty()) 0 else 1
         val remainingBytes = maxRequestBytes - requestBytes - separatorBytes
