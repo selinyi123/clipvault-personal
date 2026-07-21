@@ -16,7 +16,25 @@
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
-| Last updated | 2026-07-14 |
+| Last updated | 2026-07-21 |
+
+## Current development note - 2026-07-21 / R000 API FTS preflight boundary
+
+- The API-owned SQLite connection remains the single authority that migrates
+  and performs the potentially O(N) search-index drift audit or repair before
+  it binds. No second connection is allowed to attest to or skip this Gate C
+  check, avoiding file-retarget and concurrent-writer TOCTOU windows.
+- The API thread now signals a separate preflight-complete event immediately
+  after repair. Only then does the runtime start its five-second bind readiness
+  budget; all other workers and the clipboard watcher remain stopped until the
+  API has actually bound. A repair failure is terminal and starts no other
+  worker. A stop requested during repair prevents a late bind after repair
+  returns.
+- The public `api.server.serve()` entrypoint remains self-sufficient and keeps
+  all existing callers compatible; the new callback is optional. Search
+  eligibility, Secret Guard Gate C, REST behavior, schema, `--once`,
+  dependencies, version metadata, release artifacts, and Issue #36 authority
+  are unchanged.
 
 ## Current development note - 2026-07-21 / R000 clipboard retry semantics
 

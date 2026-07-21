@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import threading
 
 import pytest
 
 from clipvault.api import server as api_server
+from clipvault.config import Config
 from clipvault.core.models import Clip
 from clipvault.store import db
 from clipvault.store import clips_repo as clips_repo_module
@@ -329,6 +331,80 @@ def test_api_startup_gate_repairs_legacy_writer_drift(conn):
     assert _mapping(conn, "drift-secret") is None
     assert _mapping(conn, "drift-deleted") is None
     _assert_search_invariant(conn)
+
+
+def _server_config(tmp_path) -> Config:
+    return Config(
+        device_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        device_name="fts-preflight-test",
+        db_path=str(tmp_path / "server.sqlite3"),
+        max_clip_bytes=1_048_576,
+        poll_ms=500,
+        vault_path=str(tmp_path / "vault"),
+    )
+
+
+def test_server_signals_preflight_after_repair_and_before_bind(
+    tmp_path,
+    monkeypatch,
+):
+    events = []
+    stop = threading.Event()
+
+    class Httpd:
+        server_address = ("127.0.0.1", 8787)
+        timeout = 0.0
+
+        def handle_request(self):
+            events.append("request")
+            stop.set()
+
+        def server_close(self):
+            events.append("close")
+
+    def prepare_database(_conn):
+        events.append("repair")
+
+    def build_server(*args, **kwargs):
+        events.append("bind")
+        return Httpd()
+
+    monkeypatch.setattr(api_server, "_prepare_database", prepare_database)
+    monkeypatch.setattr(api_server, "build_server", build_server)
+
+    api_server.serve(
+        _server_config(tmp_path),
+        stop,
+        on_preflight_complete=lambda: events.append("preflight"),
+        on_ready=lambda: events.append("ready"),
+    )
+
+    assert events == ["repair", "preflight", "bind", "ready", "request", "close"]
+
+
+def test_stop_requested_at_preflight_boundary_prevents_late_bind(
+    tmp_path,
+    monkeypatch,
+):
+    stop = threading.Event()
+    ready = threading.Event()
+
+    monkeypatch.setattr(api_server, "_prepare_database", lambda _conn: None)
+
+    def forbidden_bind(*args, **kwargs):
+        raise AssertionError("API bound after a startup stop request")
+
+    monkeypatch.setattr(api_server, "build_server", forbidden_bind)
+
+    api_server.serve(
+        _server_config(tmp_path),
+        stop,
+        on_preflight_complete=stop.set,
+        on_ready=ready.set,
+    )
+
+    assert stop.is_set()
+    assert not ready.is_set()
 
 
 def test_search_index_repair_failure_rolls_back_complete_previous_state(conn):

@@ -92,6 +92,168 @@ def test_runtime_start_stop_join_are_idempotent_and_content_free(tmp_path):
     assert all(row["error_class"] is None for row in runtime.health().values())
 
 
+class _FakeHttpd:
+    server_address = ("127.0.0.1", 0)
+    timeout = 0.0
+
+    def __init__(self):
+        self.closed = False
+
+    def handle_request(self):
+        time.sleep(0.01)
+
+    def server_close(self):
+        self.closed = True
+
+
+def _runtime_with_real_api(tmp_path, monkeypatch, *, prepare_database, clock=None):
+    started = []
+
+    def thread_factory(*, target, daemon, name):
+        class RecordingThread(threading.Thread):
+            def start(self):
+                started.append(self.name)
+                super().start()
+
+        return RecordingThread(target=target, daemon=daemon, name=name)
+
+    monkeypatch.setattr(runtime_app.api_server, "_prepare_database", prepare_database)
+    monkeypatch.setattr(
+        runtime_app.api_server,
+        "build_server",
+        lambda *args, **kwargs: _FakeHttpd(),
+    )
+    base = _adapters(thread_factory=thread_factory)
+    adapters = RuntimeAdapters(
+        connect=base.connect,
+        migrate=base.migrate,
+        api_serve=runtime_app._RUNTIME_API_SERVE,
+        watcher_factory=base.watcher_factory,
+        obsidian_worker_factory=base.obsidian_worker_factory,
+        backup_worker_factory=base.backup_worker_factory,
+        thread_factory=thread_factory,
+        monotonic=(lambda: clock[0]) if clock is not None else base.monotonic,
+    )
+    return ClipVaultRuntime(_cfg(tmp_path), adapters=adapters), started
+
+
+def test_runtime_does_not_start_other_workers_before_api_preflight(
+    tmp_path,
+    monkeypatch,
+):
+    preflight_started = threading.Event()
+    release_preflight = threading.Event()
+    failures = []
+
+    def prepare_database(_conn):
+        preflight_started.set()
+        assert release_preflight.wait(2)
+
+    runtime, started = _runtime_with_real_api(
+        tmp_path,
+        monkeypatch,
+        prepare_database=prepare_database,
+    )
+
+    def start_runtime():
+        try:
+            runtime.start()
+        except BaseException as exc:
+            failures.append(exc)
+
+    starter = threading.Thread(target=start_runtime)
+    starter.start()
+    assert preflight_started.wait(2)
+    assert started == ["api"]
+    release_preflight.set()
+    starter.join(2)
+
+    assert not starter.is_alive()
+    assert failures == []
+    assert set(started) == {"api", "obsidian-worker", "maintenance", "watcher"}
+    runtime.request_stop()
+    assert runtime.join(2) == []
+
+
+def test_runtime_api_preflight_failure_starts_no_other_worker(tmp_path, monkeypatch):
+    def prepare_database(_conn):
+        raise sqlite3.IntegrityError("private FTS repair detail")
+
+    runtime, started = _runtime_with_real_api(
+        tmp_path,
+        monkeypatch,
+        prepare_database=prepare_database,
+    )
+
+    with pytest.raises(RuntimeError, match="api"):
+        runtime.start()
+
+    assert started == ["api"]
+    assert runtime.stop_event.is_set()
+    assert runtime.terminal_errors() == {"api": "IntegrityError"}
+    assert runtime.join(0) == []
+
+
+def test_runtime_stop_during_api_preflight_prevents_late_bind(tmp_path, monkeypatch):
+    preflight_started = threading.Event()
+    release_preflight = threading.Event()
+    failures = []
+
+    def prepare_database(_conn):
+        preflight_started.set()
+        assert release_preflight.wait(2)
+
+    runtime, started = _runtime_with_real_api(
+        tmp_path,
+        monkeypatch,
+        prepare_database=prepare_database,
+    )
+
+    def forbidden_bind(*args, **kwargs):
+        raise AssertionError("API bound after stop during preflight")
+
+    monkeypatch.setattr(runtime_app.api_server, "build_server", forbidden_bind)
+
+    def start_runtime():
+        try:
+            runtime.start()
+        except BaseException as exc:
+            failures.append(exc)
+
+    starter = threading.Thread(target=start_runtime)
+    starter.start()
+    assert preflight_started.wait(2)
+    runtime.request_stop()
+    release_preflight.set()
+    starter.join(2)
+
+    assert not starter.is_alive()
+    assert len(failures) == 1
+    assert isinstance(failures[0], RuntimeStopRequested)
+    assert started == ["api"]
+    assert runtime.join(0) == []
+
+
+def test_runtime_preflight_time_is_outside_api_readiness_budget(tmp_path, monkeypatch):
+    clock = [0.0]
+
+    def prepare_database(_conn):
+        clock[0] = 60.0
+
+    runtime, _started = _runtime_with_real_api(
+        tmp_path,
+        monkeypatch,
+        prepare_database=prepare_database,
+        clock=clock,
+    )
+    runtime.start_timeout_s = 0.1
+
+    runtime.start()
+    runtime.request_stop()
+
+    assert runtime.join(2) == []
+
+
 def test_backup_worker_is_non_daemon_interpreter_exit_guard(tmp_path):
     runtime = ClipVaultRuntime(
         _cfg(tmp_path, backup_enabled=True),

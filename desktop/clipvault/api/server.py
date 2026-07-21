@@ -808,7 +808,7 @@ def build_server(
 
 
 def _prepare_database(conn) -> None:
-    """Migrate and repair search drift once at the API readiness gate."""
+    """Migrate and repair search drift once before serving."""
 
     from clipvault.store import db
     from clipvault.store.clips_repo import ClipsRepo
@@ -825,6 +825,7 @@ def serve(
     *,
     obsidian_notify=None,
     on_ready=None,
+    on_preflight_complete=None,
 ) -> None:
     """Own the DB connection inside this (serving) thread, then loop."""
     from clipvault.service import ClipVaultService
@@ -833,11 +834,12 @@ def serve(
     conn = db.connect(config.db_path)
     httpd = None
     try:
-        # Idempotent and self-sufficient regardless of caller order.
-        # The API readiness gate runs before the runtime starts its clipboard
-        # watcher.  Repair legacy schema-8 writer drift once here rather than
-        # turning every short-lived capture service into an O(N) index audit.
         _prepare_database(conn)
+        if on_preflight_complete is not None:
+            on_preflight_complete()
+        # A stop requested during a long repair must not permit a late bind.
+        if stop.is_set():
+            return
         api = Api(
             ClipVaultService(conn, config, obsidian_notify=obsidian_notify),
             pairing=pairing,

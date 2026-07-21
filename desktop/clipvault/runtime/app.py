@@ -13,6 +13,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 
 from clipvault.api import server as api_server
 from clipvault.backup import cancellation as backup_cancellation
@@ -30,6 +31,7 @@ log = logging.getLogger("clipvault.runtime")
 _MAINTENANCE_INTERVAL_S = 60.0
 _DEFAULT_JOIN_TIMEOUT_S = 5.0
 _DEFAULT_START_TIMEOUT_S = 5.0
+_RUNTIME_API_SERVE = api_server.serve
 
 
 class RuntimeStopRequested(RuntimeError):
@@ -42,7 +44,7 @@ class RuntimeAdapters:
 
     connect: Callable = db.connect
     migrate: Callable = db.migrate
-    api_serve: Callable = api_server.serve
+    api_serve: Callable = _RUNTIME_API_SERVE
     watcher_factory: Callable = PollingWatcher
     obsidian_worker_factory: Callable = ObsidianWorker
     backup_worker_factory: Callable = BackupWorker
@@ -71,6 +73,7 @@ class ClipVaultRuntime:
         self._threads: list[threading.Thread] = []
         self._terminal_errors: dict[str, str] = {}
         self._degraded_errors: dict[str, str] = {}
+        self._api_preflight_complete = threading.Event()
         self._api_ready = threading.Event()
         self._started = False
         self._obsidian_worker = None
@@ -212,12 +215,22 @@ class ClipVaultRuntime:
                 "watcher", error_class
             ),
         )
+        api_serve = self.adapters.api_serve
+        if api_serve is _RUNTIME_API_SERVE:
+            api_serve = partial(
+                api_serve,
+                on_preflight_complete=self._api_preflight_complete.set,
+            )
+        else:
+            # Injected adapters retain their historical signature and own any
+            # private preparation. Their readiness wait starts immediately.
+            self._api_preflight_complete.set()
         threads = [
             # API readiness is the startup gate. It binds before any watcher can
             # observe or persist clipboard state.
             self._new_thread(
                 "api",
-                self.adapters.api_serve,
+                api_serve,
                 self.config,
                 self.stop_event,
                 obsidian_notify=self._obsidian_worker.notify,
@@ -267,6 +280,20 @@ class ClipVaultRuntime:
                 )
             raise RuntimeStopRequested("runtime stopped during startup")
 
+    def _wait_until_api_preflight(self) -> None:
+        """Wait without a bind timeout while the API connection repairs FTS."""
+
+        while not self._api_preflight_complete.is_set():
+            if self.stop_event.wait(0.01):
+                with self._health_lock:
+                    failed = sorted(self._terminal_errors)
+                if failed:
+                    raise RuntimeError(
+                        f"runtime worker failed during startup: {','.join(failed)}"
+                    )
+                raise RuntimeStopRequested("runtime stopped during startup")
+        self._raise_if_terminal()
+
     def _raise_if_terminal(self) -> None:
         with self._health_lock:
             failed = sorted(self._terminal_errors)
@@ -296,6 +323,7 @@ class ClipVaultRuntime:
                 api_thread, *remaining = candidates
                 api_thread.start()
                 self._threads.append(api_thread)
+                self._wait_until_api_preflight()
                 self._wait_until_ready()
                 for thread in remaining:
                     thread.start()
