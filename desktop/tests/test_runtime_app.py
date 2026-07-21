@@ -13,6 +13,8 @@ from clipvault.runtime import app as runtime_app
 from clipvault.runtime.app import ClipVaultRuntime, RuntimeAdapters, RuntimeStopRequested
 from clipvault.store import db
 from clipvault.store.clips_repo import ClipsRepo
+from clipvault.store.outbox_repo import OutboxRepo
+from clipvault.store.peers_repo import PeersRepo
 
 
 # GitHub's shared Windows runners can pause a newly-created Python thread for
@@ -59,6 +61,15 @@ class _FakeWatcher:
     def run(self, stop):
         self.started.set()
         stop.wait()
+
+
+class _OneMaintenancePass:
+    def __init__(self):
+        self.calls = 0
+
+    def wait(self, _timeout):
+        self.calls += 1
+        return self.calls > 1
 
 
 def _adapters(*, api_serve=None, thread_factory=threading.Thread):
@@ -296,6 +307,67 @@ def test_runtime_capture_does_not_repeat_full_search_index_audit(tmp_path, monke
 
     assert outcome.status == "new"
     assert runtime._obsidian_worker.notify_count == 1
+
+
+def test_maintenance_restart_fails_closed_on_ahead_peer_ack(tmp_path, caplog):
+    cfg = _cfg(tmp_path)
+    private_payload = "PRIVATE-OUTBOX-PAYLOAD"
+    private_device = "PRIVATE-PEER-DEVICE"
+    private_token_hash = "PRIVATE-TOKEN-HASH"
+    conn = db.connect(cfg.db_path)
+    try:
+        db.migrate(conn)
+        outbox = OutboxRepo(conn)
+        first_seq = outbox.append(
+            "test",
+            {"content": private_payload},
+            "2026-07-21T00:00:00Z",
+        )
+        PeersRepo(conn).upsert_pair(
+            private_device,
+            "private peer",
+            private_token_hash,
+            "2026-07-21T00:00:00Z",
+        )
+        conn.execute(
+            "UPDATE sync_peers SET my_acked_seq = ? WHERE device_id = ?",
+            (9_223_372_036_854_775_807, private_device),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # A later process lifetime can append more events. The persisted impossible
+    # ACK must still never become a pruning cursor after that restart.
+    restarted = db.connect(cfg.db_path)
+    try:
+        second_seq = OutboxRepo(restarted).append(
+            "test",
+            {"content": "future event"},
+            "2026-07-21T00:01:00Z",
+        )
+    finally:
+        restarted.close()
+
+    runtime = ClipVaultRuntime(cfg, adapters=_adapters())
+    runtime.stop_event = _OneMaintenancePass()
+    with caplog.at_level("ERROR", logger="clipvault.runtime"):
+        runtime._maintenance_loop()
+
+    verified = db.connect(cfg.db_path)
+    try:
+        assert [
+            event["seq"] for event in OutboxRepo(verified).list_since(0)
+        ] == [first_seq, second_seq]
+        assert PeersRepo(verified).get(private_device)["my_acked_seq"] == (
+            9_223_372_036_854_775_807
+        )
+    finally:
+        verified.close()
+    assert "InvalidPeerAckState" in caplog.text
+    assert private_payload not in caplog.text
+    assert private_device not in caplog.text
+    assert private_token_hash not in caplog.text
 
 
 def test_runtime_terminal_worker_error_requests_coordinated_shutdown(tmp_path, caplog):

@@ -17,6 +17,7 @@ from clipvault.store.memory_repo import (
     MemoryRepo,
     SecretMemoryError,
 )
+from clipvault.store.outbox_repo import OutboxRepo
 from clipvault.store.peers_repo import PeersRepo
 from clipvault.store.unit_of_work import unit_of_work
 from clipvault.sync import engine as sync_engine
@@ -474,9 +475,24 @@ class Api:
             return 401, {"error": {"code": "unauthorized", "message": "bad token"}}
         device_id = peer["device_id"]
         try:
-            since = _int_param(params, "since_seq", 0, min_value=0, max_value=9_223_372_036_854_775_807)
+            since = _int_param(
+                params,
+                "since_seq",
+                0,
+                min_value=0,
+                max_value=_OUTBOX_BASE_SEQ_MAX,
+            )
         except ValueError as exc:
             return _bad_param("since_seq", str(exc))
+        high_water = OutboxRepo(self.conn).sequence_high_water()
+        if since > high_water:
+            return 409, {"error": {
+                "code": "sync_cursor_ahead",
+                "message": (
+                    "sync pull cursor is ahead of desktop outbox history; "
+                    "re-pair before retrying"
+                ),
+            }}
         try:
             result = sync_engine.build_pull(self.conn, since)
         except sync_engine.SyncPullEventTooLarge as exc:
@@ -487,7 +503,7 @@ class Api:
                     f"({exc.event_bytes}>{exc.max_bytes} bytes)"
                 ),
             }}
-        self.peers.set_my_acked(device_id, since)
+        self.peers.set_my_acked(device_id, since, high_water=high_water)
         self.peers.touch_last_seen(device_id, _now_iso())
         return 200, result
 
