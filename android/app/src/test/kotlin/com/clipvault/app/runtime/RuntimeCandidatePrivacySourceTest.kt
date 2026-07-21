@@ -57,6 +57,14 @@ class RuntimeCandidatePrivacySourceTest {
     }
 
     @Test
+    fun rawCandidateMixerCannotBypassMemoryPrivacyAndPayloadGate() {
+        val body = functionBody("fun mix(clips: List<ClipEntity>")
+        val gate = body.indexOf("EligibleMemoryCandidates.fromRows(")
+
+        assertTrue("raw memories must enter the opaque eligible batch before ranking", gate >= 0)
+    }
+
+    @Test
     fun roomRecentClipsKeepsPrivacyGateBeforeTextLeavesRuntime() {
         val body = functionBody("override fun listRecentClips(")
         val scan = body.indexOf("loadClipCandidateWindow(db, \"\", limit)")
@@ -98,6 +106,83 @@ class RuntimeCandidatePrivacySourceTest {
                 "fun candidateRowsById(ids: List<String>, maxContentBytes: Int): List<ClipEntity>",
             ),
         )
+    }
+
+    @Test
+    fun listCandidatesAndListMemoryShareTheOpaqueMemoryLoader() {
+        val candidates = functionBody("override fun listCandidates(")
+        val memory = functionBody("override fun listMemory(")
+
+        assertTrue(candidates.contains("loadMemoryCandidateWindow("))
+        assertTrue(candidates.contains("CandidateMixer.mix(clips, memories, query, limit)"))
+        assertTrue(memory.contains("loadMemoryCandidateWindow("))
+        assertTrue(memory.contains(".toMemoryCandidates(limit)"))
+        assertTrue(!candidates.contains("db.memory().list("))
+        assertTrue(!memory.contains(".memory().list("))
+    }
+
+    @Test
+    fun roomMemoryLoaderUsesOneMetadataWindowBeforeBoundedHydration() {
+        val body = functionSection(
+            "private fun loadMemoryCandidateWindow(",
+            "private inline fun <T> safe(",
+        )
+        val gate = body.indexOf("EligibleMemoryCandidates.loadWindow(")
+        val metadata = body.indexOf("candidateWindowMetadata(kind = kind, limit = limit)")
+        val hydration = body.indexOf("candidateRowsByRowId(")
+
+        assertTrue("memory loader must enter the opaque budget gate", gate >= 0)
+        assertTrue("memory metadata must be read before payload rows", metadata > gate)
+        assertTrue("only metadata-approved rowids may hydrate payload", hydration > metadata)
+    }
+
+    @Test
+    fun memoryDaoUsesRowIdMetadataAndRepeatsAllHydrationPredicates() {
+        assertTrue(dbSource.contains("SELECT _rowid_ AS rowId,"))
+        assertTrue(dbSource.contains("length(CAST(text AS BLOB)) AS textBytes"))
+        assertTrue(dbSource.contains("COALESCE(length(CAST(label AS BLOB)), 0) AS labelBytes"))
+        assertTrue(dbSource.contains("WHERE _rowid_ IN (:rowIds)"))
+        assertTrue(dbSource.contains("AND deleted = 0"))
+        assertTrue(
+            dbSource.contains(
+                "AND kind IN ('term', 'phrase', 'prompt', 'command', 'key_info', 'path')",
+            ),
+        )
+        assertTrue(dbSource.contains("AND (:kind = '' OR kind = :kind)"))
+        assertTrue(
+            dbSource.contains("length(CAST(text AS BLOB)) BETWEEN 1 AND :maxTextBytes"),
+        )
+        assertTrue(
+            dbSource.contains("COALESCE(length(CAST(label AS BLOB)), 0) <= :maxLabelBytes"),
+        )
+        assertTrue(!dbSource.contains("fun candidateWindowMetadata(kind: String, q: String"))
+        assertTrue(!dbSource.contains("q: String,\n        maxTextBytes"))
+        assertTrue(
+            Regex(
+                "AND kind IN \\('term', 'phrase', 'prompt', 'command', 'key_info', 'path'\\)",
+            ).findAll(dbSource).count() == 2,
+        )
+    }
+
+    @Test
+    fun memoryHydrationDoesNotMaterializeStoredSource() {
+        val rowStart = dbSource.indexOf("data class MemoryCandidateRow(")
+        val rowEnd = dbSource.indexOf("@Dao", rowStart)
+        val daoEnd = dbSource.indexOf("@Database", rowEnd)
+        assertTrue(rowStart >= 0 && rowEnd > rowStart)
+        assertTrue(daoEnd > rowEnd)
+        val rowProjection = dbSource.substring(rowStart, rowEnd)
+        val memoryDao = dbSource.substring(rowEnd, daoEnd)
+
+        assertTrue(!rowProjection.contains("val source: String"))
+        assertTrue(
+            dbSource.contains(
+                "SELECT _rowid_ AS rowId, kind, text, label, pinned, useCount, deleted",
+            ),
+        )
+        assertTrue(!dbSource.contains("pinned, useCount, source, deleted"))
+        assertTrue(rowProjection.contains("source = MEMORY_CANDIDATE_SOURCE_PLACEHOLDER"))
+        assertTrue(!memoryDao.contains(":q"))
     }
 
     private fun functionBody(signature: String): String {
