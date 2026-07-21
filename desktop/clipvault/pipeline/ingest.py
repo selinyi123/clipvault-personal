@@ -11,7 +11,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
-from clipvault.core import classifier, normalize, secret_guard, ulid
+from clipvault.core import (
+    classifier,
+    normalize,
+    origin_metadata,
+    secret_guard,
+    ulid,
+)
 from clipvault.core.models import Clip
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
@@ -75,6 +81,8 @@ def build_ingest_plan(
 
     if content_hash != normalize.content_hash(content):
         raise ValueError("content_hash does not match normalized content")
+    if not origin_metadata.origin_metadata_is_safe(source_device, source_app):
+        raise ValueError("unsafe clip origin metadata")
 
     verdict = secret_guard.scan(content)  # gate A
     content_type = classifier.classify(content)
@@ -119,16 +127,23 @@ def ingest(
     now_fn: Callable[[], str] = _utc_now,
     new_id_fn: Callable[[], str] = ulid.new,
 ) -> IngestOutcome:
-    clips = ClipsRepo(conn)
-    backup_queue = BackupQueueRepo(conn)
-    obsidian_queue = ObsidianQueueRepo(conn)
-
     content = normalize.normalize(raw_text)
     reason = normalize.reject_reason(content, max_bytes)
     if reason == normalize.REJECT_EMPTY:
         return IngestOutcome(STATUS_REJECTED_EMPTY)
     if reason == normalize.REJECT_TOO_LARGE:
         return IngestOutcome(STATUS_REJECTED_TOO_LARGE)
+
+    # Validate before the duplicate lookup or any other database access. A
+    # legacy duplicate must not let unsafe caller metadata mutate seen counts,
+    # timestamps, or durable downstream intents. build_ingest_plan repeats the
+    # check as a defense for callers that use that public helper directly.
+    if not origin_metadata.origin_metadata_is_safe(source_device, source_app):
+        raise ValueError("unsafe clip origin metadata")
+
+    clips = ClipsRepo(conn)
+    backup_queue = BackupQueueRepo(conn)
+    obsidian_queue = ObsidianQueueRepo(conn)
 
     content_hash = normalize.content_hash(content)
     now = now_fn()

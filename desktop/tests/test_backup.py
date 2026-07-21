@@ -176,6 +176,24 @@ def test_c2_gate_c_drops_secret(conn, work_repo):
     assert BackupQueueRepo(conn).state_of(out.clip.id) == "dropped_secret"
 
 
+def test_c2_gate_c_drops_secret_origin_before_jsonl(conn, work_repo):
+    repo, _ = work_repo
+    marker = "AKIAIOSFODNN7EXAMPLE"
+    out = pipeline.ingest(conn, "ordinary metadata gate content", source_device="d")
+    conn.execute("UPDATE clips SET source_app=? WHERE id=?", (marker, out.clip.id))
+    conn.commit()
+
+    stats = BackupWorker(conn, str(repo), push_enabled=False).run_once()
+
+    assert stats["written"] == 0 and stats["dropped"] == 1
+    assert not (repo / "clips").exists()
+    assert BackupQueueRepo(conn).state_of(out.clip.id) == "dropped_secret"
+    error = conn.execute(
+        "SELECT last_error FROM backup_queue WHERE clip_id=?", (out.clip.id,)
+    ).fetchone()[0]
+    assert error == "gate_c_origin_metadata"
+
+
 def test_c3_commit_and_push(conn, work_repo):
     repo, bare = work_repo
     pipeline.ingest(conn, "commit me", source_device="d")

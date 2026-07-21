@@ -1,6 +1,6 @@
-"""Backup worker (GHB-1). Gate C lives here: every clip is re-scanned with
-the current Secret Guard rules immediately before serialization, so a secret
-that slipped past gates A/B (older rules) is still dropped here.
+"""Backup worker (GHB-1). Gate C lives here: every clip and its origin metadata
+are re-scanned with the current Secret Guard rules immediately before
+serialization, so a secret that slipped past gates A/B is still dropped here.
 """
 
 import logging
@@ -8,7 +8,7 @@ import threading
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from clipvault.core import secret_guard
+from clipvault.core import origin_metadata, secret_guard
 from clipvault.backup import cancellation, git_repo, jsonl_store
 from clipvault.backup.repo_lock import RepoLockTimeout, RepoWriteLock
 from clipvault.store.backup_queue_repo import BackupQueueRepo
@@ -25,11 +25,19 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _requires_quarantine(clip) -> bool:
-    """Apply Gate C while honoring the Owner's explicit release audit flag."""
+def _origin_metadata_requires_quarantine(clip) -> bool:
+    return not origin_metadata.origin_metadata_is_safe(
+        clip.source_device, clip.source_app
+    )
 
-    return clip.is_secret or (
-        not clip.released and secret_guard.scan(clip.content).is_secret
+
+def _requires_quarantine(clip) -> bool:
+    """Apply Gate C; Owner release exempts content, never origin metadata."""
+
+    return (
+        _origin_metadata_requires_quarantine(clip)
+        or clip.is_secret
+        or (not clip.released and secret_guard.scan(clip.content).is_secret)
     )
 
 
@@ -118,7 +126,11 @@ class BackupWorker:
                 continue
             # Gate C: re-scan with current rules.
             verdict = secret_guard.scan(clip.content)
-            if clip.is_secret or (verdict.is_secret and not clip.released):
+            if (
+                _origin_metadata_requires_quarantine(clip)
+                or clip.is_secret
+                or (verdict.is_secret and not clip.released)
+            ):
                 transitioned = False
                 with unit_of_work(self.conn):
                     # Serialize the drop decision with Owner release/reenqueue.
@@ -126,9 +138,14 @@ class BackupWorker:
                     # state rather than overwriting a newer public intent.
                     current = self.clips.get(clip_id)
                     if current is not None and _requires_quarantine(current):
+                        drop_reason = (
+                            "gate_c_origin_metadata"
+                            if _origin_metadata_requires_quarantine(current)
+                            else "gate_c_secret"
+                        )
                         transitioned = self.queue.mark_dropped(
                             clip_id,
-                            "gate_c_secret",
+                            drop_reason,
                             commit=False,
                         )
                         clip = None
@@ -421,9 +438,13 @@ class BackupWorker:
             records.append((recorded.id, relpath, line))
             latest[recorded.id] = (relpath, line)
             current = self.clips.get(recorded.id)
-            recorded_secret = recorded.is_secret or (
-                secret_guard.scan(recorded.content).is_secret
-                and (current is None or not current.released)
+            recorded_secret = (
+                _origin_metadata_requires_quarantine(recorded)
+                or recorded.is_secret
+                or (
+                    secret_guard.scan(recorded.content).is_secret
+                    and (current is None or not current.released)
+                )
             )
             current_secret = current is not None and _requires_quarantine(current)
             if recorded_secret or current_secret:
@@ -537,6 +558,12 @@ class BackupWorker:
             return False
         current = self.clips.get(recorded.id)
         if current is None or current.is_secret or recorded.is_secret:
+            return False
+        if not origin_metadata.origin_metadata_is_safe(
+            current.source_device, current.source_app
+        ) or not origin_metadata.origin_metadata_is_safe(
+            recorded.source_device, recorded.source_app
+        ):
             return False
         if not current.released and (
             secret_guard.scan(current.content).is_secret

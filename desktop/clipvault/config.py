@@ -5,7 +5,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from clipvault.core import ulid
+from clipvault.core import origin_metadata, ulid
 from clipvault.obsidian.writer import DEFAULT_TYPE_DIRS
 
 TEMPLATE = """[device]
@@ -115,6 +115,19 @@ def load(path: Path) -> Config:
     if not isinstance(poll_ms, int) or poll_ms < 50:
         raise ConfigError("watcher.poll_fallback_ms", "must be an integer >= 50")
 
+    device_name = device.get("device_name", "desktop-main")
+    if (
+        not isinstance(device_name, str)
+        or not device_name.strip()
+        or not origin_metadata.source_device_is_safe(device_name)
+    ):
+        raise ConfigError(
+            "device.device_name",
+            "must be a non-empty, content-safe string of at most "
+            f"{origin_metadata.SOURCE_DEVICE_MAX_CHARS} characters without "
+            "control characters",
+        )
+
     device_id = str(device.get("device_id", "")).strip()
     if not device_id:
         device_id = ulid.new()
@@ -127,7 +140,7 @@ def load(path: Path) -> Config:
 
     return Config(
         device_id=device_id,
-        device_name=str(device.get("device_name", "desktop-main")),
+        device_name=device_name,
         db_path=str(storage.get("db_path", "data/clipvault.db")),
         max_clip_bytes=max_clip_bytes,
         poll_ms=poll_ms,

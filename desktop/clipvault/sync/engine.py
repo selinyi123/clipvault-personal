@@ -10,7 +10,7 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from clipvault.core import normalize, secret_guard
+from clipvault.core import normalize, origin_metadata, secret_guard
 from clipvault.core.models import CONTENT_TYPES, MEMORY_KINDS, Clip
 from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.backup_queue_repo import BackupQueueRepo
@@ -222,18 +222,9 @@ def _validated_remote_clip(data: dict, *, max_bytes: int) -> Clip:
         raise MalformedSyncEvent("invalid times_seen")
     source_device = data.get("source_device", "peer")
     source_app = data.get("source_app")
-    if (
-        not isinstance(source_device, str)
-        or not source_device
-        or len(source_device) > 256
-        or _has_control_chars(source_device)
-    ):
+    if not origin_metadata.source_device_is_safe(source_device):
         raise MalformedSyncEvent("invalid source_device")
-    if source_app is not None and (
-        not isinstance(source_app, str)
-        or len(source_app) > 1024
-        or _has_control_chars(source_app)
-    ):
+    if not origin_metadata.source_app_is_safe(source_app):
         raise MalformedSyncEvent("invalid source_app")
 
     verdict = secret_guard.scan(content)  # gate A on arrival
@@ -286,7 +277,9 @@ def clip_requires_local_quarantine(clip: Clip) -> bool:
 
 def emit_clip_new(conn, clip: Clip, when: str, *, commit: bool = True) -> int | None:
     """Publish a locally-created public clip. Gate B: secrets never emitted."""
-    if clip_requires_local_quarantine(clip):
+    if clip_requires_local_quarantine(clip) or not origin_metadata.origin_metadata_is_safe(
+        clip.source_device, clip.source_app
+    ):
         return None
     return OutboxRepo(conn).append("clip_new", clip_to_data(clip), when, commit=commit)
 
@@ -340,7 +333,9 @@ def _emit_clip_meta_uncommitted(
     if clip is None:
         log.error("clip metadata sync blocked for missing local clip")
         return None
-    if clip_requires_local_quarantine(clip):
+    if clip_requires_local_quarantine(clip) or not origin_metadata.origin_metadata_is_safe(
+        clip.source_device, clip.source_app
+    ):
         log.error("secret clip metadata blocked at sync outbox boundary")
         return None
     fields = tuple(
@@ -765,7 +760,9 @@ def _apply_clip_meta(conn, data: dict) -> None:
         row = clips.get_by_hash(content_hash)
         if row is None:
             return
-        if clip_requires_local_quarantine(row):
+        if clip_requires_local_quarantine(row) or not origin_metadata.origin_metadata_is_safe(
+            row.source_device, row.source_app
+        ):
             # A peer must never have learned this hash through a conforming
             # implementation.  Keep the quarantined row local and avoid
             # recording metadata timestamps or downstream intents.
@@ -859,7 +856,13 @@ def _outbox_clip_event_is_blocked(conn, event: dict) -> bool:
             return True
         content_hash = payload["content_hash"]
         clip = ClipsRepo(conn).get_by_hash(content_hash)
-        return clip is None or clip_requires_local_quarantine(clip)
+        return (
+            clip is None
+            or clip_requires_local_quarantine(clip)
+            or not origin_metadata.origin_metadata_is_safe(
+                clip.source_device, clip.source_app
+            )
+        )
     return True
 
 

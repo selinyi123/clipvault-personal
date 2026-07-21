@@ -9,7 +9,7 @@ import re
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 
-from clipvault.core import secret_guard
+from clipvault.core import origin_metadata, secret_guard
 from clipvault.core.models import Clip
 
 DEFAULT_TYPE_DIRS = {
@@ -28,14 +28,18 @@ _RECOVERY_COLLISION_LIMIT = 64
 
 
 class SecretWriteRefused(Exception):
-    """Gate B: secret clips must never be rendered into the vault."""
+    """Gate B: secret content or origin metadata must not reach the vault."""
 
 
 def _requires_quarantine(clip: Clip) -> bool:
-    """Apply the current detector while honoring an explicit Owner release."""
+    """Apply Gate B; Owner release exempts content, never origin metadata."""
 
-    return clip.is_secret or (
-        not clip.released and secret_guard.scan(clip.content).is_secret
+    return (
+        clip.is_secret
+        or not origin_metadata.origin_metadata_is_safe(
+            clip.source_device, clip.source_app
+        )
+        or (not clip.released and secret_guard.scan(clip.content).is_secret)
     )
 
 
