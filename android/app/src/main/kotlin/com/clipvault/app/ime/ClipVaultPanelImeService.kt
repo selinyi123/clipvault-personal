@@ -14,6 +14,9 @@ import android.widget.TextView
 import com.clipvault.app.runtime.Candidate
 import com.clipvault.app.runtime.ClipVaultFacade
 import com.clipvault.app.runtime.ClipVaultRuntime
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 /**
@@ -32,18 +35,29 @@ class ClipVaultPanelImeService : InputMethodService() {
     // All data access goes through the Runtime facade (ADR-0008), never the DAO.
     private val runtime: ClipVaultFacade by lazy { ClipVaultRuntime.facade(this) }
     private val privacySession = ImePrivacySession()
+    private val candidateRequestGate = ImeCandidateRequestGate()
+    private val candidateExecutor = ThreadPoolExecutor(
+        1,
+        1,
+        0L,
+        TimeUnit.MILLISECONDS,
+        LinkedBlockingQueue<Runnable>(1),
+        { runnable -> Thread(runnable, "clipvault-panel-candidates") },
+        ThreadPoolExecutor.DiscardOldestPolicy(),
+    )
+    private var inputSessionToken: ImeCandidateInputSessionToken? = null
     private var candidateList: LinearLayout? = null
     private var saveButton: Button? = null
     private var activePanelLoader: (() -> Unit)? = null
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
-        val wasAllowed = privacySession.allowsPersonalData()
+        inputSessionToken = candidateRequestGate.beginInput()
         privacySession.begin(PrivacyAwareFilter.shouldSuppressCandidates(attribute))
         saveButton?.isEnabled = privacySession.allowsPersonalData()
         candidateList?.let { list ->
             if (privacySession.allowsPersonalData()) {
-                if (!wasAllowed) activePanelLoader?.invoke()
+                activePanelLoader?.invoke()
             } else {
                 showSuppressed(list)
             }
@@ -51,10 +65,23 @@ class ClipVaultPanelImeService : InputMethodService() {
     }
 
     override fun onFinishInput() {
+        candidateRequestGate.endInput()
+        inputSessionToken = null
         privacySession.end()
         saveButton?.isEnabled = false
         candidateList?.let(::showSuppressed)
         super.onFinishInput()
+    }
+
+    override fun onDestroy() {
+        candidateRequestGate.destroy()
+        inputSessionToken = null
+        privacySession.end()
+        activePanelLoader = null
+        candidateList = null
+        saveButton = null
+        candidateExecutor.shutdownNow()
+        super.onDestroy()
     }
 
     override fun onCreateInputView(): View {
@@ -133,43 +160,58 @@ class ClipVaultPanelImeService : InputMethodService() {
         emptyMessage: String,
         limit: Int,
     ) {
-        val token = privacySession.token()
-        if (!privacySession.allowsPersonalData(token)) {
+        val privacyToken = privacySession.token()
+        val requestToken = inputSessionToken?.let(candidateRequestGate::beginRequest)
+        if (requestToken == null || !isCandidateRequestCurrent(requestToken, privacyToken)) {
             showSuppressed(list)
             return
         }
-        thread {
-            if (!privacySession.allowsPersonalData(token)) return@thread
+        candidateExecutor.execute {
+            if (!isCandidateRequestCurrent(requestToken, privacyToken)) return@execute
+            val requestRuntime = runtime
+            if (!isCandidateRequestCurrent(requestToken, privacyToken)) return@execute
             // Ask Runtime for the tab-specific source/kind before applying the UI
             // limit. This prevents one memory kind from starving another kind.
+            val candidates = requestRuntime.listCandidates(
+                limit = PANEL_CANDIDATE_POOL_LIMIT,
+                source = source,
+                kind = kind,
+            )
+            if (!isCandidateRequestCurrent(requestToken, privacyToken)) return@execute
             val items = PanelCandidateTabs.filter(
-                runtime.listCandidates(
-                    limit = PANEL_CANDIDATE_POOL_LIMIT,
-                    source = source,
-                    kind = kind,
-                ),
+                candidates,
                 source, kind, limit,
             )
+            if (!isCandidateRequestCurrent(requestToken, privacyToken)) return@execute
             runOnMain {
-                if (!privacySession.isCurrent(token)) return@runOnMain
-                if (!privacySession.allowsPersonalData(token)) {
-                    showSuppressed(list)
-                    return@runOnMain
-                }
+                if (!isCandidateRequestCurrent(requestToken, privacyToken)) return@runOnMain
                 list.removeAllViews()
                 list.addView(TextView(this).apply { text = title; textSize = 12f })
-                items.forEach { c -> list.addView(candidateButton(c)) }
+                items.forEach { c ->
+                    list.addView(candidateButton(c, requestToken, privacyToken))
+                }
                 if (items.isEmpty()) list.addView(TextView(this).apply { text = emptyMessage })
             }
         }
     }
 
-    private fun candidateButton(c: Candidate): Button =
+    private fun candidateButton(
+        c: Candidate,
+        requestToken: ImeCandidateRequestToken,
+        privacyToken: ImePrivacyToken,
+    ): Button =
         button("${c.label} " + c.text.replace("\n", " ").take(48)) {
-            if (privacySession.allowsPersonalData()) {
+            if (isCandidateRequestCurrent(requestToken, privacyToken)) {
                 currentInputConnection?.commitText(c.text, 1)   // one-tap paste
             }
         }
+
+    private fun isCandidateRequestCurrent(
+        requestToken: ImeCandidateRequestToken,
+        privacyToken: ImePrivacyToken,
+    ): Boolean =
+        candidateRequestGate.isCurrent(requestToken) &&
+            privacySession.allowsPersonalData(privacyToken)
 
     private fun showSuppressed(list: LinearLayout) {
         list.removeAllViews()

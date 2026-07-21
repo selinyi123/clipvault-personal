@@ -21,6 +21,58 @@ class PanelImePrivacySourceTest {
     private val imeSourceDir: Path = panelSource.parent
 
     @Test
+    fun renderedCandidateBindsRequestAndPrivacyTokensBeforeCommit() {
+        val source = String(Files.readAllBytes(panelSource), Charsets.UTF_8)
+        val start = source.indexOf("private fun candidateButton(")
+        val end = source.indexOf("\n    private fun isCandidateRequestCurrent", start)
+        assertTrue("candidateButton() is missing", start >= 0 && end > start)
+
+        val body = source.substring(start, end)
+        val requestParameter = body.indexOf("requestToken: ImeCandidateRequestToken")
+        val privacyParameter = body.indexOf("privacyToken: ImePrivacyToken")
+        val gate = body.indexOf("if (isCandidateRequestCurrent(requestToken, privacyToken))")
+        val inputConnection = body.indexOf("currentInputConnection?.commitText(")
+
+        assertTrue("candidate button must bind its render request", requestParameter >= 0)
+        assertTrue("candidate button must bind its render privacy token", privacyParameter >= 0)
+        assertTrue("candidate button must check both bound tokens", gate > privacyParameter)
+        assertTrue("candidate commit must happen only after the bound-token gate", inputConnection > gate)
+    }
+
+    @Test
+    fun inputLifecycleInvalidatesCandidateRequestsAndShutsDownExecutor() {
+        val source = String(Files.readAllBytes(panelSource), Charsets.UTF_8)
+        val startIndex = source.indexOf("override fun onStartInput(")
+        val finishIndex = source.indexOf("override fun onFinishInput()")
+        val destroyIndex = source.indexOf("override fun onDestroy()")
+        val viewIndex = source.indexOf("override fun onCreateInputView()")
+        assertTrue(
+            "Panel IME lifecycle methods are missing or out of order",
+            startIndex >= 0 && finishIndex > startIndex &&
+                destroyIndex > finishIndex && viewIndex > destroyIndex,
+        )
+        val startInput = source.substring(
+            startIndex,
+            finishIndex,
+        )
+        val finishInput = source.substring(
+            finishIndex,
+            destroyIndex,
+        )
+        val destroy = source.substring(
+            destroyIndex,
+            viewIndex,
+        )
+
+        assertTrue(startInput.contains("inputSessionToken = candidateRequestGate.beginInput()"))
+        assertTrue(finishInput.contains("candidateRequestGate.endInput()"))
+        assertTrue(finishInput.contains("inputSessionToken = null"))
+        assertTrue(destroy.contains("candidateRequestGate.destroy()"))
+        assertTrue(destroy.contains("candidateExecutor.shutdownNow()"))
+        assertTrue(destroy.indexOf("candidateRequestGate.destroy()") < destroy.indexOf("super.onDestroy()"))
+    }
+
+    @Test
     fun saveClipboardChecksPrivacyBeforeClipboardReadAndBeforeRuntimeWrite() {
         val source = String(Files.readAllBytes(panelSource), Charsets.UTF_8)
 
