@@ -41,6 +41,17 @@
             </intent-filter>
         </activity>
 
+        <!-- QS Tile foreground trampoline. Android 10+ only exposes clipboard
+             data to the focused app (or the default IME), so the TileService
+             delegates the explicit tap here and this non-exported activity
+             reads only after its window receives focus. -->
+        <activity
+            android:name=".capture.ClipboardCaptureActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:taskAffinity="" />
+
         <!-- Quick Settings Tile: save the current clipboard with one tap -->
         <service
             android:name=".tile.SaveClipboardTileService"

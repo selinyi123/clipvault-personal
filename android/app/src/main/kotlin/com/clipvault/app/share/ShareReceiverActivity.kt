@@ -13,8 +13,7 @@ import kotlin.concurrent.thread
 class ShareReceiverActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val text = if (intent?.action == Intent.ACTION_SEND)
-            intent.getStringExtra(Intent.EXTRA_TEXT) else null
+        val text = extractSharedText(intent)
         if (text.isNullOrBlank()) {
             finish(); return
         }
@@ -38,5 +37,14 @@ class ShareReceiverActivity : Activity() {
                 finish()
             }
         }
+    }
+
+    companion object {
+        internal fun extractSharedText(intent: Intent?): String? =
+            if (intent?.action == Intent.ACTION_SEND) {
+                intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+            } else {
+                null
+            }
     }
 }
