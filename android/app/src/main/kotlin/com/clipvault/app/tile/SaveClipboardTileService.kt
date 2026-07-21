@@ -1,51 +1,49 @@
 package com.clipvault.app.tile
 
-import android.content.ClipboardManager
-import android.content.Context
+import android.annotation.SuppressLint
+import android.app.PendingIntent
+import android.content.Intent
+import android.os.Build
 import android.service.quicksettings.TileService
-import android.widget.Toast
-import com.clipvault.app.ClipVaultApp
-import com.clipvault.app.capture.Capture
-import com.clipvault.app.sync.SyncScheduler
-import kotlin.concurrent.thread
+import com.clipvault.app.capture.ClipboardCaptureActivity
+import com.clipvault.app.capture.ClipboardCaptureActions
 
 /**
  * Quick Settings tile: save the current clipboard to ClipVault with one tap.
- * Reading the clipboard is allowed here because tapping the tile brings our
- * app momentarily to the foreground (Android 10+ rule). We never poll.
+ * Android 10+ does not grant clipboard access to this TileService, so the
+ * explicit tap opens a minimal foreground activity which reads after focus.
  */
 class SaveClipboardTileService : TileService() {
     override fun onClick() {
         super.onClick()
-        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val text = cm.primaryClip?.takeIf { it.itemCount > 0 }
-            ?.getItemAt(0)?.coerceToText(this)?.toString()
-        if (text.isNullOrBlank()) {
-            showToast("剪贴板为空")
-            return
-        }
-        thread {
-            // Guarded: an uncaught exception in this thread would crash the app.
-            val msg = try {
-                val db = ClipVaultApp.db(this)
-                val r = Capture.ingest(db, text, sourceDevice = android.os.Build.MODEL ?: "android")
-                if (r.shouldRequestSyncPush) SyncScheduler.requestPushBestEffort(this)
-                when (r.status) {
-                    Capture.Status.NEW -> if (r.clip?.isSecret == true) "已隔离" else "已保存"
-                    Capture.Status.DUPLICATE -> "已存在"
-                    Capture.Status.REJECTED -> "未保存"
-                }
-            } catch (e: Exception) {
-                "保存失败"
-            }
-            showToast(msg)
+
+        if (isLocked) {
+            // The callback runs only after a successful unlock. Cancelling the
+            // keyguard flow must never fall through to clipboard capture.
+            unlockAndRun { launchCapture() }
+        } else {
+            launchCapture()
         }
     }
 
-    private fun showToast(msg: String) =
-        ContextCompat_mainThread { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
-
-    private fun ContextCompat_mainThread(block: () -> Unit) {
-        android.os.Handler(mainLooper).post(block)
+    private fun launchCapture() {
+        val captureIntent = Intent(this, ClipboardCaptureActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            .putExtra(ClipboardCaptureActivity.EXTRA_ACTION_ID, ClipboardCaptureActions.issue())
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val pendingIntent = PendingIntent.getActivity(
+                this,
+                0,
+                captureIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            startActivityAndCollapse(pendingIntent)
+        } else {
+            startActivityAndCollapseCompat(captureIntent)
+        }
     }
+
+    @SuppressLint("StartActivityAndCollapseDeprecated")
+    @Suppress("DEPRECATION")
+    private fun startActivityAndCollapseCompat(intent: Intent) = startActivityAndCollapse(intent)
 }
