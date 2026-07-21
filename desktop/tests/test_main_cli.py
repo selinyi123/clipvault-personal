@@ -4,6 +4,8 @@ import pytest
 
 from clipvault import main as clipvault_main
 from clipvault.config import Config
+from clipvault.core import ulid
+from clipvault.instance_lock import InstanceLock as WindowsInstanceLock
 from clipvault.pipeline import ingest as pipeline
 from clipvault.store import db
 from clipvault.store.clips_repo import ClipsRepo
@@ -172,6 +174,60 @@ def test_headless_service_starts_waits_and_closes_runtime(tmp_path, monkeypatch)
 
     assert clipvault_main.main(["--headless"]) == 0
     assert calls == ["start", "wait", "close"]
+
+
+def test_service_releases_instance_mutex_after_runtime_close_and_backup_drain(
+    tmp_path,
+    monkeypatch,
+):
+    cfg = _service_cfg(tmp_path)
+    name = f"Local\\ClipVaultShutdownTest-{ulid.new()}"
+    events = []
+
+    class TrackingInstanceLock(WindowsInstanceLock):
+        def __init__(self):
+            super().__init__(name)
+
+        def __exit__(self, *exc):
+            result = super().__exit__(*exc)
+            events.append("mutex-released")
+            return result
+
+    class Runtime:
+        def __init__(self, _cfg):
+            self.stop_event = threading.Event()
+
+        def start(self):
+            pass
+
+        def wait(self):
+            pass
+
+        def request_stop(self):
+            self.stop_event.set()
+
+        def close(self):
+            events.append("runtime-closed")
+            self.request_stop()
+            return ["backup-worker"]
+
+        def drain_backup_before_exit(self):
+            events.append("backup-drained")
+            return []
+
+        def terminal_errors(self):
+            return {}
+
+    _prepare_service_main(monkeypatch, tmp_path, cfg)
+    monkeypatch.setattr(clipvault_main, "InstanceLock", TrackingInstanceLock)
+    monkeypatch.setattr(clipvault_main, "ClipVaultRuntime", Runtime)
+
+    assert clipvault_main.main(["--headless"]) == 0
+    assert events == ["runtime-closed", "backup-drained", "mutex-released"]
+
+    # The kernel mutex itself, not just the context-manager callback, is free.
+    with WindowsInstanceLock(name):
+        pass
 
 
 def test_service_drains_persistent_backup_writer_before_return(tmp_path, monkeypatch):
