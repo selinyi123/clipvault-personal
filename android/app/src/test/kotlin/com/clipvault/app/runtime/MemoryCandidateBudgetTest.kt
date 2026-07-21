@@ -128,9 +128,15 @@ class MemoryCandidateBudgetTest {
 
     @Test
     fun retainedPayloadUsesUtf8BytesAndStopsAtAggregateBudget() {
-        val text = safeAscii(60 * 1024)
         val label = safeAscii(EligibleMemoryCandidates.MAX_LABEL_UTF8_BYTES)
-        val rows = (1L..10L).map { row(it, text = text, label = label) }
+        val rows = (1L..10L).map { rowId ->
+            val prefix = "row-$rowId "
+            row(
+                rowId,
+                text = prefix + safeAscii(60 * 1024 - prefix.length),
+                label = label,
+            )
+        }
 
         val eligible = EligibleMemoryCandidates.fromRows(
             rows = rows.map(MemoryCandidateRow::toEntity),
