@@ -6,6 +6,8 @@ import com.clipvault.app.capture.Capture
 import com.clipvault.app.data.AppDatabase
 import com.clipvault.app.data.ClipCandidateMetadata
 import com.clipvault.app.data.ClipEntity
+import com.clipvault.app.data.MemoryCandidateMetadata
+import com.clipvault.app.data.MemoryCandidateRow
 import com.clipvault.app.data.MemoryEntity
 import com.clipvault.app.data.MemoryPrivacy
 import com.clipvault.app.sync.SyncScheduler
@@ -180,6 +182,189 @@ internal class EligibleClipCandidates private constructor(
     }
 }
 
+/**
+ * Opaque Personal Memory batch authorized for an IME exit.
+ *
+ * Raw Room rows cannot be passed to the mixer or projected by `listMemory`.
+ * Both call paths receive this type only after the same current-rule Secret
+ * Guard and fixed payload budgets have passed.
+ */
+internal class EligibleMemoryCandidates private constructor(
+    internal val rows: List<MemoryEntity>,
+) {
+    fun toMemoryCandidates(limit: Int): List<MemoryCandidate> = rows
+        .take(limit.coerceAtLeast(0))
+        .map { MemoryCandidate("${it.kind}:${it.text}", it.text, it.kind, it.label) }
+
+    companion object {
+        internal const val MATERIALIZE_BATCH_SIZE = 4
+        internal const val MAX_ROWS = 128
+        internal const val MAX_ITEMS = 100
+        internal const val MAX_KIND_CHARS = 8
+        internal const val MAX_TEXT_CHARS = 64 * 1024
+        internal const val MAX_TEXT_UTF8_BYTES = 64 * 1024
+        internal const val MAX_LABEL_CHARS = 4 * 1024
+        internal const val MAX_LABEL_UTF8_BYTES = 4 * 1024
+        internal const val MAX_SCANNED_BYTES = 512 * 1024
+        internal const val MAX_RETAINED_BYTES = 256 * 1024
+
+        fun empty(): EligibleMemoryCandidates = EligibleMemoryCandidates(emptyList())
+
+        internal fun isValidKind(kind: String): Boolean =
+            kind.length <= MAX_KIND_CHARS && kind in VALID_KINDS
+
+        fun fromRows(
+            rows: List<MemoryEntity>,
+            desiredCount: Int,
+            query: String = "",
+            kind: String = "",
+        ): EligibleMemoryCandidates {
+            val collector = Collector(desiredCount, query.trim(), kind)
+            for ((index, row) in rows.withIndex()) {
+                val hydrated = MemoryCandidateRow(
+                    rowId = index.toLong() + 1L,
+                    kind = row.kind,
+                    text = row.text,
+                    label = row.label,
+                    pinned = row.pinned,
+                    useCount = row.useCount,
+                    deleted = row.deleted,
+                )
+                if (!collector.offer(hydrated)) break
+            }
+            return collector.finish()
+        }
+
+        fun loadWindow(
+            desiredCount: Int,
+            query: String,
+            kind: String,
+            fetchMetadata: (limit: Int) -> List<MemoryCandidateMetadata>,
+            fetchRows: (rowIds: List<Long>) -> List<MemoryCandidateRow>,
+        ): EligibleMemoryCandidates {
+            val collector = Collector(desiredCount, query.trim(), kind)
+            if (!collector.needsMore) return collector.finish()
+
+            val metadata = fetchMetadata(MAX_ROWS)
+            require(metadata.size <= MAX_ROWS) { "memory candidate metadata window exceeded raw-row budget" }
+            val materializableRowIds = LinkedHashSet<Long>(metadata.size)
+            for (item in metadata) {
+                if (
+                    item.textBytes in 1..MAX_TEXT_UTF8_BYTES.toLong() &&
+                    item.labelBytes in 0..MAX_LABEL_UTF8_BYTES.toLong()
+                ) {
+                    materializableRowIds.add(item.rowId)
+                }
+            }
+
+            // SQL IN has no ordering guarantee. Restore the metadata order and
+            // keep at most four text/label payload pairs live per Room read.
+            for (rowIds in materializableRowIds.toList().chunked(MATERIALIZE_BATCH_SIZE)) {
+                if (!collector.needsMore) break
+                val rows = fetchRows(rowIds)
+                require(rows.size <= rowIds.size) { "memory candidate row fetch exceeded requested batch" }
+                val requested = rowIds.toHashSet()
+                val rowsById = LinkedHashMap<Long, MemoryCandidateRow>(rows.size)
+                for (row in rows) {
+                    require(row.rowId in requested) { "memory candidate row fetch returned an unexpected rowid" }
+                    require(rowsById.put(row.rowId, row) == null) {
+                        "memory candidate row fetch returned a duplicate rowid"
+                    }
+                }
+                for (rowId in rowIds) {
+                    val row = rowsById[rowId] ?: continue
+                    if (!collector.offer(row)) break
+                }
+            }
+            return collector.finish()
+        }
+
+        private data class MemoryKey(val kind: String, val text: String)
+
+        private val VALID_KINDS = setOf(
+            "term",
+            "phrase",
+            "prompt",
+            "command",
+            "key_info",
+            "path",
+        )
+
+        private class Collector(
+            desiredCount: Int,
+            private val query: String,
+            private val kind: String,
+        ) {
+            private val desired = desiredCount.coerceIn(0, MAX_ITEMS)
+            private val accepted = LinkedHashMap<MemoryKey, MemoryEntity>(desired)
+            private var scannedRows = 0
+            private var scannedBytes = 0
+            private var retainedBytes = 0
+            private var exhausted = desired == 0 || (kind.isNotEmpty() && !isValidKind(kind))
+
+            val needsMore: Boolean
+                get() = !exhausted && scannedRows < MAX_ROWS && accepted.size < desired
+
+            fun offer(row: MemoryCandidateRow): Boolean {
+                if (!needsMore) return false
+                scannedRows += 1
+
+                // Check UTF-16 length before UTF-8 encoding so a malformed or
+                // legacy multi-megabyte row cannot cause a second huge buffer.
+                if (
+                    row.deleted ||
+                    row.text.isEmpty() ||
+                    !isValidKind(row.kind) ||
+                    (kind.isNotEmpty() && row.kind != kind) ||
+                    row.text.length > MAX_TEXT_CHARS ||
+                    (row.label?.length ?: 0) > MAX_LABEL_CHARS
+                ) {
+                    return needsMore
+                }
+                val textBytes = utf8SizeWithin(row.text, MAX_TEXT_UTF8_BYTES) ?: return needsMore
+                val labelBytes = if (row.label == null) {
+                    0
+                } else {
+                    utf8SizeWithin(row.label, MAX_LABEL_UTF8_BYTES) ?: return needsMore
+                }
+                if (
+                    query.isNotEmpty() &&
+                    !row.text.contains(query, ignoreCase = true) &&
+                    !"[memory:${row.kind}]".contains(query, ignoreCase = true)
+                ) {
+                    return needsMore
+                }
+
+                val payloadBytes = textBytes + labelBytes
+                if (scannedBytes > MAX_SCANNED_BYTES - payloadBytes) {
+                    exhausted = true
+                    return false
+                }
+                scannedBytes += payloadBytes
+                if (scannedBytes >= MAX_SCANNED_BYTES) exhausted = true
+                if (MemoryPrivacy.containsSecret(row.text, row.label)) return needsMore
+
+                val key = MemoryKey(row.kind, row.text)
+                if (accepted.containsKey(key)) return needsMore
+                if (retainedBytes > MAX_RETAINED_BYTES - payloadBytes) return needsMore
+
+                accepted[key] = row.toEntity()
+                retainedBytes += payloadBytes
+                if (retainedBytes >= MAX_RETAINED_BYTES) exhausted = true
+                return needsMore
+            }
+
+            fun finish(): EligibleMemoryCandidates = EligibleMemoryCandidates(accepted.values.toList())
+
+            private fun utf8SizeWithin(value: String, maxBytes: Int): Int? {
+                if (value.length > maxBytes) return null
+                val size = value.toByteArray(Charsets.UTF_8).size
+                return size.takeIf { it <= maxBytes }
+            }
+        }
+    }
+}
+
 internal object CandidateMixer {
     private val memoryKindWeight = mapOf(
         "phrase" to 42,
@@ -194,13 +379,39 @@ internal object CandidateMixer {
         // Ranking fields such as favorite/timesSeen and deterministic id
         // tie-breaks must see the complete bounded source window. Applying the
         // caller's output limit here would make Room order decide the winner.
-        return mix(EligibleClipCandidates.fromRows(clips, EligibleClipCandidates.MAX_ITEMS), memories, query, limit)
+        return mix(
+            EligibleClipCandidates.fromRows(clips, EligibleClipCandidates.MAX_ITEMS),
+            EligibleMemoryCandidates.fromRows(
+                memories,
+                EligibleMemoryCandidates.MAX_ITEMS,
+                query = query,
+            ),
+            query,
+            limit,
+        )
     }
 
     fun mix(clips: EligibleClipCandidates, memories: List<MemoryEntity>, query: String, limit: Int): List<Candidate> {
+        return mix(
+            clips,
+            EligibleMemoryCandidates.fromRows(
+                memories,
+                EligibleMemoryCandidates.MAX_ITEMS,
+                query = query,
+            ),
+            query,
+            limit,
+        )
+    }
+
+    fun mix(
+        clips: EligibleClipCandidates,
+        memories: EligibleMemoryCandidates,
+        query: String,
+        limit: Int,
+    ): List<Candidate> {
         val q = query.trim()
-        val ranked = (clips.rows.map { fromClip(it, q) } + memories
-            .filterNot { MemoryPrivacy.containsSecret(it.text, it.label) }
+        val ranked = (clips.rows.map { fromClip(it, q) } + memories.rows
             .map { fromMemory(it, q) })
             .filter { q.isEmpty() || it.text.contains(q, ignoreCase = true) || it.label.contains(q, ignoreCase = true) }
             .sortedWith(compareByDescending<Candidate> { it.score }
@@ -304,7 +515,16 @@ class RoomClipVaultFacade(context: Context) : ClipVaultFacade {
         } else {
             EligibleClipCandidates.empty()
         }
-        val memories = if (source == null || source == "memory") db.memory().list(kind ?: "") else emptyList()
+        val memories = if (source == null || source == "memory") {
+            loadMemoryCandidateWindow(
+                db = db,
+                query = query,
+                kind = kind ?: "",
+                desiredCount = EligibleMemoryCandidates.MAX_ITEMS,
+            )
+        } else {
+            EligibleMemoryCandidates.empty()
+        }
         CandidateMixer.mix(clips, memories, query, limit)
     }
 
@@ -315,10 +535,13 @@ class RoomClipVaultFacade(context: Context) : ClipVaultFacade {
     }
 
     override fun listMemory(kind: String, limit: Int): List<MemoryCandidate> = safe(emptyList()) {
-        ClipVaultApp.db(ctx).memory().list(kind)
-            .filterNot { MemoryPrivacy.containsSecret(it.text, it.label) }
-            .take(limit)
-            .map { MemoryCandidate("${it.kind}:${it.text}", it.text, it.kind, it.label) }
+        if (limit <= 0) return@safe emptyList()
+        loadMemoryCandidateWindow(
+            db = ClipVaultApp.db(ctx),
+            query = "",
+            kind = kind,
+            desiredCount = limit,
+        ).toMemoryCandidates(limit)
     }
 
     override fun saveExplicit(text: String, sourceDevice: String): Boolean = safe(false) {
@@ -340,6 +563,31 @@ class RoomClipVaultFacade(context: Context) : ClipVaultFacade {
                 db.clips().candidateRowsById(ids, EligibleClipCandidates.MAX_ITEM_UTF8_BYTES)
             },
         )
+
+    private fun loadMemoryCandidateWindow(
+        db: AppDatabase,
+        query: String,
+        kind: String,
+        desiredCount: Int,
+    ): EligibleMemoryCandidates {
+        val q = query.trim()
+        return EligibleMemoryCandidates.loadWindow(
+            desiredCount = desiredCount,
+            query = q,
+            kind = kind,
+            fetchMetadata = { limit ->
+                db.memory().candidateWindowMetadata(kind = kind, limit = limit)
+            },
+            fetchRows = { rowIds ->
+                db.memory().candidateRowsByRowId(
+                    rowIds = rowIds,
+                    kind = kind,
+                    maxTextBytes = EligibleMemoryCandidates.MAX_TEXT_UTF8_BYTES,
+                    maxLabelBytes = EligibleMemoryCandidates.MAX_LABEL_UTF8_BYTES,
+                )
+            },
+        )
+    }
 
     private inline fun <T> safe(fallback: T, block: () -> T): T =
         try { block() } catch (e: Exception) {

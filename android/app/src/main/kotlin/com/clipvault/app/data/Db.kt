@@ -204,6 +204,41 @@ data class MemoryEntity(
     val deleted: Boolean = false,
 )
 
+/** Payload-free first pass for Personal Memory candidates. The composite
+ * primary key includes the full text, so SQLite's stable-for-the-row `_rowid_`
+ * is used only as a short-lived hydration key between the two bounded reads. */
+data class MemoryCandidateMetadata(
+    val rowId: Long,
+    val textBytes: Long,
+    val labelBytes: Long,
+)
+
+internal const val MEMORY_CANDIDATE_SOURCE_PLACEHOLDER = "candidate_projection"
+
+/** Bounded hydration projection which retains the rowid used to request it.
+ * Runtime revalidates every field before converting this to [MemoryEntity].
+ * The candidate path never consumes `source`, so the unbounded stored value is
+ * deliberately not hydrated; [toEntity] uses a non-persisted fixed marker. */
+data class MemoryCandidateRow(
+    val rowId: Long,
+    val kind: String,
+    val text: String,
+    val label: String?,
+    val pinned: Boolean,
+    @ColumnInfo(name = "useCount") val useCount: Int,
+    val deleted: Boolean,
+) {
+    internal fun toEntity(): MemoryEntity = MemoryEntity(
+        kind = kind,
+        text = text,
+        label = label,
+        pinned = pinned,
+        useCount = useCount,
+        source = MEMORY_CANDIDATE_SOURCE_PLACEHOLDER,
+        deleted = deleted,
+    )
+}
+
 @Dao
 interface MemoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -215,6 +250,41 @@ interface MemoryDao {
     @Query("SELECT * FROM memory WHERE deleted = 0 AND (:kind = '' OR kind = :kind) " +
         "ORDER BY pinned DESC, useCount DESC LIMIT 100")
     fun list(kind: String): List<MemoryEntity>
+
+    /** One fixed payload-free window. Kind eligibility is repeated by the
+     * hydration query because another writer can change the row in between.
+     * Query matching stays in Runtime to preserve Kotlin ignore-case behavior. */
+    @Query(
+        """SELECT _rowid_ AS rowId,
+                  length(CAST(text AS BLOB)) AS textBytes,
+                  COALESCE(length(CAST(label AS BLOB)), 0) AS labelBytes
+             FROM memory
+            WHERE deleted = 0
+              AND kind IN ('term', 'phrase', 'prompt', 'command', 'key_info', 'path')
+              AND (:kind = '' OR kind = :kind)
+            ORDER BY pinned DESC, useCount DESC, kind ASC, _rowid_ ASC
+            LIMIT :limit""",
+    )
+    fun candidateWindowMetadata(kind: String, limit: Int): List<MemoryCandidateMetadata>
+
+    /** Hydrate only metadata-approved rowids and repeat all eligibility and
+     * byte-size predicates to close the race between the two Room statements. */
+    @Query(
+        """SELECT _rowid_ AS rowId, kind, text, label, pinned, useCount, deleted
+             FROM memory
+            WHERE _rowid_ IN (:rowIds)
+              AND deleted = 0
+              AND kind IN ('term', 'phrase', 'prompt', 'command', 'key_info', 'path')
+              AND (:kind = '' OR kind = :kind)
+              AND length(CAST(text AS BLOB)) BETWEEN 1 AND :maxTextBytes
+              AND COALESCE(length(CAST(label AS BLOB)), 0) <= :maxLabelBytes""",
+    )
+    fun candidateRowsByRowId(
+        rowIds: List<Long>,
+        kind: String,
+        maxTextBytes: Int,
+        maxLabelBytes: Int,
+    ): List<MemoryCandidateRow>
 }
 
 @Database(

@@ -75,6 +75,15 @@ ClipVault 候选只来自本地事实源（Room/SQLite，DB-1），经 `ClipVaul
    最多 256 Ki code units。统一排序最多看到 100 个已授权 clip，调用者 `limit` 只能在排序和稳定
    tie-break 完成后截断；Recent Clips 列表可以直接按自身 `limit` 收束。这些都是 fail-closed 的运行时预算，
    超限内容仍可留在主 App，但不得为补足 IME 候选而无界扫描或累计大正文。
+   Personal Memory 使用独立但同样有界的两段式出口：Room 一次读取最多 128 行无 `text`/`label` 的
+   `_rowid_` 与 UTF-8 byte-length metadata，再按最多 4 行一批物化；`text` 上限 64 KiB UTF-8 bytes，
+   `label` 上限 4 KiB UTF-8 bytes，且先以对应 UTF-16 code-unit 上限短路以避免为异常超长旧数据分配
+   巨大编码缓冲。水合后必须重新检查 deleted/kind/query/size 与当前 SG-1；单次出口累计 SG 扫描 payload
+   （text + label）最多 512 KiB、保留 payload 最多 256 KiB、最多 100 个已授权 memory。`listCandidates`
+   与 `listMemory` 必须消费同一个不可伪造的已授权批次；不得为补足结果继续翻页或无界重扫。
+   候选投影不得物化不参与显示/排序的 `source`；kind 仅允许 KBD-3 的六种固定值，其他值在 metadata SQL、
+   hydration SQL 与 Runtime 复检三层 fail-closed。query 仅在固定 metadata 窗口之后按 Kotlin
+   `contains(ignoreCase=true)` 匹配正文或生成标签 `[memory:${kind}]`，不得把存储 label 扩展为新搜索面。
 2. **敏感输入域闸门**：当前 `EditorInfo` 为密码/敏感域，或处于 incognito（`IME_FLAG_NO_PERSONALIZED_LEARNING`）时，
    **不展示任何 ClipVault 候选**，且**不产生学习事件**（细则 KEYBOARD_PRIVACY.md）。
 3. **敏感 App 闸门**：⏳ 敏感 App 名单与匹配规则在 v2.3 学习阶段开工时随 slice 冻结。
