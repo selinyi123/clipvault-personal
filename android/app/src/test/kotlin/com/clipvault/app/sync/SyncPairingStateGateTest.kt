@@ -103,6 +103,121 @@ class SyncPairingStateGateTest {
     }
 
     @Test
+    fun separateGatesAllowOnlyOneConcurrentSyncFlight() {
+        val processState = SyncPairingProcessState()
+        val firstGate = SyncPairingStateGate(processState)
+        val secondGate = SyncPairingStateGate(processState)
+        val ready = CountDownLatch(2)
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        var acquired: SyncFlightLease? = null
+
+        try {
+            val first = executor.submit<SyncFlightLease?> {
+                ready.countDown()
+                assertTrue(start.await(2, TimeUnit.SECONDS))
+                firstGate.tryBeginSyncFlight()
+            }
+            val second = executor.submit<SyncFlightLease?> {
+                ready.countDown()
+                assertTrue(start.await(2, TimeUnit.SECONDS))
+                secondGate.tryBeginSyncFlight()
+            }
+            assertTrue(ready.await(2, TimeUnit.SECONDS))
+            start.countDown()
+
+            val leases = listOf(first.get(2, TimeUnit.SECONDS), second.get(2, TimeUnit.SECONDS))
+            assertEquals(1, leases.count { it != null })
+            val winningLease = leases.first { it != null }!!
+            acquired = winningLease
+            assertTrue(firstGate.finishSyncFlight(winningLease))
+            acquired = secondGate.tryBeginSyncFlight()
+            assertTrue(acquired != null)
+        } finally {
+            start.countDown()
+            acquired?.let { firstGate.finishSyncFlight(it) }
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun defaultGatesShareOneProductionSyncFlight() {
+        val firstGate = SyncPairingStateGate()
+        val secondGate = SyncPairingStateGate()
+        val lease = firstGate.tryBeginSyncFlight()
+        assertTrue("production flight must acquire", lease != null)
+
+        try {
+            assertNull(secondGate.tryBeginSyncFlight())
+        } finally {
+            lease?.let { assertTrue(secondGate.finishSyncFlight(it)) }
+        }
+    }
+
+    @Test
+    fun staleSyncLeaseCannotReleaseNewerFlight() {
+        val processState = SyncPairingProcessState()
+        val firstGate = SyncPairingStateGate(processState)
+        val secondGate = SyncPairingStateGate(processState)
+        val first = firstGate.tryBeginSyncFlight()
+        assertTrue("first flight must acquire", first != null)
+        val firstLease = first!!
+
+        assertNull(secondGate.tryBeginSyncFlight())
+        assertTrue(secondGate.finishSyncFlight(firstLease))
+        val second = secondGate.tryBeginSyncFlight()
+        assertTrue("second flight must acquire", second != null)
+        val secondLease = second!!
+        assertFalse(firstGate.finishSyncFlight(firstLease))
+        assertNull(firstGate.tryBeginSyncFlight())
+        assertTrue(firstGate.finishSyncFlight(secondLease))
+    }
+
+    @Test
+    fun cursorCompareAndSetAllowsOnlyOneConcurrentPageApply() {
+        val processState = SyncPairingProcessState()
+        val firstGate = SyncPairingStateGate(processState)
+        val secondGate = SyncPairingStateGate(processState)
+        val expected = firstGate.snapshot { revision, endpointRevision ->
+            request("desktop.local", "token", revision, endpointRevision)
+        }
+        val ready = CountDownLatch(2)
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        var cursor = 40L
+        var pageApplies = 0
+
+        fun attempt(gate: SyncPairingStateGate) = executor.submit<Boolean> {
+            ready.countDown()
+            assertTrue(start.await(2, TimeUnit.SECONDS))
+            gate.runIfCurrent(
+                expected = expected,
+                currentStoreMatches = {
+                    expected.host == "desktop.local" && cursor == 40L
+                },
+                block = {
+                    pageApplies += 1
+                    cursor = 41L
+                },
+            )
+        }
+
+        try {
+            val first = attempt(firstGate)
+            val second = attempt(secondGate)
+            assertTrue(ready.await(2, TimeUnit.SECONDS))
+            start.countDown()
+
+            assertEquals(1, listOf(first.get(2, TimeUnit.SECONDS), second.get(2, TimeUnit.SECONDS)).count { it })
+            assertEquals(1, pageApplies)
+            assertEquals(41L, cursor)
+        } finally {
+            start.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun lateAuthFailureCannotClearFreshPairingOrApplyOldSuccess() {
         val processState = SyncPairingProcessState()
         val gate = SyncPairingStateGate(processState)

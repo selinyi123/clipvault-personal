@@ -279,6 +279,7 @@ internal fun runSyncCycle(
 class SyncWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
     override fun doWork(): Result {
         val s = Settings(applicationContext)
+        val syncFlight = s.tryBeginSyncFlight() ?: return Result.retry()
         return try {
             if (s.host.isNullOrBlank() || s.token.isNullOrBlank()) return Result.success()
             val cycleSnapshot = s.requestSnapshot(hostOverride = null, auth = true)
@@ -331,6 +332,8 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
             // include host/URL details from networking libraries.
             Log.w("ClipVaultSync", "sync failed: ${e.javaClass.simpleName}")
             Result.retry()
+        } finally {
+            s.finishSyncFlight(syncFlight)
         }
     }
 
@@ -345,10 +348,14 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
             val resp = client.pull(since) ?: return false
             val events = resp.getJSONArray("events")
             val nextSince = nextPullCursorOrThrow(since, events, resp)
-            runIfCurrentOrThrow(s, cycleSnapshot) {
+            val applied = s.applyPullPageIfCurrent(
+                expected = cycleSnapshot,
+                expectedSince = since,
+                nextSince = nextSince,
+            ) {
                 SyncApply.applyEvents(db, events)
-                s.sinceSeq = nextSince
             }
+            if (!applied) throw SyncPairingChangedException()
             since = nextSince
             if (!resp.optBoolean("has_more", false)) return true
         }

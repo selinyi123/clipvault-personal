@@ -273,7 +273,17 @@ class Settings(context: Context) {
                 if (!v.isNullOrEmpty()) installFreshToken(v)
             }
         }
-    var sinceSeq: Long get() = sp.getLong("since", 0);      set(v) { sp.edit().putLong("since", v).apply() }
+    /** Direct setter remains for compatibility; pull responses use the CAS
+     * method below so a stale page cannot advance or overwrite this cursor. */
+    var sinceSeq: Long
+        get() = pairingGate.read { sp.getLong("since", 0L) }
+        set(v) {
+            pairingGate.read {
+                if (!sp.edit().putLong("since", v).commit()) {
+                    throw IOException("sync cursor write failed")
+                }
+            }
+        }
     internal val syncPushBlocked: SyncPushBlockedState?
         get() {
             val seq = sp.getLong(PUSH_BLOCKED_SEQ, 0L)
@@ -480,6 +490,32 @@ class Settings(context: Context) {
             currentStoreMatches = { currentEndpointMatches(expected) },
             block = block,
         )
+
+    /** Compare the response's source cursor with durable storage before any
+     * page side effect. Apply and synchronous cursor persistence are linearized
+     * with pairing replacement and every other Settings instance. */
+    internal fun applyPullPageIfCurrent(
+        expected: SyncRequestSnapshot,
+        expectedSince: Long,
+        nextSince: Long,
+        applyPage: () -> Unit,
+    ): Boolean = pairingGate.runIfCurrent(
+        expected = expected,
+        currentStoreMatches = {
+            currentEndpointMatches(expected) && sp.getLong("since", 0L) == expectedSince
+        },
+        block = {
+            applyPage()
+            if (!sp.edit().putLong("since", nextSince).commit()) {
+                throw IOException("sync cursor write failed")
+            }
+        },
+    )
+
+    internal fun tryBeginSyncFlight(): SyncFlightLease? = pairingGate.tryBeginSyncFlight()
+
+    internal fun finishSyncFlight(lease: SyncFlightLease): Boolean =
+        pairingGate.finishSyncFlight(lease)
 
     internal fun finishPairingIfCurrent(expected: SyncRequestSnapshot): Boolean =
         pairingGate.finishPairingIfCurrent(expected)
