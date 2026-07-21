@@ -15,6 +15,13 @@ from clipvault.store import db
 from clipvault.store.clips_repo import ClipsRepo
 
 
+# GitHub's shared Windows runners can pause a newly-created Python thread for
+# more than two seconds while the full suite is CPU-bound.  Keep coordination
+# waits bounded, but leave enough scheduling headroom that these tests measure
+# lifecycle ordering instead of runner load.
+_THREAD_COORDINATION_TIMEOUT_S = 10.0
+
+
 def _cfg(tmp_path, *, backup_enabled: bool = False) -> Config:
     return Config(
         device_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -147,7 +154,7 @@ def test_runtime_does_not_start_other_workers_before_api_preflight(
 
     def prepare_database(_conn):
         preflight_started.set()
-        assert release_preflight.wait(2)
+        assert release_preflight.wait(_THREAD_COORDINATION_TIMEOUT_S)
 
     runtime, started = _runtime_with_real_api(
         tmp_path,
@@ -163,10 +170,10 @@ def test_runtime_does_not_start_other_workers_before_api_preflight(
 
     starter = threading.Thread(target=start_runtime)
     starter.start()
-    assert preflight_started.wait(2)
+    assert preflight_started.wait(_THREAD_COORDINATION_TIMEOUT_S)
     assert started == ["api"]
     release_preflight.set()
-    starter.join(2)
+    starter.join(_THREAD_COORDINATION_TIMEOUT_S)
 
     assert not starter.is_alive()
     assert failures == []
@@ -201,7 +208,7 @@ def test_runtime_stop_during_api_preflight_prevents_late_bind(tmp_path, monkeypa
 
     def prepare_database(_conn):
         preflight_started.set()
-        assert release_preflight.wait(2)
+        assert release_preflight.wait(_THREAD_COORDINATION_TIMEOUT_S)
 
     runtime, started = _runtime_with_real_api(
         tmp_path,
@@ -222,10 +229,10 @@ def test_runtime_stop_during_api_preflight_prevents_late_bind(tmp_path, monkeypa
 
     starter = threading.Thread(target=start_runtime)
     starter.start()
-    assert preflight_started.wait(2)
+    assert preflight_started.wait(_THREAD_COORDINATION_TIMEOUT_S)
     runtime.request_stop()
     release_preflight.set()
-    starter.join(2)
+    starter.join(_THREAD_COORDINATION_TIMEOUT_S)
 
     assert not starter.is_alive()
     assert len(failures) == 1
