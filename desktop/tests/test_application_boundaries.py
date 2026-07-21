@@ -115,7 +115,9 @@ def test_service_facade_preserves_try_write_override(conn, tmp_path, monkeypatch
     service = ClipVaultService(conn, _cfg(tmp_path))
     clip = SimpleNamespace(
         id="legacy-write-hook",
+        content="legacy public hook",
         is_secret=False,
+        released=False,
         deleted=False,
         obsidian_path=None,
     )

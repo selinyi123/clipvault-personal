@@ -116,3 +116,57 @@ def test_secret_refused(tmp_path):
     with pytest.raises(writer.SecretWriteRefused):
         writer.write_clip(clip, tmp_path)
     assert list(tmp_path.rglob("*")) == []
+
+
+def test_current_secret_guard_refuses_legacy_public_row_before_filesystem(
+    tmp_path, monkeypatch
+):
+    clip = _clip(
+        "password=legacy-current-secret-123",
+        "text",
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    )
+    calls = []
+
+    def must_not_write(*_args, **_kwargs):
+        calls.append(True)
+        raise AssertionError("filesystem write must remain unreachable")
+
+    monkeypatch.setattr(writer, "write", must_not_write)
+    with pytest.raises(writer.SecretWriteRefused):
+        writer.render(clip)
+    # The current gate must run before the idempotent existing-path return too.
+    clip.obsidian_path = str(tmp_path / "legacy-secret.md")
+    with pytest.raises(writer.SecretWriteRefused):
+        writer.write_clip(clip, tmp_path)
+    assert calls == []
+    assert list(tmp_path.rglob("*")) == []
+
+
+def test_current_secret_guard_honors_owner_release(tmp_path):
+    clip = _clip(
+        "password=owner-released-secret-123",
+        "text",
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    )
+    clip.released = True
+    clip.released_at = "2026-06-12T08:31:00Z"
+
+    _, rendered = writer.render(clip, tz=timezone.utc)
+    path = writer.write_clip(clip, tmp_path, tz=timezone.utc)
+
+    assert clip.content in rendered
+    assert path.is_file()
+
+
+def test_persisted_secret_still_refused_even_if_release_flag_is_inconsistent(tmp_path):
+    clip = _clip(
+        "owner-marked-public-text",
+        "text",
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    )
+    clip.is_secret = True
+    clip.released = True
+    with pytest.raises(writer.SecretWriteRefused):
+        writer.write_clip(clip, tmp_path)
+    assert list(tmp_path.rglob("*")) == []
