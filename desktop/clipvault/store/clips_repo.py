@@ -119,12 +119,14 @@ class ClipsRepo:
             (search_id, clip_id, content),
         )
 
-    def _unindex_clip(self, clip_id: str) -> None:
+    def _unindex_clip(self, clip_id: str, *, fallback_scan: bool = True) -> None:
         row = self.conn.execute(
             "SELECT search_id FROM clip_search_map WHERE clip_id = ?",
             (clip_id,),
         ).fetchone()
         if row is None:
+            if not fallback_scan:
+                return
             # Defensive cleanup for a pre-schema-9 drifted database.  This is
             # intentionally off the normal hot path because id is UNINDEXED.
             self.conn.execute("DELETE FROM clips_fts WHERE id = ?", (clip_id,))
@@ -571,6 +573,7 @@ class ClipsRepo:
         value: bool,
         *,
         commit: bool = True,
+        maintain_search_index: bool = True,
     ) -> bool:
         if field not in ("pinned", "favorite", "deleted"):
             raise ValueError(f"not a settable flag: {field}")
@@ -580,7 +583,8 @@ class ClipsRepo:
                 f"UPDATE clips SET {field} = ? WHERE id = ?", (int(value), clip_id)
             )
             if (
-                field == "deleted"
+                maintain_search_index
+                and field == "deleted"
                 and cur.rowcount > 0
                 and previous is not None
                 and previous.deleted != value
@@ -658,7 +662,7 @@ class ClipsRepo:
         )
         if not cur.rowcount:
             return None
-        self._unindex_clip(clip_id)
+        self._unindex_clip(clip_id, fallback_scan=not clip.deleted)
         return self.get(clip_id)
 
     def suggest_candidates(self, since_iso: str, limit: int = 200) -> list[Clip]:

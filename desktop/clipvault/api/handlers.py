@@ -34,7 +34,34 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _effective_secret_state(clip) -> tuple[bool, str | None, list[str]]:
+    """Return the current response-time quarantine state for one clip.
+
+    Persisted quarantine always wins.  A current-rule content hit is also
+    quarantined unless the Owner explicitly released that exact local row.
+    Release never clears ``is_secret`` implicitly, so an inconsistent legacy
+    row cannot use the audit flag to bypass persisted quarantine.
+    """
+
+    if clip.is_secret:
+        return True, clip.secret_level, list(clip.secret_reasons)
+    if not clip.released:
+        verdict = secret_guard.scan(clip.content)
+        if verdict.is_secret:
+            return True, verdict.level, list(verdict.reasons)
+    return False, None, []
+
+
+def _clip_requires_content_quarantine(clip) -> bool:
+    return _effective_secret_state(clip)[0]
+
+
 def _clip_dict(clip, *, redact: bool) -> dict:
+    effective_secret, secret_level, secret_reasons = _effective_secret_state(clip)
+    # This is the final response boundary.  Even if a future endpoint forgets
+    # to run the persistent quarantine helper first, it receives a coherent
+    # fixed preview rather than plaintext or a routine 500 response.
+    redact = redact or effective_secret
     content = secret_guard.redact_preview(clip.content) if redact else clip.content
     source_app = (
         clip.source_app
@@ -47,9 +74,9 @@ def _clip_dict(clip, *, redact: bool) -> dict:
         "id": clip.id,
         "content": content,
         "content_type": clip.content_type,
-        "is_secret": clip.is_secret,
-        "secret_level": clip.secret_level,
-        "secret_reasons": clip.secret_reasons,
+        "is_secret": effective_secret,
+        "secret_level": secret_level,
+        "secret_reasons": secret_reasons,
         "created_at": clip.created_at,
         "last_seen_at": clip.last_seen_at,
         "times_seen": clip.times_seen,
@@ -59,7 +86,11 @@ def _clip_dict(clip, *, redact: bool) -> dict:
         # shape, but never serialize origin metadata that current Secret Guard
         # rules would quarantine.
         "source_app": source_app,
-        "obsidian_path": clip.obsidian_path,
+        # Historical public rows may have a filename slug derived from the
+        # first content line.  Once current rules quarantine that row, the
+        # path is secret-adjacent metadata and must follow the same fixed
+        # response boundary as content length.
+        "obsidian_path": None if redact else clip.obsidian_path,
         # Secret previews must not leak exact content length (CONTRACTS §4.3).
         "length": None if redact else len(clip.content),
     }
@@ -136,20 +167,96 @@ class Api:
             db_ok = False
         return 200, {"status": "ok", "version": __version__, "db_ok": db_ok}
 
+    def _guard_current_secret(self, clip):
+        """Re-read and persist a legacy current-rule hit in one short UoW.
+
+        The cheap preflight avoids taking SQLite's writer lock for normal
+        public rows.  A hit is re-read after acquiring the lock so an Owner
+        release that won the race remains authoritative.  Any failure rolls
+        the quarantine and FTS removal back together and propagates before a
+        response can serialize the stale plaintext.
+        """
+
+        if (
+            clip is None
+            or clip.is_secret
+            or clip.released
+            or not secret_guard.scan(clip.content).is_secret
+        ):
+            return clip
+        with unit_of_work(self.conn):
+            current = self.clips.get(clip.id)
+            if current is None or current.is_secret or current.released:
+                return current
+            quarantined = self.clips.quarantine_current_secret(
+                current.id, commit=False
+            )
+            return quarantined or self.clips.get(current.id)
+
+    def _public_response_clip(self, clip):
+        current = self._guard_current_secret(clip)
+        # _guard_current_secret has either verified this exact content under
+        # current rules or persisted the hit and returned the refreshed row.
+        # Avoid running every regex a second time here; _clip_dict remains the
+        # independent final serializer gate for response-producing call sites.
+        if current is None or current.is_secret:
+            return None
+        return current
+
+    def _filter_public_response_clips(self, clips) -> list:
+        safe = []
+        for clip in clips:
+            current = self._public_response_clip(clip)
+            if current is not None:
+                safe.append(current)
+        return safe
+
     def list_clips(self, params: dict) -> tuple[int, dict]:
         secret = params.get("secret") in ("1", "true", "True")
         try:
             limit = _int_param(params, "limit", 50, min_value=1, max_value=200)
         except ValueError as exc:
             return _bad_param("limit", str(exc))
+        query = params.get("q") or None
+        content_type = params.get("type") or None
+        before_id = params.get("before_id") or None
         clips = self.clips.list_clips(
-            query=params.get("q") or None,
-            content_type=params.get("type") or None,
+            query=query,
+            content_type=content_type,
             secret=secret,
             limit=limit,
-            before_id=params.get("before_id") or None,
+            before_id=before_id,
         )
-        return 200, {"clips": [_clip_dict(c, redact=secret) for c in clips]}
+        if secret:
+            return 200, {"clips": [_clip_dict(c, redact=True) for c in clips]}
+
+        public = self._filter_public_response_clips(clips)
+        # A quarantined row must not make a full public page appear empty or
+        # short.  Refill at most once, bounded by the caller's original limit;
+        # repeated hidden rows are allowed to leave a short page rather than
+        # turning a GET into an unbounded database/quarantine sweep.
+        hidden_count = len(clips) - len(public)
+        if hidden_count:
+            # Re-run the same caller filters after the first page's durable
+            # quarantine transitions.  ``before_id`` is an independent filter,
+            # not a cursor derived from result order, so replacing it with the
+            # last returned id could skip valid pinned/time-ordered rows.
+            refill = self.clips.list_clips(
+                query=query,
+                content_type=content_type,
+                secret=False,
+                limit=limit,
+                before_id=before_id,
+            )
+            public = self._filter_public_response_clips(refill)[:limit]
+        serialized = [_clip_dict(c, redact=False) for c in public]
+        # _clip_dict is an independent final gate.  If a test double or a
+        # future hot-reloaded rule set changes between the persistent preflight
+        # and serialization, the public view still excludes the newly
+        # effective secret instead of returning its redacted secret object.
+        return 200, {
+            "clips": [clip for clip in serialized if not clip["is_secret"]]
+        }
 
     def create_clip(self, body: dict) -> tuple[int, dict]:
         content = body.get("content")
@@ -165,8 +272,12 @@ class Api:
         outcome = self.service.handle_clipboard_text(content, source_app)
         if outcome.clip is None:
             return 422, {"error": {"code": outcome.status, "message": "clip rejected"}}
+        response_clip = self._guard_current_secret(outcome.clip)
+        if response_clip is None:
+            return 404, {"error": {"code": "not_found", "message": "clip disappeared"}}
+        redact = response_clip.is_secret
         return 201, {"status": outcome.status,
-                     "clip": _clip_dict(outcome.clip, redact=outcome.clip.is_secret)}
+                     "clip": _clip_dict(response_clip, redact=redact)}
 
     def patch_clip(self, clip_id: str, body: dict) -> tuple[int, dict]:
         clip = self.clips.get(clip_id)
@@ -194,19 +305,44 @@ class Api:
             current = self.clips.get(clip_id)
             if current is None:
                 return 404, {"error": {"code": "not_found", "message": clip_id}}
+            content_quarantined = _clip_requires_content_quarantine(current)
+            newly_quarantined = False
+            if content_quarantined and not current.is_secret:
+                # Persist the newer Gate-C decision in this command's existing
+                # transaction.  The requested local flags and quarantine/FTS
+                # transition therefore commit or roll back as one unit.
+                refreshed = self.clips.quarantine_current_secret(
+                    clip_id, commit=False
+                )
+                newly_quarantined = refreshed is not None
+                current = refreshed or self.clips.get(clip_id)
+            content_quarantined = sync_engine.clip_requires_local_quarantine(
+                current
+            )
+            quarantined = (
+                content_quarantined
+                or not origin_metadata.origin_metadata_is_safe(
+                    current.source_device, current.source_app
+                )
+            )
             deletion_changed = (
                 "deleted" in applied
                 and current.deleted != applied["deleted"]
             )
-            quarantined = sync_engine.clip_requires_local_quarantine(current)
             for field, value in applied.items():
-                self.clips.set_flag(clip_id, field, value, commit=False)
-            if quarantined:
+                self.clips.set_flag(
+                    clip_id,
+                    field,
+                    value,
+                    commit=False,
+                    maintain_search_index=not content_quarantined,
+                )
+            if content_quarantined and not newly_quarantined:
                 # Gate C: a legacy is_secret=0 row may match newer Secret Guard
                 # rules.  In particular, undelete must not reintroduce it into
                 # FTS before the Owner explicitly releases it.
                 self.clips.remove_from_search_index(clip_id, commit=False)
-            else:
+            if not quarantined:
                 # Emit metadata and its field timestamps in this same command.
                 # Gate B keeps every secret flag mutation local-only.
                 sync_engine.emit_clip_meta(
@@ -332,8 +468,20 @@ class Api:
         clip = self.clips.get(clip_id)
         if clip is None:
             return 404, {"error": {"code": "not_found", "message": clip_id}}
+        clip = self._guard_current_secret(clip)
+        if clip is None:
+            return 404, {"error": {"code": "not_found", "message": clip_id}}
         from clipvault.core import actions as action_rules
         chips = action_rules.recommend(clip.content_type, clip.is_secret)
+        if (
+            clip.released
+            and not clip.is_secret
+            and secret_guard.scan(clip.content).is_secret
+        ):
+            # Owner release re-opens the clip pipeline, but Memory retains its
+            # independent SG-1.3 gate.  Offer the local copy action only rather
+            # than advertising a promotion that the command must reject.
+            chips = [chip for chip in chips if chip.action == "copy"]
         return 200, {"actions": [
             {"action": a.action, "label": a.label, "kind": a.kind} for a in chips
         ]}
@@ -363,11 +511,24 @@ class Api:
                 id=m.id, kind=m.kind, text=m.text, label=m.label, pinned=m.pinned,
                 use_count=m.use_count, last_used_at=m.last_used_at, origin="memory",
             ))
-        for c in self.clips.suggest_candidates(since):
+        for candidate in self.clips.suggest_candidates(since):
+            # Scan the complete persisted content before truncating it for the
+            # candidate payload.  A secret after character 200 must not hide
+            # behind a safe-looking prefix.
+            c = self._public_response_clip(candidate)
+            if c is None:
+                continue
+            safe_source_app = (
+                c.source_app
+                if origin_metadata.origin_metadata_is_safe(
+                    c.source_device, c.source_app
+                )
+                else None
+            )
             cands.append(suggest_core.Candidate(
                 id=c.id, kind=c.content_type, text=c.content[:200], pinned=c.pinned,
                 use_count=c.times_seen, last_used_at=c.last_seen_at,
-                source_app=c.source_app, origin="clip",
+                source_app=safe_source_app, origin="clip",
             ))
         ranked = suggest_core.rank(cands, prefix, app, w, now, limit)
         return 200, {"suggestions": [

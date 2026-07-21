@@ -114,7 +114,18 @@ def build_ingest_plan(
 def _duplicate_outcome(clips: ClipsRepo, clip_id: str, now: str) -> IngestOutcome:
     # Deleted clips stay deleted (no resurrection); seen-count still grows.
     clips.touch_seen(clip_id, now, commit=False)
-    return IngestOutcome(STATUS_DUPLICATE, clips.get(clip_id))
+    current = clips.get(clip_id)
+    if current is not None:
+        # Dedup still precedes Gate A, but the seen update and any current-rule
+        # legacy quarantine now share the caller's existing unit of work.  A
+        # crash or FTS failure therefore cannot commit a newer times_seen while
+        # leaving the same secret-shaped row public.  Explicit Owner release is
+        # honored by the repository transition.
+        current = (
+            clips.quarantine_current_secret(clip_id, commit=False)
+            or clips.get(clip_id)
+        )
+    return IngestOutcome(STATUS_DUPLICATE, current)
 
 
 def ingest(
