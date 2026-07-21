@@ -62,12 +62,14 @@ _CSP = (
 
 
 class _RequestDeadline:
-    """Interrupt slow ingress under one header and one fixed body deadline.
+    """Interrupt slow ingress and keep watching coordinated runtime shutdown.
 
     The watchdog touches only the socket and Events; API/service/SQLite work
     remains confined to the single HTTP serving thread. A validated body length
     may replace the header budget once; byte progress never extends either
-    deadline, so a peer cannot monopolise the thread by dripping bytes.
+    deadline, so a peer cannot monopolise the thread by dripping bytes. Once
+    ingress is complete, the deadline is permanently disarmed while the same
+    watchdog continues observing ``stop_event`` until the handler returns.
     """
 
     def __init__(
@@ -89,6 +91,7 @@ class _RequestDeadline:
         self._reason: str | None = None
         self._deadline = 0.0
         self._body_started = False
+        self._ingress_complete = False
         self._thread: threading.Thread | None = None
 
     @property
@@ -101,39 +104,51 @@ class _RequestDeadline:
 
         return self._finished.wait(timeout_s)
 
-    def _abort(self, reason: str) -> None:
-        with self._lock:
-            if self._finished.is_set() or self._reason is not None:
-                return
-            self._reason = reason
-        self._shutdown_read()
-
-    def _shutdown_read(self) -> None:
+    def _shutdown(self, how: int) -> None:
         try:
-            # Stop inbound reads while preserving the best-effort ability to
-            # return a small 408 response on the write side.
-            self.connection.shutdown(socket.SHUT_RD)
+            self.connection.shutdown(how)
         except OSError:
             pass
 
     def check(self) -> str | None:
         """Return/trigger the current abort reason without extending time."""
 
-        reason = self.reason
-        if reason is not None or self._finished.is_set():
-            return reason
-        if self.stop_event is not None and self.stop_event.is_set():
-            self._abort("stopping")
-        elif self._deadline and self.monotonic() >= self._deadline:
-            self._abort("deadline")
-        return self.reason
+        shutdown_how: int | None = None
+        with self._lock:
+            if self._reason is not None or self._finished.is_set():
+                return self._reason
+            if self.stop_event is not None and self.stop_event.is_set():
+                self._reason = "stopping"
+                # Runtime shutdown must also release a response write blocked
+                # by a peer that stopped reading.
+                shutdown_how = socket.SHUT_RDWR
+            elif (
+                not self._ingress_complete
+                and self._deadline
+                and self.monotonic() >= self._deadline
+            ):
+                self._reason = "deadline"
+                # Preserve the write half so the serving thread can return a
+                # best-effort 408 after interrupting a slow inbound read.
+                shutdown_how = socket.SHUT_RD
+            reason = self._reason
+        if shutdown_how is not None:
+            self._shutdown(shutdown_how)
+        return reason
 
     def _run(self) -> None:
         while not self._finished.is_set():
             if self.check() is not None:
                 return
-            remaining = self._deadline - self.monotonic()
-            if self._wait(min(self.poll_s, remaining)):
+            with self._lock:
+                if self._finished.is_set():
+                    return
+                if self._ingress_complete:
+                    wait_s = self.poll_s
+                else:
+                    remaining = self._deadline - self.monotonic()
+                    wait_s = max(0.0, min(self.poll_s, remaining))
+            if self._wait(wait_s):
                 return
 
     def start(self) -> None:
@@ -158,10 +173,14 @@ class _RequestDeadline:
             if self.stop_event is not None and self.stop_event.is_set():
                 self._reason = "stopping"
                 should_abort = True
-            elif self._deadline and now >= self._deadline:
+            elif (
+                not self._ingress_complete
+                and self._deadline
+                and now >= self._deadline
+            ):
                 self._reason = "deadline"
                 should_abort = True
-            elif not self._body_started:
+            elif not self._ingress_complete and not self._body_started:
                 self._body_started = True
                 proportional = self.timeout_s + (
                     length / _MIN_BODY_READ_RATE_BYTES_S
@@ -173,7 +192,31 @@ class _RequestDeadline:
                 self._deadline = now + body_timeout
             reason = self._reason
         if should_abort:
-            self._shutdown_read()
+            self._shutdown(
+                socket.SHUT_RDWR if reason == "stopping" else socket.SHUT_RD
+            )
+        return reason
+
+    def complete_ingress(self) -> str | None:
+        """Disarm the fixed ingress deadline but retain stop observation."""
+
+        shutdown_how: int | None = None
+        with self._lock:
+            if self._reason is not None or self._finished.is_set():
+                return self._reason
+            now = self.monotonic()
+            if self.stop_event is not None and self.stop_event.is_set():
+                self._reason = "stopping"
+                shutdown_how = socket.SHUT_RDWR
+            elif self._deadline and now >= self._deadline:
+                self._reason = "deadline"
+                shutdown_how = socket.SHUT_RD
+            else:
+                self._ingress_complete = True
+                self._deadline = 0.0
+            reason = self._reason
+        if shutdown_how is not None:
+            self._shutdown(shutdown_how)
         return reason
 
     def finish(self) -> None:
@@ -274,10 +317,7 @@ def make_handler(
             deadline = self._request_deadline
             if deadline is None:
                 return True
-            reason = deadline.check()
-            if reason is None:
-                deadline.finish()
-                reason = deadline.reason
+            reason = deadline.complete_ingress()
             if reason is None:
                 return True
             self.close_connection = True
