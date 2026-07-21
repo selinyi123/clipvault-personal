@@ -22,6 +22,7 @@ from clipvault.store import db
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.outbox_repo import OutboxRepo
+from clipvault.store.peers_repo import PeersRepo
 from clipvault.store.unit_of_work import unit_of_work
 from clipvault.sync import engine as sync_engine
 from clipvault.sync.pairing import Pairing, hash_token
@@ -645,6 +646,91 @@ def test_h2_bad_since_seq_returns_400(api):
     assert api.sync_pull(token, {"since_seq": "-1"})[0] == 400
 
 
+def test_h2_pull_rejects_cursor_ahead_of_durable_outbox_history(api, conn):
+    token = _pair(api)
+    private_marker = "PRIVATE-CONTENT-MUST-NOT-LEAK"
+    OutboxRepo(conn).append(
+        "clip_new",
+        _outbox_clip_payload(private_marker),
+        "2026-06-13T10:00:00Z",
+    )
+    peer_before = conn.execute(
+        "SELECT my_acked_seq, last_seen_at FROM sync_peers WHERE device_id = ?",
+        (PEER,),
+    ).fetchone()
+
+    status, body = api.sync_pull(
+        token,
+        {"since_seq": "9223372036854775807"},
+    )
+
+    assert status == 409
+    assert body == {
+        "error": {
+            "code": "sync_cursor_ahead",
+            "message": (
+                "sync pull cursor is ahead of desktop outbox history; "
+                "re-pair before retrying"
+            ),
+        }
+    }
+    serialized = json.dumps(body)
+    assert private_marker not in serialized
+    assert token not in serialized
+    assert PEER not in serialized
+    peer_after = conn.execute(
+        "SELECT my_acked_seq, last_seen_at FROM sync_peers WHERE device_id = ?",
+        (PEER,),
+    ).fetchone()
+    assert peer_after["my_acked_seq"] == peer_before["my_acked_seq"] == 0
+    assert peer_after["last_seen_at"] == peer_before["last_seen_at"]
+    assert len(OutboxRepo(conn).list_since(0)) == 1
+
+
+def test_h2_pull_accepts_exact_high_water_after_full_prune(api, conn):
+    token = _pair(api)
+    outbox = OutboxRepo(conn)
+    final_seq = outbox.append(
+        "clip_new",
+        _outbox_clip_payload("already applied before restart"),
+        "2026-06-13T10:00:00Z",
+    )
+    assert outbox.prune_acked(final_seq) == 1
+    assert outbox.max_seq() == 0
+    assert outbox.sequence_high_water() == final_seq
+
+    status, body = api.sync_pull(token, {"since_seq": str(final_seq)})
+
+    assert status == 200
+    assert body == {"events": [], "next_seq": final_seq, "has_more": False}
+    assert PeersRepo(conn).get(PEER)["my_acked_seq"] == final_seq
+
+
+def test_h2_valid_pull_repairs_preexisting_impossible_ack(api, conn):
+    token = _pair(api)
+    _, created = api.create_clip({"content": "repair poisoned ack"})
+    assert created["status"] == "new"
+    conn.execute(
+        "UPDATE sync_peers SET my_acked_seq = ? WHERE device_id = ?",
+        (9_223_372_036_854_775_807, PEER),
+    )
+    conn.commit()
+
+    first_status, first = api.sync_pull(token, {"since_seq": "0"})
+
+    assert first_status == 200
+    assert len(first["events"]) == 1
+    assert PeersRepo(conn).get(PEER)["my_acked_seq"] == 0
+
+    second_status, second = api.sync_pull(
+        token,
+        {"since_seq": str(first["next_seq"])},
+    )
+    assert second_status == 200
+    assert second["events"] == []
+    assert PeersRepo(conn).get(PEER)["my_acked_seq"] == first["next_seq"]
+
+
 def test_h3_push_clip_new_lands(api, conn, tmp_path):
     token = _pair(api)
     ev = _clip_new_event(1, "hello from phone")
@@ -865,6 +951,7 @@ def test_h7_secret_patch_stays_local_and_legacy_clip_events_are_filtered(
     assert pull_status == 200
     assert pulled["events"] == []
     assert pulled["next_seq"] == final_seq
+    assert PeersRepo(conn).get(PEER)["my_acked_seq"] == 0
     assert sync_engine.pull_blocked_summary(conn, max_bytes=1) is None
     assert FAKE_AWS_KEY not in caplog.text
     assert clip.content_hash not in caplog.text
@@ -882,6 +969,7 @@ def test_h7_secret_patch_stays_local_and_legacy_clip_events_are_filtered(
     assert released["events"][0]["payload"]["id"] == clip_id
     assert released["events"][0]["payload"]["is_secret"] is False
     assert released["events"][0]["payload"]["content"] == FAKE_AWS_KEY
+    assert PeersRepo(conn).get(PEER)["my_acked_seq"] == final_seq
 
 
 def test_h7_release_does_not_retroactively_publish_old_secret_snapshot(api, conn):
@@ -1634,6 +1722,28 @@ def test_h8_cursor_resume(api, conn):
     assert len(first["events"]) == 5
 
 
+def test_h8_pull_only_acks_the_cursor_supplied_by_the_peer(api, conn):
+    token = _pair(api)
+    for i in range(9):
+        api.create_clip({"content": f"paged clip {i}"})
+
+    first_status, first = api.sync_pull(token, {"since_seq": "0"})
+
+    assert first_status == 200
+    assert len(first["events"]) == sync_engine.SYNC_PULL_FETCH_LIMIT
+    assert first["has_more"] is True
+    assert PeersRepo(conn).get(PEER)["my_acked_seq"] == 0
+
+    second_status, second = api.sync_pull(
+        token,
+        {"since_seq": str(first["next_seq"])},
+    )
+
+    assert second_status == 200
+    assert len(second["events"]) == 1
+    assert PeersRepo(conn).get(PEER)["my_acked_seq"] == first["next_seq"]
+
+
 def test_h8_pull_response_byte_budget_pages_without_skipping(conn):
     outbox = OutboxRepo(conn)
     when = "2026-06-13T10:00:00Z"
@@ -1739,6 +1849,16 @@ def test_h8_pull_single_event_over_response_budget_returns_413(api, conn):
     assert status == 413
     assert body["error"]["code"] == "sync_event_too_large"
     assert f"seq={seq}" in body["error"]["message"]
+    assert outbox.list_since(0, limit=1)[0]["seq"] == seq
+    assert PeersRepo(conn).get(PEER)["my_acked_seq"] == 0
+
+    ahead_status, ahead_body = api.sync_pull(
+        token,
+        {"since_seq": "9223372036854775807"},
+    )
+    assert ahead_status == 409
+    assert ahead_body["error"]["code"] == "sync_cursor_ahead"
+    assert PeersRepo(conn).get(PEER)["my_acked_seq"] == 0
     assert outbox.list_since(0, limit=1)[0]["seq"] == seq
 
 

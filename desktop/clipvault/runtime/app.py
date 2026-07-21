@@ -153,7 +153,8 @@ class ClipVaultRuntime:
             outbox = OutboxRepo(conn)
             while not self.stop_event.wait(self.maintenance_interval_s):
                 try:
-                    min_acked = peers.min_my_acked()
+                    high_water = outbox.sequence_high_water()
+                    min_acked = peers.min_my_acked(high_water=high_water)
                     if min_acked:
                         pruned = outbox.prune_acked(min_acked)
                         if pruned:

@@ -9,6 +9,11 @@ import sqlite3
 
 
 _PAIRING_CURSOR_MAX = 9_223_372_036_854_775_806
+_SQLITE_INT_MAX = 9_223_372_036_854_775_807
+
+
+class InvalidPeerAckState(RuntimeError):
+    """A persisted peer ACK cannot refer to this outbox history."""
 
 
 class PeersRepo:
@@ -83,20 +88,59 @@ class PeersRepo:
         )
         self.conn.commit()
 
-    def set_my_acked(self, device_id: str, seq: int) -> None:
+    def set_my_acked(self, device_id: str, seq: int, *, high_water: int) -> None:
+        if (
+            isinstance(seq, bool)
+            or not isinstance(seq, int)
+            or isinstance(high_water, bool)
+            or not isinstance(high_water, int)
+            or not 0 <= seq <= high_water <= _SQLITE_INT_MAX
+        ):
+            raise ValueError(
+                "sync ack and high_water must be integers within durable "
+                "outbox history"
+            )
         self.conn.execute(
-            "UPDATE sync_peers SET my_acked_seq = MAX(my_acked_seq, ?) WHERE device_id = ?",
-            (seq, device_id),
+            "UPDATE sync_peers SET my_acked_seq = CASE "
+            "WHEN my_acked_seq < 0 OR my_acked_seq > ? THEN ? "
+            "ELSE MAX(my_acked_seq, ?) END WHERE device_id = ?",
+            (high_water, seq, seq, device_id),
         )
         self.conn.commit()
 
-    def min_my_acked(self) -> int | None:
+    def min_my_acked(self, *, high_water: int) -> int | None:
         """Lowest my_acked_seq across all peers, or None if no peers paired.
-        Events at or below this seq are confirmed by every peer (prunable)."""
+        Events at or below this seq are confirmed by every peer (prunable).
+
+        A value outside the durable outbox history fails closed. In particular,
+        removing a lagging peer must never expose a poisoned, far-future ACK as
+        a valid pruning cursor.
+        """
+        if (
+            isinstance(high_water, bool)
+            or not isinstance(high_water, int)
+            or not 0 <= high_water <= _SQLITE_INT_MAX
+        ):
+            raise ValueError(
+                "sync ack high_water must be an integer within SQLite range"
+            )
         row = self.conn.execute(
-            "SELECT MIN(my_acked_seq) FROM sync_peers"
+            "SELECT MIN(my_acked_seq), MAX(my_acked_seq) FROM sync_peers"
         ).fetchone()
-        return None if row[0] is None else int(row[0])
+        if row[0] is None:
+            return None
+        try:
+            minimum = int(row[0])
+            maximum = int(row[1])
+        except (TypeError, ValueError, OverflowError):
+            raise InvalidPeerAckState(
+                "peer sync ack is outside outbox history"
+            ) from None
+        if minimum < 0 or maximum > high_water:
+            raise InvalidPeerAckState(
+                "peer sync ack is outside outbox history"
+            )
+        return minimum
 
     def touch_last_seen(self, device_id: str, when: str) -> None:
         self.conn.execute(

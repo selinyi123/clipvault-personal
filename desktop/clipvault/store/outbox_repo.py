@@ -59,6 +59,19 @@ class OutboxRepo:
         row = self.conn.execute("SELECT COALESCE(MAX(seq), 0) FROM sync_outbox").fetchone()
         return int(row[0])
 
+    def sequence_high_water(self) -> int:
+        """Highest durable sequence recorded, including rows already pruned.
+
+        ``MAX(seq)`` is insufficient once maintenance has removed every row:
+        SQLite's AUTOINCREMENT history is the durable upper bound that a peer
+        can legitimately acknowledge.
+        """
+        row = self.conn.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = ?",
+            ("sync_outbox",),
+        ).fetchone()
+        return 0 if row is None else int(row[0])
+
     def prune_acked(self, min_acked: int) -> int:
         """Drop events every peer has confirmed (seq <= min_acked). Keeps the
         outbox bounded for long-running self-use. Returns rows deleted."""
