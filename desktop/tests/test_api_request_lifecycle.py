@@ -116,7 +116,7 @@ def test_absolute_deadline_is_not_renewed_by_continuous_small_reads():
         monotonic=clock,
     )
     reader = _TrickleReader(clock, chunks=20, seconds_per_chunk=0.26)
-    handler, _ = _bare_handler(object(), deadline, reader)
+    handler, sent = _bare_handler(object(), deadline, reader)
 
     deadline.start()
     try:
@@ -128,7 +128,18 @@ def test_absolute_deadline_is_not_renewed_by_continuous_small_reads():
     assert deadline.reason == "deadline"
     assert reader.calls == 4
     assert clock.value >= 1.0
-    assert connection.shutdown_calls
+    assert connection.shutdown_calls == [socket.SHUT_RD]
+    assert sent == [
+        (
+            408,
+            {
+                "error": {
+                    "code": "request_timeout",
+                    "message": "request input timed out",
+                }
+            },
+        )
+    ]
 
 
 def test_length_derived_body_budget_is_set_once_and_remains_fixed():
@@ -193,6 +204,111 @@ def test_default_maximum_body_budget_is_fixed_at_120_seconds():
         assert deadline.check() == "deadline"
     finally:
         deadline.finish()
+
+
+def test_completed_ingress_disarms_deadline_during_slow_business():
+    clock = _FakeClock()
+    connection = _FakeSocket()
+    deadline = api_server._RequestDeadline(
+        connection,
+        1.0,
+        None,
+        monotonic=clock,
+    )
+
+    deadline.start()
+    try:
+        assert deadline.complete_ingress() is None
+        clock.advance(60.0)
+
+        # Business work and response serialization are not request ingress.
+        assert deadline.check() is None
+        assert deadline.reason is None
+        assert connection.shutdown_calls == []
+    finally:
+        deadline.finish()
+
+
+def test_runtime_stop_after_ingress_uses_full_duplex_shutdown():
+    clock = _FakeClock()
+    stop = threading.Event()
+    connection = _FakeSocket()
+    deadline = api_server._RequestDeadline(
+        connection,
+        1.0,
+        stop,
+        monotonic=clock,
+    )
+
+    deadline.start()
+    try:
+        assert deadline.complete_ingress() is None
+        stop.set()
+
+        assert deadline.check() == "stopping"
+        assert connection.shutdown_calls == [socket.SHUT_RDWR]
+    finally:
+        deadline.finish()
+
+
+def test_runtime_stop_releases_blocked_response_before_watchdog_finishes(
+    monkeypatch,
+):
+    stop = threading.Event()
+    ingress_complete = threading.Event()
+    response_released = threading.Event()
+    watchdogs = []
+    results: list[bool] = []
+    errors: list[BaseException] = []
+
+    class BlockingResponseSocket(_FakeSocket):
+        def shutdown(self, how: int) -> None:
+            super().shutdown(how)
+            if how == socket.SHUT_RDWR:
+                response_released.set()
+
+    connection = BlockingResponseSocket()
+
+    def blocked_response(handler) -> None:
+        watchdogs.append(handler._request_deadline)
+        results.append(handler._finish_request_ingress())
+        ingress_complete.set()
+        results.append(response_released.wait(0.5))
+
+    monkeypatch.setattr(
+        api_server.BaseHTTPRequestHandler,
+        "handle_one_request",
+        blocked_response,
+    )
+    handler_type = api_server.make_handler(
+        object(),
+        read_timeout_s=1.0,
+        stop_event=stop,
+    )
+    handler = handler_type.__new__(handler_type)
+    handler.connection = connection
+
+    def run_handler() -> None:
+        try:
+            handler.handle_one_request()
+        except BaseException as exc:  # pragma: no cover - assertion reports it
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_handler)
+    thread.start()
+    assert ingress_complete.wait(0.5)
+
+    stop.set()
+    thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert results == [True, True]
+    assert connection.shutdown_calls == [socket.SHUT_RDWR]
+    assert handler._request_deadline is None
+    assert len(watchdogs) == 1
+    assert watchdogs[0]._finished.is_set()
+    assert not watchdogs[0]._thread.is_alive()
 
 
 def test_unauthorized_small_push_sends_401_before_bounded_body_drain():
