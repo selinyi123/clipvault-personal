@@ -7,14 +7,18 @@ import threading
 import pytest
 
 from clipvault.config import Config
+from clipvault.core import normalize
+from clipvault.core.models import Clip
 from clipvault.pipeline import ingest as pipeline
 from clipvault.service import ClipVaultService
 from clipvault.store import db
 from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.obsidian_queue_repo import ObsidianQueueRepo
+from clipvault.store.unit_of_work import unit_of_work
 
 
 NOW = "2026-07-12T00:00:00Z"
+LEGACY_SECRET = "password=legacy-current-secret-123"
 
 
 def _cfg(tmp_path: Path, db_path: str = ":memory:") -> Config:
@@ -36,6 +40,51 @@ def _ingest(conn, text: str, clip_id: str):
         now_fn=lambda: NOW,
         new_id_fn=lambda: clip_id,
     ).clip
+
+
+def _legacy_public_secret(conn, clip_id: str, *, released: bool = False) -> Clip:
+    """Persist a row that predates the current SG-ASSIGN detector."""
+
+    clip = Clip(
+        id=clip_id,
+        content=LEGACY_SECRET,
+        content_hash=normalize.content_hash(LEGACY_SECRET),
+        content_type="text",
+        source_device="desktop-test",
+        created_at=NOW,
+        last_seen_at=NOW,
+        released=released,
+        released_at=NOW if released else None,
+    )
+    ClipsRepo(conn).insert(clip)
+    assert ObsidianQueueRepo(conn).enqueue(clip.id, NOW)
+    return clip
+
+
+def _is_fts_indexed(conn, clip_id: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM clip_search_map AS m "
+        "JOIN clips_fts ON clips_fts.rowid=m.search_id "
+        "WHERE m.clip_id=? AND clips_fts.id=m.clip_id",
+        (clip_id,),
+    ).fetchone() is not None
+
+
+def _guarded_thread(name, target, errors):
+    def run():
+        try:
+            target()
+        except BaseException as exc:
+            errors.append((name, exc))
+
+    return run
+
+
+def _join_threads(threads, errors, *, timeout: float = 10.0) -> None:
+    for thread in threads:
+        thread.join(timeout)
+    assert not [thread.name for thread in threads if thread.is_alive()]
+    assert not errors, [(name, repr(exc)) for name, exc in errors]
 
 
 def test_reconcile_missing_and_cleanup_are_row_bounded(conn):
@@ -189,6 +238,413 @@ def test_file_write_is_reused_after_db_finalize_failure(conn, tmp_path, monkeypa
     ) == 1
     assert len(list((tmp_path / "vault").rglob("*.md"))) == 1
     assert ClipsRepo(conn).get(clip.id).obsidian_path == str(files[0])
+
+
+def test_current_secret_gate_quarantines_legacy_row_before_writer(
+    conn, tmp_path, monkeypatch, caplog
+):
+    clip = _legacy_public_secret(conn, "cliplegacysecret01")
+    service = ClipVaultService(conn, _cfg(tmp_path))
+    claim = service.obsidian_queue.claim_one(clip.id, NOW)
+    assert claim is not None and _is_fts_indexed(conn, clip.id)
+
+    def must_not_write(_clip):
+        raise AssertionError("current Secret Guard hit reached the writer")
+
+    monkeypatch.setattr(service, "_try_write_obsidian", must_not_write)
+    with caplog.at_level("INFO", logger="clipvault.application.obsidian"):
+        assert service._process_obsidian_claim(claim, NOW) is False
+
+    stored = ClipsRepo(conn).get(clip.id)
+    assert stored is not None
+    assert stored.is_secret is True
+    assert stored.secret_level == "hard"
+    assert stored.secret_reasons == ["SG-ASSIGN"]
+    assert stored.obsidian_path is None
+    assert _is_fts_indexed(conn, clip.id) is False
+    assert conn.execute(
+        "SELECT 1 FROM obsidian_queue WHERE clip_id=?", (clip.id,)
+    ).fetchone() is None
+    assert conn.in_transaction is False
+    assert LEGACY_SECRET not in caplog.text
+    assert list((tmp_path / "vault").rglob("*")) == []
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    (("obsidian_path", "legacy-existing.md"), ("deleted", 1)),
+)
+def test_current_secret_gate_runs_before_other_stale_claim_cleanup(
+    conn, tmp_path, monkeypatch, column, value
+):
+    clip = _legacy_public_secret(conn, f"cliplegacy{column}01")
+    service = ClipVaultService(conn, _cfg(tmp_path))
+    claim = service.obsidian_queue.claim_one(clip.id, NOW)
+    assert claim is not None and _is_fts_indexed(conn, clip.id)
+    conn.execute(f"UPDATE clips SET {column}=? WHERE id=?", (value, clip.id))
+    conn.commit()
+
+    monkeypatch.setattr(
+        service,
+        "_try_write_obsidian",
+        lambda _clip: (_ for _ in ()).throw(
+            AssertionError("stale current-secret row reached the writer")
+        ),
+    )
+    assert service._process_obsidian_claim(claim, NOW) is False
+
+    stored = ClipsRepo(conn).get(clip.id)
+    assert stored is not None and stored.is_secret is True
+    assert stored.secret_reasons == ["SG-ASSIGN"]
+    assert getattr(stored, column) == (bool(value) if column == "deleted" else value)
+    assert _is_fts_indexed(conn, clip.id) is False
+    assert conn.execute(
+        "SELECT 1 FROM obsidian_queue WHERE clip_id=?", (clip.id,)
+    ).fetchone() is None
+
+
+def test_current_secret_quarantine_rolls_back_if_claim_delete_fails(
+    conn, tmp_path, monkeypatch, caplog
+):
+    clip = _legacy_public_secret(conn, "cliplegacyrollback01")
+    service = ClipVaultService(conn, _cfg(tmp_path))
+    claim = service.obsidian_queue.claim_one(clip.id, NOW)
+    assert claim is not None and _is_fts_indexed(conn, clip.id)
+    original_mark_done = service.obsidian_queue.mark_done
+
+    def delete_then_fail(got_claim, *, commit=True):
+        assert original_mark_done(got_claim, commit=commit)
+        raise RuntimeError("private failure detail must not be logged")
+
+    monkeypatch.setattr(service.obsidian_queue, "mark_done", delete_then_fail)
+    monkeypatch.setattr(
+        service,
+        "_try_write_obsidian",
+        lambda _clip: (_ for _ in ()).throw(
+            AssertionError("rolled-back quarantine reached the writer")
+        ),
+    )
+    with caplog.at_level("ERROR", logger="clipvault.application.obsidian"):
+        assert service._process_obsidian_claim(claim, NOW) is False
+
+    stored = ClipsRepo(conn).get(clip.id)
+    assert stored is not None and stored.is_secret is False
+    assert stored.secret_level is None and stored.secret_reasons == []
+    assert _is_fts_indexed(conn, clip.id) is True
+    row = conn.execute(
+        "SELECT state FROM obsidian_queue WHERE clip_id=?", (clip.id,)
+    ).fetchone()
+    assert row is not None and row["state"] == claim.state
+    assert conn.in_transaction is False
+    assert "RuntimeError" in caplog.text
+    assert "private failure detail" not in caplog.text
+    assert LEGACY_SECRET not in caplog.text
+
+
+def test_expired_secret_claim_cannot_quarantine_after_lease_changes_owner(
+    conn, tmp_path, monkeypatch
+):
+    clip = _legacy_public_secret(conn, "clipsecretleasehandoff01")
+    service = ClipVaultService(conn, _cfg(tmp_path))
+    old_claim = service.obsidian_queue.claim_one(clip.id, NOW, lease_seconds=60)
+    assert old_claim is not None
+    new_claims = service.obsidian_queue.claim_ready(
+        "2026-07-12T00:01:00Z", limit=1
+    )
+    assert len(new_claims) == 1
+    new_claim = new_claims[0]
+    assert new_claim.token != old_claim.token
+
+    monkeypatch.setattr(
+        service,
+        "_try_write_obsidian",
+        lambda _clip: (_ for _ in ()).throw(
+            AssertionError("stale claim reached the writer")
+        ),
+    )
+    assert service._process_obsidian_claim(old_claim, NOW) is False
+
+    stored = ClipsRepo(conn).get(clip.id)
+    assert stored is not None and stored.is_secret is False
+    assert stored.secret_level is None and stored.secret_reasons == []
+    assert _is_fts_indexed(conn, clip.id) is True
+    row = conn.execute(
+        "SELECT state FROM obsidian_queue WHERE clip_id=?", (clip.id,)
+    ).fetchone()
+    assert row is not None and row["state"] == new_claim.state
+    assert conn.in_transaction is False
+
+
+def test_owner_release_wins_before_current_secret_claim_preflight(
+    conn, tmp_path, monkeypatch
+):
+    clip = _legacy_public_secret(conn, "clipreleasedsecret01")
+    notifications = []
+    service = ClipVaultService(
+        conn,
+        _cfg(tmp_path),
+        obsidian_notify=lambda: notifications.append(True),
+    )
+    claim = service.obsidian_queue.claim_one(clip.id, NOW)
+    assert claim is not None
+    assert service.release_clip(clip.id) is True
+    assert notifications == [True]
+    expected = tmp_path / "vault" / "released.md"
+    seen = []
+
+    def allowed(got_clip):
+        seen.append(got_clip)
+        return str(expected), None
+
+    monkeypatch.setattr(service, "_try_write_obsidian", allowed)
+    assert service._process_obsidian_claim(claim, NOW) is True
+
+    stored = ClipsRepo(conn).get(clip.id)
+    assert seen and seen[0].released is True
+    assert stored is not None and stored.released is True
+    assert stored.is_secret is False
+    assert stored.obsidian_path == str(expected)
+    assert conn.execute(
+        "SELECT 1 FROM obsidian_queue WHERE clip_id=?", (clip.id,)
+    ).fetchone() is None
+
+
+def test_current_secret_quarantine_wins_then_owner_release_reindexes_and_requeues(
+    conn, tmp_path, monkeypatch
+):
+    clip = _legacy_public_secret(conn, "clipquarantinethenrelease01")
+    notifications = []
+    service = ClipVaultService(
+        conn,
+        _cfg(tmp_path),
+        obsidian_notify=lambda: notifications.append(True),
+    )
+    claim = service.obsidian_queue.claim_one(clip.id, NOW)
+    assert claim is not None
+    monkeypatch.setattr(
+        service,
+        "_try_write_obsidian",
+        lambda _clip: (_ for _ in ()).throw(
+            AssertionError("quarantined clip reached the writer")
+        ),
+    )
+
+    assert service._process_obsidian_claim(claim, NOW) is False
+    quarantined = ClipsRepo(conn).get(clip.id)
+    assert quarantined is not None and quarantined.is_secret is True
+    assert _is_fts_indexed(conn, clip.id) is False
+    assert conn.execute(
+        "SELECT 1 FROM obsidian_queue WHERE clip_id=?", (clip.id,)
+    ).fetchone() is None
+
+    assert service.release_clip(clip.id) is True
+    released = ClipsRepo(conn).get(clip.id)
+    assert released is not None and released.released is True
+    assert released.is_secret is False
+    assert _is_fts_indexed(conn, clip.id) is True
+    row = conn.execute(
+        "SELECT state FROM obsidian_queue WHERE clip_id=?", (clip.id,)
+    ).fetchone()
+    assert row is not None and row["state"] == "pending"
+    assert notifications == [True]
+
+
+def test_release_commit_precedes_blocked_worker_preflight_on_separate_connections(
+    tmp_path
+):
+    db_path = str(tmp_path / "release-first.db")
+    setup = db.connect(db_path)
+    db.migrate(setup)
+    clip = _legacy_public_secret(setup, "clipreleasefirstlocked01")
+    claim = ObsidianQueueRepo(setup).claim_one(clip.id, NOW)
+    assert claim is not None
+    setup.close()
+
+    both_connected = threading.Barrier(3)
+    release_updated = threading.Event()
+    worker_begin_attempted = threading.Event()
+    writer_called = threading.Event()
+    errors = []
+    results = {}
+    expected_path = str(tmp_path / "vault" / "release-first.md")
+
+    def release_first():
+        conn = db.connect(db_path)
+        try:
+            service = ClipVaultService(
+                conn,
+                _cfg(tmp_path, db_path),
+                obsidian_notify=lambda: None,
+            )
+            both_connected.wait(timeout=5)
+            # Keep the release uncommitted while the independent worker sends
+            # BEGIN IMMEDIATE.  Its trace callback proves the lock request was
+            # issued before this outer transaction is allowed to commit.
+            with unit_of_work(conn):
+                results["release"] = service.release_clip(clip.id)
+                release_updated.set()
+                assert worker_begin_attempted.wait(5)
+        finally:
+            conn.close()
+
+    def blocked_worker():
+        conn = db.connect(db_path)
+        try:
+            service = ClipVaultService(conn, _cfg(tmp_path, db_path))
+
+            def trace(statement):
+                if statement.strip().upper() == "BEGIN IMMEDIATE":
+                    worker_begin_attempted.set()
+
+            conn.set_trace_callback(trace)
+            both_connected.wait(timeout=5)
+            assert release_updated.wait(5)
+
+            def allowed(got_clip):
+                assert got_clip.released is True
+                writer_called.set()
+                return expected_path, None
+
+            results["worker"] = service.obsidian_commands.process_claim(
+                claim,
+                NOW,
+                try_write=allowed,
+            )
+        finally:
+            conn.close()
+
+    threads = [
+        threading.Thread(
+            name="release-first",
+            target=_guarded_thread("release", release_first, errors),
+        ),
+        threading.Thread(
+            name="blocked-worker",
+            target=_guarded_thread("worker", blocked_worker, errors),
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        both_connected.wait(timeout=5)
+    except threading.BrokenBarrierError:
+        # Thread-side failures are collected below after a bounded join.
+        pass
+    _join_threads(threads, errors)
+
+    assert results == {"release": True, "worker": True}
+    assert worker_begin_attempted.is_set() and writer_called.is_set()
+    verify = db.connect(db_path)
+    try:
+        stored = ClipsRepo(verify).get(clip.id)
+        assert stored is not None and stored.released is True
+        assert stored.is_secret is False
+        assert stored.obsidian_path == expected_path
+        assert _is_fts_indexed(verify, clip.id) is True
+        assert verify.execute(
+            "SELECT 1 FROM obsidian_queue WHERE clip_id=?", (clip.id,)
+        ).fetchone() is None
+    finally:
+        verify.close()
+
+
+def test_quarantine_commit_precedes_blocked_release_on_separate_connections(
+    tmp_path
+):
+    db_path = str(tmp_path / "quarantine-first.db")
+    setup = db.connect(db_path)
+    db.migrate(setup)
+    clip = _legacy_public_secret(setup, "clipquarantinefirstlocked01")
+    claim = ObsidianQueueRepo(setup).claim_one(clip.id, NOW)
+    assert claim is not None
+    setup.close()
+
+    both_connected = threading.Barrier(3)
+    quarantine_updated = threading.Event()
+    release_begin_attempted = threading.Event()
+    errors = []
+    results = {}
+    notifications = []
+
+    def quarantine_first():
+        conn = db.connect(db_path)
+        try:
+            service = ClipVaultService(conn, _cfg(tmp_path, db_path))
+            both_connected.wait(timeout=5)
+            # Hold the quarantined row, FTS deletion, and claim consumption
+            # uncommitted until the Owner release has actually requested the
+            # independent SQLite writer lock.
+            with unit_of_work(conn):
+                results["worker"] = service.obsidian_commands.process_claim(
+                    claim,
+                    NOW,
+                    try_write=lambda _clip: (_ for _ in ()).throw(
+                        AssertionError("quarantined clip reached the writer")
+                    ),
+                )
+                stored = ClipsRepo(conn).get(clip.id)
+                assert stored is not None and stored.is_secret is True
+                assert _is_fts_indexed(conn, clip.id) is False
+                quarantine_updated.set()
+                assert release_begin_attempted.wait(5)
+        finally:
+            conn.close()
+
+    def blocked_release():
+        conn = db.connect(db_path)
+        try:
+            service = ClipVaultService(
+                conn,
+                _cfg(tmp_path, db_path),
+                obsidian_notify=lambda: notifications.append(True),
+            )
+
+            def trace(statement):
+                if statement.strip().upper() == "BEGIN IMMEDIATE":
+                    release_begin_attempted.set()
+
+            conn.set_trace_callback(trace)
+            both_connected.wait(timeout=5)
+            assert quarantine_updated.wait(5)
+            results["release"] = service.release_clip(clip.id)
+        finally:
+            conn.close()
+
+    threads = [
+        threading.Thread(
+            name="quarantine-first",
+            target=_guarded_thread("worker", quarantine_first, errors),
+        ),
+        threading.Thread(
+            name="blocked-release",
+            target=_guarded_thread("release", blocked_release, errors),
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        both_connected.wait(timeout=5)
+    except threading.BrokenBarrierError:
+        # Thread-side failures are collected below after a bounded join.
+        pass
+    _join_threads(threads, errors)
+
+    assert results == {"worker": False, "release": True}
+    assert release_begin_attempted.is_set()
+    assert notifications == [True]
+    verify = db.connect(db_path)
+    try:
+        stored = ClipsRepo(verify).get(clip.id)
+        assert stored is not None and stored.released is True
+        assert stored.is_secret is False
+        assert stored.secret_level is None and stored.secret_reasons == []
+        assert _is_fts_indexed(verify, clip.id) is True
+        row = verify.execute(
+            "SELECT state FROM obsidian_queue WHERE clip_id=?", (clip.id,)
+        ).fetchone()
+        assert row is not None and row["state"] == "pending"
+    finally:
+        verify.close()
 
 
 def test_expired_old_owner_cannot_finalize_or_delete_new_claim(conn, tmp_path):

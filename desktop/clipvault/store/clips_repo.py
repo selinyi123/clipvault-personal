@@ -625,6 +625,42 @@ class ClipsRepo:
                 self.conn.rollback()
             raise
 
+    def quarantine_current_secret(
+        self, clip_id: str, *, commit: bool = True
+    ) -> Clip | None:
+        """Persist a current Secret Guard hit for an unreleased legacy row.
+
+        Rows created under an older detector can still carry ``is_secret=0``.
+        Reclassification and FTS removal are one database transition so a
+        failed caller-owned unit of work cannot leave a partly quarantined row.
+        An explicit Owner release is an auditable exception to reclassification.
+        """
+
+        if commit:
+            with unit_of_work(self.conn):
+                return self.quarantine_current_secret(clip_id, commit=False)
+
+        clip = self.get(clip_id)
+        if clip is None or clip.is_secret or clip.released:
+            return None
+        verdict = secret_guard.scan(clip.content)
+        if not verdict.is_secret:
+            return None
+
+        cur = self.conn.execute(
+            "UPDATE clips SET is_secret=1, secret_level=?, secret_reasons=? "
+            "WHERE id=? AND is_secret=0 AND released=0",
+            (
+                verdict.level,
+                json.dumps(verdict.reasons, ensure_ascii=False),
+                clip_id,
+            ),
+        )
+        if not cur.rowcount:
+            return None
+        self._unindex_clip(clip_id)
+        return self.get(clip_id)
+
     def suggest_candidates(self, since_iso: str, limit: int = 200) -> list[Clip]:
         """High-use recent clips eligible as suggestion candidates (SUG-1):
         non-secret, non-deleted, favorite OR times_seen>=3, seen since `since_iso`."""

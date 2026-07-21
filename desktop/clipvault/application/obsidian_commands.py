@@ -96,16 +96,41 @@ class ObsidianCommands:
         try_write = try_write or self.try_write
         record_failure = record_failure or self.record_claim_failure
 
-        clip = self.clips.get(claim.clip_id)
-        if clip is None or clip.is_secret or clip.deleted or clip.obsidian_path:
-            try:
-                self.queue.mark_done(claim)
-            except Exception as exc:
-                self.log.error(
-                    "obsidian stale claim cleanup failed id=%s err=%s",
-                    claim.clip_id,
-                    exc.__class__.__name__,
-                )
+        clip = None
+        skip_write = False
+        try:
+            # Re-read under a short writer transaction.  A clip created under
+            # an older Secret Guard may still be persisted as public, so Gate B
+            # must use today's detector before any filesystem call.  Persisting
+            # that quarantine, removing its FTS row, and consuming this exact
+            # leased claim are one atomic transition.
+            with unit_of_work(self.conn):
+                clip = self.clips.get(claim.clip_id)
+                if clip is None or clip.is_secret:
+                    if not self.queue.mark_done(claim, commit=False):
+                        raise _ObsidianClaimLost()
+                    skip_write = True
+                elif self.clips.quarantine_current_secret(
+                    clip.id, commit=False
+                ) is not None:
+                    if not self.queue.mark_done(claim, commit=False):
+                        raise _ObsidianClaimLost()
+                    skip_write = True
+                elif clip.deleted or clip.obsidian_path:
+                    if not self.queue.mark_done(claim, commit=False):
+                        raise _ObsidianClaimLost()
+                    skip_write = True
+        except Exception as exc:
+            self.log.error(
+                "obsidian preflight failed id=%s err=%s",
+                claim.clip_id,
+                exc.__class__.__name__,
+            )
+            return False
+
+        if skip_write:
+            return False
+        if clip is None:  # Kept explicit for injected repository implementations.
             return False
 
         path, error = try_write(clip)

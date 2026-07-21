@@ -9,6 +9,7 @@ import re
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 
+from clipvault.core import secret_guard
 from clipvault.core.models import Clip
 
 DEFAULT_TYPE_DIRS = {
@@ -28,6 +29,14 @@ _RECOVERY_COLLISION_LIMIT = 64
 
 class SecretWriteRefused(Exception):
     """Gate B: secret clips must never be rendered into the vault."""
+
+
+def _requires_quarantine(clip: Clip) -> bool:
+    """Apply the current detector while honoring an explicit Owner release."""
+
+    return clip.is_secret or (
+        not clip.released and secret_guard.scan(clip.content).is_secret
+    )
 
 
 def _slug(content: str) -> str:
@@ -59,7 +68,7 @@ def render(
     tz: tzinfo | None = None,
 ) -> tuple[str, str]:
     """Return (vault-relative path, file content) for a public clip."""
-    if clip.is_secret:
+    if _requires_quarantine(clip):
         raise SecretWriteRefused(clip.id)
     dirs = type_dirs or DEFAULT_TYPE_DIRS
     type_dir = dirs.get(clip.content_type, dirs["text"])
@@ -121,7 +130,10 @@ def write_clip(
 ) -> Path:
     """Idempotent entry point: a clip that already has an obsidian_path is
     never written again (user deletion of the note is a curation decision)."""
-    if clip.is_secret:
+    # Run the independent adapter gate before path construction, directory
+    # probes, or an early obsidian_path return.  Application-layer checks can
+    # never be the only protection for a direct adapter caller.
+    if _requires_quarantine(clip):
         raise SecretWriteRefused(clip.id)
     if clip.obsidian_path:
         return Path(clip.obsidian_path)
