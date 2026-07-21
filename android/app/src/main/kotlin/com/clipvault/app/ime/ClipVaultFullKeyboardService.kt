@@ -5,10 +5,12 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
 import android.widget.Button
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.view.ViewCompat
 import com.clipvault.app.runtime.ClipVaultFacade
 import com.clipvault.app.runtime.ClipVaultRuntime
 import kotlin.concurrent.thread
@@ -30,14 +32,19 @@ class ClipVaultFullKeyboardService : InputMethodService() {
     private val privacySession = ImePrivacySession()
     private lateinit var keys: LinearLayout
     private lateinit var candidates: LinearLayout
+    private var editorAction = ImeEditorAction.NEW_LINE
 
     private val letterRows = listOf("qwertyuiop", "asdfghjkl", "zxcvbnm")
     private val symbolRows = listOf("1234567890", "@#\$%&-+()/", "*\"':;!?,.")
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
+        editorAction = ImeEditorActionResolver.resolve(
+            attribute?.imeOptions ?: EditorInfo.IME_ACTION_UNSPECIFIED,
+        )
         val wasAllowed = privacySession.allowsPersonalData()
         privacySession.begin(PrivacyAwareFilter.shouldSuppressCandidates(attribute))
+        if (::keys.isInitialized) renderKeys()
         if (::candidates.isInitialized) {
             if (!privacySession.allowsPersonalData()) {
                 candidates.removeAllViews()
@@ -52,6 +59,7 @@ class ClipVaultFullKeyboardService : InputMethodService() {
 
     override fun onFinishInput() {
         privacySession.end()
+        editorAction = ImeEditorAction.NEW_LINE
         if (::candidates.isInitialized) {
             candidates.removeAllViews()
             candidates.addView(hint(PrivacyAwareFilter.suppressionMessage()))
@@ -66,8 +74,10 @@ class ClipVaultFullKeyboardService : InputMethodService() {
         }
 
         val toolbar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        toolbar.addView(key("📋 ClipVault", weight = 2f) { showCandidates() })
-        toolbar.addView(key("切回", weight = 1f) { switchToPreviousInputMethodCompat() })
+        toolbar.addView(key("📋 ClipVault", weight = 2f, accessibilityLabel = "打开 ClipVault 候选") { showCandidates() })
+        toolbar.addView(key("切回", weight = 1f, accessibilityLabel = "切回上一个输入法") {
+            switchToPreviousInputMethodCompat()
+        })
         root.addView(toolbar)
 
         val strip = HorizontalScrollView(this)
@@ -88,7 +98,10 @@ class ClipVaultFullKeyboardService : InputMethodService() {
         rows.forEachIndexed { i, row ->
             val r = rowLayout()
             if (!symbols && i == rows.lastIndex) {
-                r.addView(key(if (shifted) "⇧" else "⇪", weight = 1.5f) { shifted = !shifted; renderKeys() })
+                r.addView(key("⇧", weight = 1.5f, accessibilityLabel = "大写", active = shifted) {
+                    shifted = !shifted
+                    renderKeys()
+                })
             }
             row.forEach { ch ->
                 val label = if (!symbols && shifted) ch.uppercaseChar() else ch
@@ -97,15 +110,33 @@ class ClipVaultFullKeyboardService : InputMethodService() {
                     if (shifted && !symbols) { shifted = false; renderKeys() }
                 })
             }
-            if (i == rows.lastIndex) r.addView(key("⌫", weight = 1.5f) { backspace() })
+            if (i == rows.lastIndex) {
+                r.addView(key("⌫", weight = 1.5f, accessibilityLabel = "删除") { backspace() })
+            }
             keys.addView(r)
         }
         val bottom = rowLayout()
-        bottom.addView(key(if (symbols) "ABC" else "?123", weight = 1.5f) { symbols = !symbols; renderKeys() })
+        bottom.addView(
+            key(
+                if (symbols) "ABC" else "?123",
+                weight = 1.5f,
+                accessibilityLabel = "符号键盘",
+                active = symbols,
+            ) {
+                symbols = !symbols
+                renderKeys()
+            },
+        )
         bottom.addView(key(",", weight = 1f) { commit(",") })
-        bottom.addView(key("空格", weight = 4f) { commit(" ") })
+        bottom.addView(key("空格", weight = 4f, accessibilityLabel = "空格") { commit(" ") })
         bottom.addView(key(".", weight = 1f) { commit(".") })
-        bottom.addView(key("⏎", weight = 1.5f) { enter() })
+        bottom.addView(
+            key(
+                editorAction.keyLabel,
+                weight = 1.5f,
+                accessibilityLabel = editorAction.accessibilityLabel,
+            ) { enter() },
+        )
         keys.addView(bottom)
     }
 
@@ -144,6 +175,13 @@ class ClipVaultFullKeyboardService : InputMethodService() {
     private fun backspace() { currentInputConnection?.deleteSurroundingText(1, 0) }
     private fun enter() {
         val ic = currentInputConnection ?: return
+        editorAction.perform(
+            performEditorAction = { actionId -> ic.performEditorAction(actionId) },
+            sendEnter = { sendEnterKeyEvent(ic) },
+        )
+    }
+
+    private fun sendEnterKeyEvent(ic: InputConnection) {
         ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
         ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
     }
@@ -153,9 +191,21 @@ class ClipVaultFullKeyboardService : InputMethodService() {
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46))
     }
 
-    private fun key(label: String, weight: Float, onClick: () -> Unit): Button =
+    private fun key(
+        label: String,
+        weight: Float,
+        accessibilityLabel: String = label,
+        active: Boolean? = null,
+        onClick: () -> Unit,
+    ): Button =
         Button(this).apply {
             text = label; isAllCaps = false; textSize = 16f
+            contentDescription = accessibilityLabel
+            active?.let { isActive ->
+                isActivated = isActive
+                isSelected = isActive
+                ViewCompat.setStateDescription(this, if (isActive) "已开启" else "已关闭")
+            }
             setPadding(dp(2), 0, dp(2), 0)
             layoutParams = if (weight > 0f) LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight)
                 else LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40))
