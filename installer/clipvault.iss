@@ -24,6 +24,9 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
+AppMutex=Local\ClipVaultPersonal
+CloseApplications=no
+RestartApplications=no
 
 [Languages]
 Name: "cn"; MessagesFile: "compiler:Default.isl"
@@ -45,4 +48,4 @@ Name: "{userstartup}\ClipVault Personal"; Filename: "{app}\{#AppExe}"; Parameter
 Filename: "{app}\{#AppExe}"; Description: "立即启动 ClipVault"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-Filename: "{cmd}"; Parameters: "/C taskkill /IM {#AppExe} /F"; Flags: runhidden; RunOnceId: "killcv"
+Filename: "{cmd}"; Parameters: "/C exit /B 0"; Flags: runhidden; RunOnceId: "killcv"

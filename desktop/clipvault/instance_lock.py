@@ -4,6 +4,7 @@ import ctypes
 from ctypes import wintypes
 
 _ERROR_ALREADY_EXISTS = 183
+INSTANCE_MUTEX_NAME = "Local\\ClipVaultPersonal"
 
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
@@ -16,7 +17,7 @@ class AlreadyRunningError(Exception):
 
 
 class InstanceLock:
-    def __init__(self, name: str = "Local\\ClipVaultPersonal"):
+    def __init__(self, name: str = INSTANCE_MUTEX_NAME):
         self.name = name
         self._handle = None
 

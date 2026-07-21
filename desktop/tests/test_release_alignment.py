@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 from clipvault import __version__
+from clipvault.instance_lock import INSTANCE_MUTEX_NAME, InstanceLock
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -40,6 +41,35 @@ def test_installer_app_version_aligned():
     m = re.search(r'#define\s+AppVersion\s+"([^"]+)"', _read("installer/clipvault.iss"))
     assert m, "AppVersion not found in clipvault.iss"
     assert m.group(1) == __version__
+
+
+def test_installer_uses_runtime_mutex_without_forced_process_termination():
+    installer = _read("installer/clipvault.iss")
+    setup = installer.split("[Setup]", 1)[1].split("\n[", 1)[0]
+    uninstall_run = installer.split("[UninstallRun]", 1)[1].split("\n[", 1)[0]
+
+    def setup_value(name: str) -> str:
+        matches = re.findall(
+            rf"(?mi)^\s*{re.escape(name)}\s*=\s*(.*?)\s*$",
+            setup,
+        )
+        assert len(matches) == 1, f"expected one [Setup] {name} directive"
+        return matches[0]
+
+    assert InstanceLock().name == INSTANCE_MUTEX_NAME
+    assert setup_value("AppMutex") == INSTANCE_MUTEX_NAME
+    assert setup_value("CloseApplications").casefold() == "no"
+    assert setup_value("RestartApplications").casefold() == "no"
+    assert re.search(r"(?i)\btaskkill(?:\.exe)?\b", installer) is None
+    assert re.search(r"(?i)\bStop-Process\b", installer) is None
+    assert [
+        line.strip()
+        for line in uninstall_run.splitlines()
+        if line.strip() and not line.lstrip().startswith(";")
+    ] == [
+        'Filename: "{cmd}"; Parameters: "/C exit /B 0"; '
+        'Flags: runhidden; RunOnceId: "killcv"'
+    ]
 
 
 def test_version_sync_doc_matches_source_tree():
