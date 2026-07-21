@@ -52,6 +52,15 @@ Half of each 28-day seed cycle also contains `old-skew-token`, restricted to
 days 14 through 27. At 10k rows that creates 4,998 historical matches while
 the newest 256 public rows contain none, exercising the common-term path whose
 matches are concentrated outside the bounded recent candidate window.
+One unique two-character CJK marker is placed in the newest id of the oldest
+timestamp bucket. Its API query requests one result and must inspect more than
+95% of the ordered 10k population before returning that match; a separate absent two-character
+marker exercises the complete no-match scan. The benchmark also runs the
+production clean FTS drift audit against the full population and fails the
+sample if that supposedly read-only check repairs anything.
+All three adversarial additions run after the previously established search,
+suggestion, ingest, sync, and status workloads, so their full scans cannot warm
+the caches used by older report metrics.
 
 Each repeated operation gets one untimed warm-up. Seven measured iterations
 produce median, nearest-rank p95, and maximum values. New ingest uses one
@@ -65,12 +74,15 @@ ingest p95.
 | Metric | CI regression ceiling |
 |---|---:|
 | one-character CJK API `LIKE` fallback | 250ms median |
-| two-character CJK API `LIKE` fallback | 250ms median |
+| common two-character CJK API `LIKE` fallback | 250ms median |
+| near-tail two-character CJK API `LIKE` fallback | 300ms median |
+| no-match two-character CJK API `LIKE` fallback | 300ms median |
 | common three-character API trigram query | 300ms median |
 | historical-skew common trigram query | 300ms median |
 | medium-density trigram query | 300ms median |
 | rare trigram API query | 300ms median |
 | no-match trigram API query | 300ms median |
+| clean FTS drift audit | 1000ms median |
 | full Desktop `/suggest` request | 300ms median |
 | one new ingest on the populated database | 500ms p95 |
 | local pagination/serialization of 100 small sync events | 1000ms median |
@@ -122,11 +134,22 @@ Review median and p95 together. Investigate a repeatable miss before changing
 production SQL. A performance optimisation belongs in a later, separately
 reviewable PR with before/after output from this tool.
 
+The JSON field `ci_regression_profile_rows=10000` binds the accompanying
+`ci_regression_ceilings_ms` to the hosted-CI dataset. Reports from the default
+100k manual run still include those reference ceilings for comparison, but
+must not be evaluated against them as a pass/fail profile.
+
 ## Known risks this baseline makes visible
 
 - One- and two-character substring search uses leading-wildcard `LIKE`. Schema 9
   can scan the public result-order index and stop after a full page for common
   terms, but a rare or absent short substring can still inspect the full set.
+  `api_search_cjk_2_char_tail` and `api_search_cjk_2_char_none` keep both
+  adversarial shapes visible without changing search semantics.
+- Startup checks the complete stable-map/FTS bijection before the API binds.
+  `fts_clean_drift_audit` measures the production clean check and rejects an
+  unexpected repair, but the broad hosted-CI ceiling is not an API readiness
+  SLA and does not cover a full rebuild of a drifted index.
 - Schema 9 gives public FTS rows stable integer IDs. Terms with more than 4096
   matches can use a bounded 256-candidate exact probe; medium/rare/no-match
   terms and any probe that cannot fill the requested page use the exact

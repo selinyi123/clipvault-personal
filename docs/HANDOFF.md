@@ -18,6 +18,21 @@
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-21 |
 
+## Current development note - 2026-07-21 / R000 adversarial Desktop performance baselines
+
+- The existing stdlib-only benchmark now includes two adversarial short-CJK
+  API searches: one unique two-character marker placed after more than 95% of
+  the 10k public result order, and one absent two-character marker that forces
+  a complete no-match scan. The existing 10k status-backlog workload remains
+  unchanged and shared by the same report.
+- The benchmark also measures the production clean search-index drift audit
+  across the populated database and rejects any sample that unexpectedly
+  repairs state. Hosted-CI limits remain deliberately broad regression guards,
+  not the product SLA or evidence that API preflight meets its bind budget.
+- The default 100k command remains a manual local benchmark only. This slice
+  changes no search algorithm, API result, database schema, dependency, version
+  metadata, release artifact, Android/IME behavior, or Issue #36 authority.
+
 ## Current development note - 2026-07-21 / R000 Android Gate B privacy projection
 
 - Android now revalidates every durable `clip_new` outbox row immediately
