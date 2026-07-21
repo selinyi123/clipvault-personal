@@ -18,6 +18,23 @@
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-14 |
 
+## Current development note - 2026-07-21 / R000 clipboard retry semantics
+
+- Windows clipboard reads now distinguish captured text, stable skip decisions,
+  and transient retryable failures. A busy `OpenClipboard`, a temporarily
+  unavailable Unicode handle, or a failed `GlobalLock` no longer consumes the
+  clipboard sequence, so the same copy can be retried on the next poll.
+- Successful text and stable skip results retain the sequence number observed
+  while `OpenClipboard` is still held. If another copy follows immediately,
+  the already-read value is dispatched once and the newer sequence remains
+  pending for the next tick; text is never rebound to an older sequence or
+  discarded merely because the clipboard changed after the read.
+- The public `get_clipboard_text() -> str | None` API and legacy injected
+  watcher callbacks remain compatible. Result representations and watcher
+  errors omit clipboard content. This slice changes no capture consent,
+  producer-exclusion policy, schema, dependency, version, artifact, or Issue
+  #36 authority.
+
 ## Current development note - 2026-07-14 / R000 cross-process migration lock
 
 - Every production migration path already converges on `store.db.migrate()`.

@@ -10,6 +10,8 @@ import logging
 import threading
 import time
 from ctypes import wintypes
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Callable
 
 _CF_UNICODETEXT = 13
@@ -46,6 +48,53 @@ _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 _registered_formats: dict[str, int] = {}
 log = logging.getLogger("clipvault.watcher")
 _MAX_DISPATCH_RETRY_DELAY_S = 30.0
+
+
+class ClipboardReadKind(Enum):
+    """How a clipboard sequence should be handled by the poller."""
+
+    TEXT = "text"
+    SKIP = "skip"
+    RETRY = "retry"
+
+
+@dataclass(frozen=True)
+class ClipboardReadResult:
+    """Typed clipboard read result that keeps transient failures retryable."""
+
+    kind: ClipboardReadKind
+    text: str | None = field(default=None, repr=False)
+    sequence: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.sequence is not None and (
+            type(self.sequence) is not int or self.sequence < 0
+        ):
+            raise ValueError("clipboard sequence must be a non-negative integer")
+        if self.kind is ClipboardReadKind.TEXT:
+            if not isinstance(self.text, str) or not self.text:
+                raise ValueError("TEXT clipboard result requires non-empty text")
+        elif self.text is not None:
+            raise ValueError("non-TEXT clipboard result cannot include text")
+        if self.kind is ClipboardReadKind.RETRY and self.sequence is not None:
+            raise ValueError("RETRY clipboard result cannot consume a sequence")
+
+    @classmethod
+    def from_text(
+        cls,
+        text: str,
+        *,
+        sequence: int | None = None,
+    ) -> "ClipboardReadResult":
+        return cls(ClipboardReadKind.TEXT, text, sequence)
+
+    @classmethod
+    def skip(cls, *, sequence: int | None = None) -> "ClipboardReadResult":
+        return cls(ClipboardReadKind.SKIP, sequence=sequence)
+
+    @classmethod
+    def retry(cls) -> "ClipboardReadResult":
+        return cls(ClipboardReadKind.RETRY)
 
 
 def _dispatch_retry_delay(interval_ms: int, failures: int) -> float:
@@ -122,28 +171,63 @@ def _clipboard_exclusion_reason_open() -> str | None:
     return clipboard_exclusion_reason_from_formats(_format_available, _read_clipboard_dword)
 
 
-def get_clipboard_text(retries: int = 3, retry_delay: float = 0.05) -> str | None:
-    """Read CF_UNICODETEXT; None if unavailable, excluded, or busy."""
-    for _ in range(retries):
+def get_clipboard_read(
+    retries: int = 3,
+    retry_delay: float = 0.05,
+) -> ClipboardReadResult:
+    """Classify the current clipboard sequence as text, skip, or retry.
+
+    Producer exclusions and clipboard values without Unicode text are stable
+    skip decisions for that sequence. Busy/unrendered Win32 state remains
+    retryable so the poller does not permanently consume the sequence.
+    """
+    attempts = max(0, int(retries))
+    for attempt in range(attempts):
         if not _user32.OpenClipboard(None):
-            time.sleep(retry_delay)
+            if attempt + 1 < attempts:
+                time.sleep(max(0.0, retry_delay))
             continue
         try:
             if _clipboard_exclusion_reason_open() is not None:
-                return None
+                return ClipboardReadResult.skip(sequence=get_clipboard_seq())
+            if not _user32.IsClipboardFormatAvailable(_CF_UNICODETEXT):
+                return ClipboardReadResult.skip(sequence=get_clipboard_seq())
             handle = _user32.GetClipboardData(_CF_UNICODETEXT)
             if not handle:
-                return None
+                return ClipboardReadResult.retry()
             ptr = _kernel32.GlobalLock(handle)
             if not ptr:
-                return None
+                return ClipboardReadResult.retry()
             try:
-                return ctypes.wstring_at(ptr)
+                text = ctypes.wstring_at(ptr)
             finally:
                 _kernel32.GlobalUnlock(handle)
+            if not text:
+                return ClipboardReadResult.skip(sequence=get_clipboard_seq())
+            return ClipboardReadResult.from_text(
+                text,
+                sequence=get_clipboard_seq(),
+            )
         finally:
             _user32.CloseClipboard()
-    return None
+    return ClipboardReadResult.retry()
+
+
+def get_clipboard_text(retries: int = 3, retry_delay: float = 0.05) -> str | None:
+    """Read CF_UNICODETEXT while preserving the legacy ``str | None`` API."""
+    result = get_clipboard_read(retries=retries, retry_delay=retry_delay)
+    return result.text if result.kind is ClipboardReadKind.TEXT else None
+
+
+def _coerce_read_result(
+    value: ClipboardReadResult | str | None,
+) -> ClipboardReadResult:
+    """Adapt legacy injected ``get_text`` callbacks to the typed protocol."""
+    if isinstance(value, ClipboardReadResult):
+        return value
+    if value:
+        return ClipboardReadResult.from_text(value)
+    return ClipboardReadResult.skip()
 
 
 def get_foreground_app() -> str | None:
@@ -176,14 +260,16 @@ class PollingWatcher:
         on_text: Callable[[str, str | None], object],
         *,
         get_seq: Callable[[], int] = get_clipboard_seq,
-        get_text: Callable[[], str | None] = get_clipboard_text,
+        get_text: Callable[
+            [], ClipboardReadResult | str | None
+        ] | None = None,
         get_app: Callable[[], str | None] = get_foreground_app,
         interval_ms: int = 500,
         on_error: Callable[[str | None, int], None] | None = None,
     ):
         self._on_text = on_text
         self._get_seq = get_seq
-        self._get_text = get_text
+        self._get_text = get_clipboard_read if get_text is None else get_text
         self._get_app = get_app
         self.interval_ms = interval_ms
         self._on_error = on_error
@@ -197,16 +283,22 @@ class PollingWatcher:
             return False
         if seq == self._last_seq:
             return False
-        text = self._get_text()
-        if not text:
-            # Non-text, producer-excluded, or repeatedly unreadable clipboard
-            # state is intentionally skipped for this sequence.
-            self._last_seq = seq
+        result = _coerce_read_result(self._get_text())
+        if result.kind is ClipboardReadKind.RETRY:
             return False
+        if result.kind is ClipboardReadKind.SKIP:
+            # Non-text, producer-excluded, and empty clipboard state is stable
+            # for this sequence and must not be re-read on every poll.
+            self._last_seq = (
+                seq if result.sequence is None else result.sequence
+            )
+            return False
+        text = result.text
+        assert text is not None  # ClipboardReadResult validates TEXT values.
         self._on_text(text, self._get_app())
         # A dispatch failure keeps the previous sequence so the loop can retry.
         # Ingest hash dedup makes an after-commit retry idempotent.
-        self._last_seq = seq
+        self._last_seq = seq if result.sequence is None else result.sequence
         return True
 
     def run(self, stop_event: threading.Event) -> None:
