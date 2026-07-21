@@ -7,7 +7,7 @@ import java.nio.file.Path
 
 class ImeCandidatePrivacySourceTest {
     @Test
-    fun panelImeRechecksLatestRequestBeforeRuntimeReadPostAndRender() {
+    fun panelImeRechecksPrivacyBeforeRuntimeCandidateRead() {
         val fileName = "ClipVaultPanelImeService.kt"
         val source = readImeSource(fileName)
         val start = source.indexOf("private fun showCandidates(")
