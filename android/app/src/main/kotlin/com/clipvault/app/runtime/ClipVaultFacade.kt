@@ -3,10 +3,13 @@ package com.clipvault.app.runtime
 import android.content.Context
 import com.clipvault.app.ClipVaultApp
 import com.clipvault.app.capture.Capture
+import com.clipvault.app.data.AppDatabase
+import com.clipvault.app.data.ClipCandidateMetadata
 import com.clipvault.app.data.ClipEntity
 import com.clipvault.app.data.MemoryEntity
 import com.clipvault.app.data.MemoryPrivacy
 import com.clipvault.app.sync.SyncScheduler
+import com.clipvault.core.SecretGuard
 
 /**
  * ClipVault Runtime API (ADR-0008, ROADMAP_V2 PR2).
@@ -38,6 +41,145 @@ data class Candidate(
     val riskFlags: List<String> = emptyList(), // reserved; do not use as a privacy boundary
 )
 
+/**
+ * Final read-only privacy gate for clip candidates.
+ *
+ * Room's `isSecret = 0` predicate reflects the rule set that classified a row
+ * when it was captured or received.  Rules can become stricter later, so the
+ * persisted flag cannot authorize text to leave the Runtime for an IME.  Every
+ * clip candidate exit re-scans the content with the current SG-1 rules and
+ * fails closed without mutating Room.  An explicit Owner release authorizes
+ * only the authority that recorded it; release provenance is deliberately not
+ * accepted over the sync wire, so a receiving Android device can quarantine
+ * the same secret-shaped text again.
+ */
+internal object ClipCandidatePrivacy {
+    fun allows(clip: ClipEntity): Boolean =
+        !clip.deleted && !clip.isSecret && !SecretGuard.scan(clip.content).isSecret
+}
+
+/**
+ * Opaque batch whose rows have passed the final candidate privacy gate and the
+ * IME memory budgets below. The private constructor prevents Runtime callers
+ * from treating a raw Room result as candidate-authorized content.
+ */
+internal class EligibleClipCandidates private constructor(
+    internal val rows: List<ClipEntity>,
+) {
+    fun toRecentCandidates(limit: Int): List<ClipCandidate> = rows
+        .take(limit.coerceAtLeast(0))
+        .map { ClipCandidate(it.id, it.content, it.contentType) }
+
+    companion object {
+        // A valid clip can be 1 MiB. Keep only a small Room payload batch live,
+        // reject keyboard-hostile individual payloads before SG-1 allocates,
+        // and bound both current-rule scan work and retained candidate text.
+        internal const val MATERIALIZE_BATCH_SIZE = 4
+        internal const val MAX_ROWS = 128
+        internal const val MAX_ITEMS = 100
+        internal const val MAX_ITEM_CHARS = 64 * 1024
+        internal const val MAX_ITEM_UTF8_BYTES = 64 * 1024
+        internal const val MAX_SCANNED_CHARS = 512 * 1024
+        internal const val MAX_RETAINED_CHARS = 256 * 1024
+
+        fun empty(): EligibleClipCandidates = EligibleClipCandidates(emptyList())
+
+        fun fromRows(rows: List<ClipEntity>, desiredCount: Int): EligibleClipCandidates {
+            val collector = Collector(desiredCount)
+            for (row in rows) {
+                if (!collector.offer(row)) break
+            }
+            return collector.finish()
+        }
+
+        fun loadWindow(
+            desiredCount: Int,
+            fetchMetadata: (limit: Int) -> List<ClipCandidateMetadata>,
+            fetchRows: (ids: List<String>) -> List<ClipEntity>,
+        ): EligibleClipCandidates {
+            val collector = Collector(desiredCount)
+            if (!collector.needsMore) return collector.finish()
+
+            // The LIKE/order work happens once. This projection contains no
+            // clip text and is therefore safe to hold for the fixed raw window.
+            val metadata = fetchMetadata(MAX_ROWS)
+            require(metadata.size <= MAX_ROWS) { "candidate metadata window exceeded raw-row budget" }
+            val materializableIds = LinkedHashSet<String>(metadata.size)
+            for (item in metadata) {
+                if (item.contentBytes in 1..MAX_ITEM_UTF8_BYTES.toLong()) {
+                    materializableIds.add(item.id)
+                }
+            }
+
+            // Full rows are fetched in tiny batches. Rebuild metadata order
+            // explicitly because SQL IN does not promise result ordering.
+            for (ids in materializableIds.toList().chunked(MATERIALIZE_BATCH_SIZE)) {
+                if (!collector.needsMore) break
+                val rows = fetchRows(ids)
+                require(rows.size <= ids.size) { "candidate row fetch exceeded requested batch" }
+                val requestedIds = ids.toHashSet()
+                val rowsById = LinkedHashMap<String, ClipEntity>(rows.size)
+                for (row in rows) {
+                    require(row.id in requestedIds) { "candidate row fetch returned an unexpected id" }
+                    require(rowsById.put(row.id, row) == null) { "candidate row fetch returned a duplicate id" }
+                }
+                for (id in ids) {
+                    val row = rowsById[id] ?: continue
+                    if (!collector.offer(row)) break
+                }
+            }
+            return collector.finish()
+        }
+
+        private class Collector(desiredCount: Int) {
+            private val desired = desiredCount.coerceIn(0, MAX_ITEMS)
+            private val accepted = LinkedHashMap<String, ClipEntity>(desired)
+            private var scannedRows = 0
+            private var scannedChars = 0
+            private var retainedChars = 0
+            private var exhausted = desired == 0
+
+            val needsMore: Boolean
+                get() = !exhausted && scannedRows < MAX_ROWS && accepted.size < desired
+
+            fun offer(row: ClipEntity): Boolean {
+                if (!needsMore) return false
+                scannedRows += 1
+
+                // Cheap fail-closed checks run before current SG-1. Oversized
+                // text remains available in the main app but is not suitable
+                // for an IME candidate or its latency/memory budget.
+                if (
+                    row.content.isEmpty() ||
+                    row.deleted ||
+                    row.isSecret ||
+                    row.content.length > MAX_ITEM_CHARS ||
+                    row.content.toByteArray(Charsets.UTF_8).size > MAX_ITEM_UTF8_BYTES
+                ) {
+                    return needsMore
+                }
+                if (scannedChars > MAX_SCANNED_CHARS - row.content.length) {
+                    exhausted = true
+                    return false
+                }
+                scannedChars += row.content.length
+                if (!ClipCandidatePrivacy.allows(row)) return needsMore
+                if (accepted.containsKey(row.id)) return needsMore
+                if (retainedChars > MAX_RETAINED_CHARS - row.content.length) {
+                    return needsMore
+                }
+
+                accepted[row.id] = row
+                retainedChars += row.content.length
+                if (retainedChars >= MAX_RETAINED_CHARS) exhausted = true
+                return needsMore
+            }
+
+            fun finish(): EligibleClipCandidates = EligibleClipCandidates(accepted.values.toList())
+        }
+    }
+}
+
 internal object CandidateMixer {
     private val memoryKindWeight = mapOf(
         "phrase" to 42,
@@ -49,8 +191,15 @@ internal object CandidateMixer {
     )
 
     fun mix(clips: List<ClipEntity>, memories: List<MemoryEntity>, query: String, limit: Int): List<Candidate> {
+        // Ranking fields such as favorite/timesSeen and deterministic id
+        // tie-breaks must see the complete bounded source window. Applying the
+        // caller's output limit here would make Room order decide the winner.
+        return mix(EligibleClipCandidates.fromRows(clips, EligibleClipCandidates.MAX_ITEMS), memories, query, limit)
+    }
+
+    fun mix(clips: EligibleClipCandidates, memories: List<MemoryEntity>, query: String, limit: Int): List<Candidate> {
         val q = query.trim()
-        val ranked = (clips.map { fromClip(it, q) } + memories
+        val ranked = (clips.rows.map { fromClip(it, q) } + memories
             .filterNot { MemoryPrivacy.containsSecret(it.text, it.label) }
             .map { fromMemory(it, q) })
             .filter { q.isEmpty() || it.text.contains(q, ignoreCase = true) || it.label.contains(q, ignoreCase = true) }
@@ -145,16 +294,24 @@ class RoomClipVaultFacade(context: Context) : ClipVaultFacade {
     private val ctx = context.applicationContext
 
     override fun listCandidates(query: String, limit: Int, source: String?, kind: String?): List<Candidate> = safe(emptyList()) {
+        if (limit <= 0) return@safe emptyList()
         val db = ClipVaultApp.db(ctx)
-        val clips = if (source == null || source == "clip") db.clips().list(query, 0) else emptyList()
+        val clips = if (source == null || source == "clip") {
+            // Authorize the full bounded clip source before final ranking and
+            // output limiting. Otherwise limit=1 would always choose the first
+            // Room row even when a later candidate has a higher rank.
+            loadClipCandidateWindow(db, query, EligibleClipCandidates.MAX_ITEMS)
+        } else {
+            EligibleClipCandidates.empty()
+        }
         val memories = if (source == null || source == "memory") db.memory().list(kind ?: "") else emptyList()
         CandidateMixer.mix(clips, memories, query, limit)
     }
 
     override fun listRecentClips(limit: Int): List<ClipCandidate> = safe(emptyList()) {
-        ClipVaultApp.db(ctx).clips().list("", 0)        // public only; never secrets
-            .take(limit)
-            .map { ClipCandidate(it.id, it.content, it.contentType) }
+        if (limit <= 0) return@safe emptyList()
+        val db = ClipVaultApp.db(ctx)
+        loadClipCandidateWindow(db, "", limit).toRecentCandidates(limit)
     }
 
     override fun listMemory(kind: String, limit: Int): List<MemoryCandidate> = safe(emptyList()) {
@@ -170,6 +327,19 @@ class RoomClipVaultFacade(context: Context) : ClipVaultFacade {
         if (result.shouldRequestSyncPush) SyncScheduler.requestPushBestEffort(ctx)
         result.didStoreLocally
     }
+
+    private fun loadClipCandidateWindow(
+        db: AppDatabase,
+        query: String,
+        desiredCount: Int,
+    ): EligibleClipCandidates =
+        EligibleClipCandidates.loadWindow(
+            desiredCount = desiredCount,
+            fetchMetadata = { limit -> db.clips().candidateWindowMetadata(query, 0, limit) },
+            fetchRows = { ids ->
+                db.clips().candidateRowsById(ids, EligibleClipCandidates.MAX_ITEM_UTF8_BYTES)
+            },
+        )
 
     private inline fun <T> safe(fallback: T, block: () -> T): T =
         try { block() } catch (e: Exception) {

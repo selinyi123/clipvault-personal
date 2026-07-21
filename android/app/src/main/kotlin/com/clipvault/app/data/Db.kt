@@ -61,6 +61,13 @@ data class ClipEntity(
     val deleted: Boolean = false,
 )
 
+/** Payload-free first pass for the Runtime candidate window. Large clip text
+ * is materialized only after this projection passes the IME item budget. */
+data class ClipCandidateMetadata(
+    val id: String,
+    val contentBytes: Long,
+)
+
 /** One row per locally-originated event awaiting push to the desktop. */
 @Entity(tableName = "outbox")
 data class OutboxEntity(
@@ -97,6 +104,26 @@ interface ClipDao {
               AND (:q = '' OR content LIKE '%' || :q || '%')
               ORDER BY pinned DESC, lastSeenAt DESC LIMIT 100""")
     fun list(q: String, secret: Int): List<ClipEntity>
+
+    /** One payload-free bounded window. Persisted flags are only a prefilter;
+     * current Secret Guard rules remain a separate Runtime exit gate. */
+    @Query("""SELECT id, length(CAST(content AS BLOB)) AS contentBytes
+              FROM clips WHERE deleted = 0
+              AND (:secret = 1 AND isSecret = 1 OR :secret = 0 AND isSecret = 0)
+              AND (:q = '' OR content LIKE '%' || :q || '%')
+              ORDER BY pinned DESC, lastSeenAt DESC, id DESC
+              LIMIT :limit""")
+    fun candidateWindowMetadata(q: String, secret: Int, limit: Int): List<ClipCandidateMetadata>
+
+    /** Materialize only rows that still satisfy the persisted privacy and
+     * payload budgets. Metadata and payload reads are separate statements, so
+     * every predicate must be repeated here to close that race window. Runtime
+     * still rechecks these fields and current Secret Guard rules afterwards. */
+    @Query("""SELECT * FROM clips WHERE id IN (:ids)
+              AND deleted = 0
+              AND isSecret = 0
+              AND length(CAST(content AS BLOB)) BETWEEN 1 AND :maxContentBytes""")
+    fun candidateRowsById(ids: List<String>, maxContentBytes: Int): List<ClipEntity>
 
     @Query("UPDATE clips SET deleted = 1 WHERE id = :id")
     fun softDelete(id: String)

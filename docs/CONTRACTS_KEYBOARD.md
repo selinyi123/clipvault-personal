@@ -66,7 +66,15 @@ ClipVault 候选只来自本地事实源（Room/SQLite，DB-1），经 `ClipVaul
 ## KBD-4 — 候选隐私闸门（引用 SG-1 + KEYBOARD_PRIVACY）🔒
 
 候选进入候选栏前，必须通过：
-1. **Secret 闸门**：SG-1 命中（is_secret）项**硬剔除**，不进候选、不脱敏展示为可选项。
+1. **Secret 闸门**：持久化 `is_secret` 只代表写入时规则，不构成候选出口授权。Runtime 在 clip
+   候选出口必须用**当前 SG-1 规则**复扫正文；持久化已隔离或当前规则命中的项都要**硬剔除**，
+   不进候选、不脱敏展示为可选项。该读路径不得隐式改写 Room。Desktop Owner release 不是 sync wire
+   授权，Android 接收端仍可重新隔离；恢复 Android 候选资格只能走未来定义的本地显式 Owner 流程。
+   Room 先一次读取最多 128 行无正文 metadata，再把合格 ID 按最多 4 个一批物化；只物化不超过
+   64 Ki UTF-8 bytes 且 64 Ki UTF-16 code units 的候选。当前规则累计复扫最多 512 Ki code units、返回批次累计正文
+   最多 256 Ki code units。统一排序最多看到 100 个已授权 clip，调用者 `limit` 只能在排序和稳定
+   tie-break 完成后截断；Recent Clips 列表可以直接按自身 `limit` 收束。这些都是 fail-closed 的运行时预算，
+   超限内容仍可留在主 App，但不得为补足 IME 候选而无界扫描或累计大正文。
 2. **敏感输入域闸门**：当前 `EditorInfo` 为密码/敏感域，或处于 incognito（`IME_FLAG_NO_PERSONALIZED_LEARNING`）时，
    **不展示任何 ClipVault 候选**，且**不产生学习事件**（细则 KEYBOARD_PRIVACY.md）。
 3. **敏感 App 闸门**：⏳ 敏感 App 名单与匹配规则在 v2.3 学习阶段开工时随 slice 冻结。
