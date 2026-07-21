@@ -38,6 +38,18 @@ def test_same_process_threads_are_mutually_exclusive(tmp_path):
     assert acquired.is_set()
 
 
+def test_constructor_keeps_duration_validation_and_public_float_attributes(tmp_path):
+    missing_repo = tmp_path / "missing"
+    with pytest.raises(TypeError, match="timeout_s must be a non-negative number"):
+        RepoWriteLock(missing_repo, timeout_s=True)
+    with pytest.raises(ValueError, match="poll_interval_s must be positive"):
+        RepoWriteLock(missing_repo, poll_interval_s=0)
+
+    lock = RepoWriteLock(_repo(tmp_path), timeout_s=1, poll_interval_s=1)
+    assert type(lock.timeout_s) is float
+    assert type(lock.poll_interval_s) is float
+
+
 def test_wait_is_bounded_and_times_out(tmp_path):
     repo = _repo(tmp_path)
     result = []
@@ -134,6 +146,16 @@ def test_release_allows_reacquire_and_lock_file_persists(tmp_path):
         assert lock_path.exists()
 
     assert lock_path.exists()
+
+
+def test_lock_allows_direct_git_subdirectory_creation_after_construction(tmp_path):
+    repo = _repo(tmp_path)
+    lock = RepoWriteLock(repo, timeout_s=0.1)
+
+    (repo / ".git" / "objects").mkdir()
+
+    with lock:
+        pass
 
 
 def test_context_exception_releases_lock(tmp_path):

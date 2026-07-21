@@ -18,6 +18,35 @@
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-14 |
 
+## Current development note - 2026-07-14 / R000 cross-process migration lock
+
+- Every production migration path already converges on `store.db.migrate()`.
+  A disk database that actually needs an upgrade now acquires one bounded,
+  per-database interprocess lock before any migration SQL runs, re-reads the
+  schema version after acquiring ownership, and holds the lock across the
+  complete remaining migration sequence. A waiting process therefore observes
+  the committed schema instead of replaying the same DDL.
+- The lock target comes from SQLite's opened `main` access path, canonical
+  target, and physical file identity. `store.db.connect()` snapshots that
+  canonical target and identity before and immediately after opening, then
+  retains the immutable opening identity on the connection. A symlink or
+  symlinked parent retargeted after open therefore fails closed instead of
+  binding the migration lock to a different database. File-backed connections
+  that did not come through this trusted opening path may inspect an
+  already-current schema, but cannot execute migration SQL. The identity is
+  hashed into a private
+  sibling sidecar directory so ordinary aliases converge without disclosing
+  the database path. Ownership is an OS lock;
+  the carrier persists, process crashes release ownership automatically, and
+  unsafe symlink/hardlink carriers fail closed. In-memory, anonymous temporary,
+  and already-current databases create no lock artifact.
+- The underlying persistent-directory primitive is shared with GitHub backup,
+  while `RepoWriteLock` keeps its import path, constructor, return values,
+  timeout/cancellation/cleanup exceptions, carrier path, Windows byte lock, and
+  published POSIX directory-lock behavior. This slice changes no schema,
+  migration SQL, dependency, content path, version, release artifact, or Issue
+  #36 authority.
+
 ## Current development note - 2026-07-14 / R000 bounded status queries
 
 - `/api/status` now counts pending backup work with a scalar aggregate instead
