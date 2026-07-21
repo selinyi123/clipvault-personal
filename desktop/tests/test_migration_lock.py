@@ -92,6 +92,44 @@ def test_invalid_timeout_has_no_lock_or_schema_side_effect(tmp_path):
     assert db.schema_version(conn) == 0
 
 
+def test_invalid_timeout_is_rejected_for_memory_and_current_schema(tmp_path):
+    migrations = _migrations(tmp_path)
+    memory = sqlite3.connect(":memory:")
+
+    with pytest.raises(ValueError, match="lock_timeout_s"):
+        db.migrate(
+            memory,
+            migrations,
+            expected_latest=1,
+            lock_timeout_s=-1,
+        )
+    assert db.schema_version(memory) == 0
+
+    assert db.migrate(memory, migrations, expected_latest=1) == 1
+    with pytest.raises(ValueError, match="lock_timeout_s"):
+        db.migrate(
+            memory,
+            migrations,
+            expected_latest=1,
+            lock_timeout_s=-1,
+        )
+    assert db.schema_version(memory) == 1
+
+
+def test_raw_file_connection_cannot_run_an_actual_migration(tmp_path):
+    migrations = _migrations(tmp_path)
+    database = tmp_path / "raw-connection.sqlite3"
+    conn = sqlite3.connect(database)
+
+    with pytest.raises(db.MigrationLockError, match="unavailable"):
+        db.migrate(conn, migrations, expected_latest=1)
+
+    assert db.schema_version(conn) == 0
+    assert conn.execute(
+        "SELECT 1 FROM main.sqlite_schema WHERE name='migration_probe'"
+    ).fetchone() is None
+
+
 def test_timeout_is_bounded_and_does_not_modify_schema(tmp_path):
     migrations = _migrations(tmp_path)
     database = tmp_path / "timeout.sqlite3"
@@ -412,6 +450,42 @@ def test_waiter_rejects_access_symlink_retargeted_to_another_database(tmp_path):
             pass
     finally:
         replacement.close()
+
+
+def test_migrate_rejects_symlink_retargeted_after_connection_open(tmp_path):
+    migrations = _migrations(tmp_path)
+    first_path = tmp_path / "opened-first.sqlite3"
+    second_path = tmp_path / "opened-second.sqlite3"
+    for path in (first_path, second_path):
+        setup = db.connect(path)
+        setup.close()
+
+    alias = tmp_path / "opened-alias.sqlite3"
+    try:
+        alias.symlink_to(first_path)
+    except OSError as exc:  # pragma: no cover - filesystem capability guard
+        pytest.skip(f"symbolic links unavailable: {exc.__class__.__name__}")
+
+    opened = db.connect(alias)
+    alias.unlink()
+    alias.symlink_to(second_path)
+    try:
+        with pytest.raises(db.MigrationLockError, match="unavailable"):
+            db.migrate(opened, migrations, expected_latest=1)
+        assert db.schema_version(opened) == 0
+    finally:
+        opened.close()
+
+    for path in (first_path, second_path):
+        verify = db.connect(path)
+        try:
+            assert db.schema_version(verify) == 0
+            assert verify.execute(
+                "SELECT 1 FROM main.sqlite_schema "
+                "WHERE name='migration_probe'"
+            ).fetchone() is None
+        finally:
+            verify.close()
 
 
 def test_target_validation_cleanup_failure_takes_precedence(tmp_path, monkeypatch):

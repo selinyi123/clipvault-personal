@@ -30,6 +30,7 @@ class _DatabaseTarget:
     access_path: Path
     canonical_path: Path
     identity: _DatabaseIdentity
+    opening_identity_verified: bool = False
 
 
 class DatabaseMigrationLockTimeout(TimeoutError):
@@ -60,6 +61,63 @@ def _validated_database_identity(path: Path) -> _DatabaseIdentity:
             "database migration lock target is unsafe"
         )
     return _database_identity(info)
+
+
+def _snapshot_access_path(
+    access_path: Path,
+    *,
+    allow_missing: bool = False,
+) -> _DatabaseTarget | None:
+    """Capture one filesystem identity without creating a lock artifact.
+
+    Opening a database through a symbolic-link alias is supported, but a
+    dangling alias is not treated as a new database path.  Hard-linked files
+    may still be opened for compatibility; the stricter single-link check is
+    applied before an actual cross-process migration is allowed.
+    """
+
+    access_path = Path(os.path.abspath(access_path))
+    try:
+        resolved = access_path.resolve(strict=True)
+    except FileNotFoundError:
+        if not allow_missing:
+            raise DatabaseMigrationLockUnavailable(
+                "database migration lock target is unavailable"
+            ) from None
+        try:
+            # A lexical object that exists but cannot resolve is normally a
+            # dangling link.  Letting SQLite create through it would make the
+            # opening identity ambiguous.
+            access_path.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError:
+            raise DatabaseMigrationLockUnavailable(
+                "database migration lock target is unavailable"
+            ) from None
+        raise DatabaseMigrationLockUnavailable(
+            "database migration lock target is unavailable"
+        ) from None
+    except OSError:
+        raise DatabaseMigrationLockUnavailable(
+            "database migration lock target is unavailable"
+        ) from None
+
+    try:
+        info = resolved.lstat()
+    except OSError:
+        raise DatabaseMigrationLockUnavailable(
+            "database migration lock target is unavailable"
+        ) from None
+    if not stat.S_ISREG(info.st_mode):
+        raise DatabaseMigrationLockUnavailable(
+            "database migration lock target is unsafe"
+        )
+    return _DatabaseTarget(
+        access_path=access_path,
+        canonical_path=resolved,
+        identity=_database_identity(info),
+    )
 
 
 def _canonical_main_target(
@@ -106,10 +164,41 @@ def _canonical_main_target(
         raise DatabaseMigrationLockUnavailable(
             "database migration lock target is invalid"
         )
+
+    opened_canonical_path = getattr(
+        conn,
+        "_clipvault_main_opened_canonical_path",
+        None,
+    )
+    opened_identity = getattr(conn, "_clipvault_main_opened_identity", None)
+    has_opening_snapshot = (
+        opened_canonical_path is not None or opened_identity is not None
+    )
+    opening_identity_verified = False
+    if has_opening_snapshot:
+        if (
+            not isinstance(opened_canonical_path, Path)
+            or not isinstance(opened_identity, tuple)
+            or len(opened_identity) != 3
+            or any(type(part) is not int for part in opened_identity)
+        ):
+            raise DatabaseMigrationLockUnavailable(
+                "database migration lock target is invalid"
+            )
+        if (
+            resolved != opened_canonical_path
+            or reported_resolved != opened_canonical_path
+            or identity != opened_identity
+        ):
+            raise DatabaseMigrationLockUnavailable(
+                "database migration lock target changed"
+            )
+        opening_identity_verified = True
     return _DatabaseTarget(
         access_path=access_path,
         canonical_path=resolved,
         identity=identity,
+        opening_identity_verified=opening_identity_verified,
     )
 
 
@@ -209,6 +298,30 @@ class DatabaseMigrationLock:
             raise DatabaseMigrationLockUnavailable(
                 "database migration lock is unavailable"
             ) from None
+
+    @classmethod
+    def snapshot_access_path(
+        cls,
+        access_path: Path,
+        *,
+        allow_missing: bool = False,
+    ) -> _DatabaseTarget | None:
+        """Return a side-effect-free target snapshot used around open()."""
+
+        return _snapshot_access_path(
+            access_path,
+            allow_missing=allow_missing,
+        )
+
+    @staticmethod
+    def validate_timeout(timeout_s: float) -> float:
+        """Validate the public migration timeout on every migrate() call."""
+
+        return _validate_duration(
+            timeout_s,
+            name="lock_timeout_s",
+            positive=False,
+        )
 
     @classmethod
     def target_for_connection(

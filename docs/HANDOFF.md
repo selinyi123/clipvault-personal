@@ -27,7 +27,14 @@
   complete remaining migration sequence. A waiting process therefore observes
   the committed schema instead of replaying the same DDL.
 - The lock target comes from SQLite's opened `main` access path, canonical
-  target, and physical file identity. The identity is hashed into a private
+  target, and physical file identity. `store.db.connect()` snapshots that
+  canonical target and identity before and immediately after opening, then
+  retains the immutable opening identity on the connection. A symlink or
+  symlinked parent retargeted after open therefore fails closed instead of
+  binding the migration lock to a different database. File-backed connections
+  that did not come through this trusted opening path may inspect an
+  already-current schema, but cannot execute migration SQL. The identity is
+  hashed into a private
   sibling sidecar directory so ordinary aliases converge without disclosing
   the database path. Ownership is an OS lock;
   the carrier persists, process crashes release ownership automatically, and

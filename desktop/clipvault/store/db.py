@@ -53,14 +53,16 @@ class MigrationLockCleanupError(MigrationLockError):
 
 
 class _ClipVaultConnection(sqlite3.Connection):
-    """SQLite connection retaining the lexical path used to open ``main``.
+    """SQLite connection retaining the immutable identity used to open main.
 
     SQLite may canonicalize ``PRAGMA database_list`` on some VFSes. Keeping
-    the original absolute access path lets the migration lock detect a symlink
-    or symlinked parent that is retargeted while a process waits for ownership.
+    both the original access path and its opening identity lets the migration
+    lock detect a symlink or symlinked parent retargeted any time after open.
     """
 
     _clipvault_main_access_path: Path | None
+    _clipvault_main_opened_canonical_path: Path | None
+    _clipvault_main_opened_identity: tuple[int, int, int] | None
 
 
 @dataclass(frozen=True)
@@ -74,12 +76,50 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     access_path = None if p in {"", ":memory:"} else Path(p).absolute()
     if access_path is not None:
         access_path.parent.mkdir(parents=True, exist_ok=True)
+    opened_before = None
+    if access_path is not None:
+        try:
+            opened_before = DatabaseMigrationLock.snapshot_access_path(
+                access_path,
+                allow_missing=True,
+            )
+        except DatabaseMigrationLockUnavailable:
+            raise DatabaseStartupError(
+                "database opening identity is unavailable"
+            ) from None
     connect_target = p if access_path is None else str(access_path)
     conn = None
     try:
         conn = sqlite3.connect(connect_target, factory=_ClipVaultConnection)
         if isinstance(conn, _ClipVaultConnection):
             conn._clipvault_main_access_path = access_path
+            conn._clipvault_main_opened_canonical_path = None
+            conn._clipvault_main_opened_identity = None
+            if access_path is not None:
+                try:
+                    opened_after = DatabaseMigrationLock.snapshot_access_path(
+                        access_path,
+                    )
+                except DatabaseMigrationLockUnavailable:
+                    raise DatabaseStartupError(
+                        "database opening identity is unavailable"
+                    ) from None
+                assert opened_after is not None
+                if (
+                    opened_before is not None
+                    and (
+                        opened_after.canonical_path
+                        != opened_before.canonical_path
+                        or opened_after.identity != opened_before.identity
+                    )
+                ):
+                    raise DatabaseStartupError(
+                        "database opening identity changed"
+                    )
+                conn._clipvault_main_opened_canonical_path = (
+                    opened_after.canonical_path
+                )
+                conn._clipvault_main_opened_identity = opened_after.identity
         conn.row_factory = sqlite3.Row
         # Install the wait policy before the first PRAGMA that may need a write
         # lock. Concurrent startup must not fail immediately while another
@@ -241,6 +281,9 @@ def migrate(
         )
     _assert_clean_migration_connection(conn)
     manifest = _migration_manifest(migrations_dir, expected_latest)
+    validated_lock_timeout = DatabaseMigrationLock.validate_timeout(
+        lock_timeout_s
+    )
     target = None
     target_error = None
     try:
@@ -262,12 +305,20 @@ def migrate(
     try:
         if target_error is not None:
             raise target_error
+        if target is not None and not target.opening_identity_verified:
+            # A raw file-backed sqlite3.Connection has no trustworthy record
+            # of which physical file was opened.  It remains compatible for
+            # already-current schemas, but an actual migration must fail
+            # closed.  Production file connections use db.connect().
+            raise DatabaseMigrationLockUnavailable(
+                "database migration opening identity is unavailable"
+            )
         lock = (
             None
             if target is None
             else DatabaseMigrationLock.for_target(
                 target,
-                timeout_s=lock_timeout_s,
+                timeout_s=validated_lock_timeout,
             )
         )
         guard = lock if lock is not None else nullcontext()

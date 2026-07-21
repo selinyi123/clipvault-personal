@@ -115,6 +115,13 @@ def test_worker_stop_wake_closes_owned_connection(tmp_path):
 
 def test_worker_reopens_connection_after_sqlite_error(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
+    # The injected raw sqlite3 factory observes reconnect/close behavior only.
+    # Production migrations use db.connect(), which captures the immutable
+    # opening identity required by the cross-process migration lock. Prepare
+    # the schema through that production path before substituting the factory.
+    setup_conn = db.connect(cfg.db_path)
+    db.migrate(setup_conn)
+    setup_conn.close()
     stop = threading.Event()
     recovered = threading.Event()
     connections = []
