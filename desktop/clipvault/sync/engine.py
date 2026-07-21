@@ -23,8 +23,9 @@ log = logging.getLogger("clipvault.sync")
 
 _CLIP_ID_RE = re.compile(r"^[0-9A-Za-z]{1,128}$")
 _KNOWN_EVENT_KINDS = frozenset(
-    ("clip_new", "clip_meta", "memory_upsert", "memory_delete")
+    ("clip_new", "clip_meta", "memory_upsert", "memory_delete", "privacy_noop")
 )
+_PRIVACY_NOOP_TIMESTAMP = "1970-01-01T00:00:00Z"
 _MEMORY_SOURCES = frozenset(("manual", "derived", "obsidian_import", "github_import"))
 _MAX_MEMORY_LABEL_BYTES = 4 * 1024
 _CLIP_NEW_PAYLOAD_FIELDS = frozenset(
@@ -587,6 +588,9 @@ def _apply_one(conn, ev: dict, service) -> None:
         elif kind == "memory_delete":
             _validate_memory_delete(data)
             _apply_memory_delete(conn, data)
+        elif kind == "privacy_noop":
+            if data or ev.get("ts") != _PRIVACY_NOOP_TIMESTAMP:
+                raise MalformedSyncEvent("invalid privacy noop")
         else:
             log.error("unknown sync event kind")
     except KeyError:

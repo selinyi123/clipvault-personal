@@ -13,6 +13,8 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 class SyncPushBatchTest {
+    private val legacySecret = "AKIAIOSFODNN7EXAMPLE"
+
     @Test
     fun pushBatchIncludesAllRowsWhenTheyFitTheRequestBudget() {
         val rows = listOf(
@@ -33,6 +35,200 @@ class SyncPushBatchTest {
         assertEquals("a", batch.events.getJSONObject(0).getJSONObject("data").getString("content"))
         assertEquals("b", batch.events.getJSONObject(1).getJSONObject("data").getString("content"))
         assertTrue(requestBodyBytes(batch.events) <= budget)
+    }
+
+    @Test
+    fun legacyPublicSecretProjectsToContentFreeSameSequenceNoop() {
+        val row = outbox(seq = 41, content = legacySecret)
+
+        val batch = buildSyncPushBatch(listOf(row), deviceId = "android-test")
+
+        val event = batch.events.getJSONObject(0)
+        assertEquals(41L, event.getLong("seq"))
+        assertEquals(PRIVACY_NOOP_KIND, event.getString("kind"))
+        assertEquals(PRIVACY_NOOP_TIMESTAMP, event.getString("ts"))
+        assertEquals(0, event.getJSONObject("data").length())
+        assertEquals(41L, batch.maxSeq)
+        assertEquals(1, batch.sourceCount)
+        val wire = event.toString()
+        assertFalse(wire.contains(legacySecret))
+        assertFalse(wire.contains("content_hash"))
+        assertFalse(wire.contains("secret_reasons"))
+        assertFalse(wire.contains("01J"))
+        assertFalse(wire.contains("2026-07-04"))
+    }
+
+    @Test
+    fun declarativelySecretLegacyRowProjectsToNoopWithoutPayloadMetadata() {
+        val original = outbox(seq = 42, content = "safe text")
+        val payload = JSONObject(original.payload)
+            .put("is_secret", true)
+            .put("secret_level", "hard")
+            .put("secret_reasons", JSONArray().put("legacy-reason"))
+        val row = original.copy(payload = payload.toString())
+
+        val event = buildSyncPushBatch(listOf(row), "android-test")
+            .events.getJSONObject(0)
+
+        assertEquals(PRIVACY_NOOP_KIND, event.getString("kind"))
+        assertEquals(0, event.getJSONObject("data").length())
+        val wire = event.toString()
+        assertFalse(wire.contains("safe text"))
+        assertFalse(wire.contains("legacy-reason"))
+    }
+
+    @Test
+    fun safeNoopSafeBatchPreservesOrderAndContinuousSequence() {
+        val rows = listOf(
+            outbox(seq = 40, content = "safe before"),
+            outbox(seq = 41, content = legacySecret),
+            outbox(seq = 42, content = "safe after"),
+        )
+
+        val batch = buildSyncPushBatch(rows, deviceId = "android-test")
+
+        assertEquals(listOf(40L, 41L, 42L), eventSeqs(batch.events))
+        assertEquals(
+            listOf("clip_new", PRIVACY_NOOP_KIND, "clip_new"),
+            (0 until batch.events.length()).map {
+                batch.events.getJSONObject(it).getString("kind")
+            },
+        )
+        assertEquals(42L, batch.maxSeq)
+        assertEquals(3, batch.sourceCount)
+    }
+
+    @Test
+    fun hugeSecretIsBudgetedAsSmallNoopBeforeWireSizeCheck() {
+        val content = legacySecret + "\n" +
+            "x".repeat(Normalize.DEFAULT_MAX_CLIP_BYTES - legacySecret.length - 1)
+        val row = outbox(seq = 43, content = content)
+
+        val batch = buildSyncPushBatch(
+            batch = listOf(row),
+            deviceId = "android-test",
+            maxRequestBytes = 512,
+        )
+
+        assertEquals(PRIVACY_NOOP_KIND, batch.events.getJSONObject(0).getString("kind"))
+        assertTrue(requestBodyBytes(batch.events) <= 512)
+    }
+
+    @Test
+    fun malformedOrUnknownRowsRemainBlockedInsteadOfBeingRetired() {
+        val valid = outbox(seq = 44, content = "safe structural payload")
+        val base = JSONObject(valid.payload)
+        val rows = listOf(
+            valid.copy(payload = JSONObject(valid.payload).put("extra", true).toString()),
+            valid.copy(
+                payload = JSONObject(valid.payload).apply { remove("favorite") }.toString(),
+            ),
+            valid.copy(payload = JSONObject(valid.payload).put("content_hash", "0".repeat(64)).toString()),
+            valid.copy(payload = JSONObject(valid.payload).put("is_secret", "false").toString()),
+            valid.copy(payload = JSONObject(valid.payload).put("pinned", "false").toString()),
+            valid.copy(payload = JSONObject(valid.payload).put("created_at", "2026-02-30T00:00:00Z").toString()),
+            valid.copy(payload = JSONObject(valid.payload).put("created_at", "2026-07-04T24:00:00Z").toString()),
+            valid.copy(payload = JSONObject(valid.payload).put("created_at", "2026-12-31T23:59:60Z").toString()),
+            valid.copy(payload = JSONObject(valid.payload).put("created_at", "0000-01-01T00:00:00Z").toString()),
+            valid.copy(createdAt = "2026-07-04T24:00:00Z"),
+            valid.copy(kind = "future_event", payload = base.toString()),
+        )
+
+        rows.forEach { row ->
+            try {
+                buildSyncPushBatch(listOf(row), deviceId = "android-test")
+                fail("expected INVALID_PAYLOAD for ${row.kind}")
+            } catch (e: SyncPushBlockedException) {
+                assertEquals(row.seq, e.seq)
+                assertEquals(SyncPushBlockReason.INVALID_PAYLOAD, e.reason)
+            }
+        }
+    }
+
+    @Test
+    fun declarativelySecretRowsRemainBlockedWhenTheirStructureIsCorrupt() {
+        val original = outbox(seq = 47, content = "safe declared secret")
+        val declared = JSONObject(original.payload)
+            .put("is_secret", true)
+            .put("secret_level", "hard")
+            .put("secret_reasons", JSONArray().put("legacy-reason"))
+        val rows = listOf(
+            original.copy(payload = JSONObject(declared.toString()).put("content_hash", "0".repeat(64)).toString()),
+            original.copy(payload = JSONObject(declared.toString()).put("created_at", "2026-02-30T00:00:00Z").toString()),
+            original.copy(payload = JSONObject(declared.toString()).put("content_type", "future").toString()),
+            original.copy(payload = JSONObject(declared.toString()).put("favorite", "false").toString()),
+        )
+
+        rows.forEach(::assertInvalidPayload)
+    }
+
+    @Test
+    fun currentlySecretRowsRemainBlockedWhenTheirStructureIsCorrupt() {
+        val currentSecret = outbox(seq = 48, content = legacySecret)
+        val normalizedMismatch = outbox(seq = 49, content = "$legacySecret ")
+        val rows = listOf(
+            currentSecret.copy(
+                payload = JSONObject(currentSecret.payload)
+                    .put("content_hash", "0".repeat(64))
+                    .toString(),
+            ),
+            normalizedMismatch,
+        )
+
+        rows.forEach(::assertInvalidPayload)
+    }
+
+    @Test
+    fun lenientOrAmbiguousJsonSyntaxRemainsBlocked() {
+        val valid = outbox(seq = 50, content = "strict JSON")
+        val rows = listOf(
+            valid.copy(payload = valid.payload + "TRAILING"),
+            valid.copy(payload = valid.payload.dropLast(1) + ",}"),
+            valid.copy(payload = valid.payload.replaceFirst("\"id\"", "'id'")),
+            valid.copy(payload = valid.payload.replaceFirst("\"id\"", "id")),
+            valid.copy(payload = valid.payload.replaceFirst("{", "{\"id\":\"duplicate\",")),
+            valid.copy(payload = valid.payload.replaceFirst("{", "{\"\\u0069d\":\"duplicate\",")),
+        )
+
+        rows.forEach(::assertInvalidPayload)
+    }
+
+    @Test
+    fun privacyNoopRowIsClearedOnlyAfterDesktopAcknowledgement() {
+        val pending = mutableListOf(outbox(seq = 45, content = legacySecret))
+        var observedBeforeAck = false
+
+        val success = drainSyncOutbox(
+            nextBatch = { pending.toList() },
+            deviceId = "android-test",
+            push = { events ->
+                observedBeforeAck = pending.single().seq == 45L
+                assertEquals(PRIVACY_NOOP_KIND, events.getJSONObject(0).getString("kind"))
+                45L
+            },
+            clearUpTo = { seq -> pending.removeAll { it.seq <= seq } },
+        )
+
+        assertTrue(success)
+        assertTrue(observedBeforeAck)
+        assertTrue(pending.isEmpty())
+    }
+
+    @Test
+    fun privacyNoopPushFailureLeavesOriginalOutboxRowQueued() {
+        val pending = mutableListOf(outbox(seq = 46, content = legacySecret))
+        val cleared = mutableListOf<Long>()
+
+        val success = drainSyncOutbox(
+            nextBatch = { pending.toList() },
+            deviceId = "android-test",
+            push = { -1L },
+            clearUpTo = { cleared += it },
+        )
+
+        assertFalse(success)
+        assertTrue(cleared.isEmpty())
+        assertEquals(listOf(46L), pending.map { it.seq })
     }
 
     @Test
@@ -443,24 +639,16 @@ class SyncPushBatchTest {
     }
 
     private fun outbox(seq: Long, content: String): OutboxEntity =
-        OutboxEntity(
-            seq = seq,
-            kind = "clip_new",
-            payload = JSONObject()
-                .put("content", content)
-                .put("content_hash", "hash-$seq")
-                .toString(),
-            createdAt = "2026-07-04T00:00:00Z",
-        )
+        productionClipOutbox(seq, content)
 
     private fun productionClipOutbox(seq: Long, content: String): OutboxEntity =
         OutboxEntity(
             seq = seq,
             kind = "clip_new",
             payload = JSONObject()
-                .put("id", "01J00000000000000000000000")
+                .put("id", "01J" + seq.toString().padStart(23, '0'))
                 .put("content", content)
-                .put("content_hash", "a".repeat(64))
+                .put("content_hash", Normalize.contentHash(content))
                 .put("content_type", "text")
                 .put("is_secret", false)
                 .put("secret_level", JSONObject.NULL)
@@ -501,4 +689,14 @@ class SyncPushBatchTest {
 
     private fun eventSeqs(events: JSONArray): List<Long> =
         (0 until events.length()).map { index -> events.getJSONObject(index).getLong("seq") }
+
+    private fun assertInvalidPayload(row: OutboxEntity) {
+        try {
+            buildSyncPushBatch(listOf(row), deviceId = "android-test")
+            fail("expected INVALID_PAYLOAD for sequence ${row.seq}")
+        } catch (e: SyncPushBlockedException) {
+            assertEquals(row.seq, e.seq)
+            assertEquals(SyncPushBlockReason.INVALID_PAYLOAD, e.reason)
+        }
+    }
 }

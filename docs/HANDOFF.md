@@ -18,6 +18,29 @@
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-21 |
 
+## Current development note - 2026-07-21 / R000 Android Gate B privacy projection
+
+- Android now revalidates every durable `clip_new` outbox row immediately
+  before wire encoding. The stored payload must be a strict RFC 8259 root
+  object with no trailing input, lenient syntax, duplicate keys, excess
+  nesting, field/type/hash/time inconsistency, or unknown kind. Structural
+  failures keep the original sequence durably blocked instead of being
+  uploaded or silently retired.
+- A structurally valid row that was declared secret when captured, or that the
+  current Secret Guard newly classifies as secret, is projected to the same
+  sequence as a content-free `privacy_noop`. The projection retains only the
+  current origin device, sequence, fixed kind/time, and empty data; it does not
+  replace or delete the durable row before an explicit contiguous ack. Desktop
+  accepts that no-op without clips, FTS, memory, backup, Obsidian, outbox, or
+  error-log side effects, while older v1.5.10 Desktop remains able to advance
+  the sequence as an unknown content-free event.
+- The strict pre-parser scans large string values without constructing a
+  decoded copy and validates unicode escapes without substring allocation,
+  preserving the existing max-size payload path on Android 8-class devices.
+  This slice changes no Room/SQLite schema, pairing/auth semantics, dependency,
+  version metadata, release artifact, IME network boundary, or Issue #36
+  authority.
+
 ## Current development note - 2026-07-21 / R000 API FTS preflight boundary
 
 - The API-owned SQLite connection remains the single authority that migrates
