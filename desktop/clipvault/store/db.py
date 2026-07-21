@@ -18,6 +18,8 @@ LATEST_SCHEMA_VERSION = 9
 _MIGRATION_NAME = re.compile(
     r"^(?P<number>[0-9]{4})_[A-Za-z0-9][A-Za-z0-9_]*\.sql$"
 )
+_QUICK_CHECK_SQL = "PRAGMA main.quick_check(1)"
+_FOREIGN_KEY_CHECK_SQL = "PRAGMA main.foreign_key_check"
 
 
 class DatabaseStartupError(RuntimeError):
@@ -30,6 +32,10 @@ class MigrationManifestError(DatabaseStartupError):
 
 class SchemaCompatibilityError(DatabaseStartupError):
     """Stored schema metadata is malformed or newer than this application."""
+
+
+class DatabaseIntegrityError(DatabaseStartupError):
+    """A pre-migration integrity check could not prove the database safe."""
 
 
 class MigrationTransactionError(DatabaseStartupError):
@@ -265,6 +271,111 @@ def _assert_clean_migration_connection(conn: sqlite3.Connection) -> None:
         ) from exc
 
 
+def _safe_in_transaction(conn: sqlite3.Connection) -> bool | None:
+    """Read transaction state without retaining a raw connection exception."""
+
+    try:
+        return bool(conn.in_transaction)
+    except Exception:
+        return None
+
+
+def _close_failed_integrity_connection(conn: sqlite3.Connection) -> None:
+    """Best-effort close without replacing the fixed integrity error."""
+
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+def _restore_after_integrity_failure(conn: sqlite3.Connection) -> None:
+    """Remove a probe-owned transaction or close the unusable connection."""
+
+    transaction_state = _safe_in_transaction(conn)
+    if transaction_state is False:
+        return
+    if transaction_state is None:
+        _close_failed_integrity_connection(conn)
+        return
+    try:
+        conn.rollback()
+    except Exception:
+        # Do not retain the raw rollback failure. Closing is the only safe way
+        # to release SQLite state when rollback itself cannot be trusted.
+        _close_failed_integrity_connection(conn)
+        return
+    transaction_state = _safe_in_transaction(conn)
+    if transaction_state is not False:
+        # A non-conforming connection that remains in a transaction after a
+        # successful rollback, or can no longer report its state, must not
+        # escape as reusable migration state.
+        _close_failed_integrity_connection(conn)
+
+
+def _close_integrity_cursor(cursor: sqlite3.Cursor) -> bool:
+    """Close a probe cursor without retaining a raw close exception."""
+
+    try:
+        cursor.close()
+    except Exception:
+        return False
+    return True
+
+
+def _integrity_pragma_passes(conn: sqlite3.Connection, sql: str) -> bool:
+    """Return only a safe verdict; raw SQLite rows never escape this frame."""
+
+    cursor = None
+    first_row = None
+    second_row = None
+    passed = False
+    try:
+        cursor = conn.execute(sql)
+        first_row = cursor.fetchone()
+        if sql == _QUICK_CHECK_SQL:
+            second_row = cursor.fetchone()
+            passed = (
+                first_row is not None
+                and len(first_row) == 1
+                and first_row[0] == "ok"
+                and second_row is None
+            )
+        elif sql == _FOREIGN_KEY_CHECK_SQL:
+            passed = first_row is None
+    except Exception:
+        # Convert execute/fetch failures into a content-free verdict. Raise only
+        # after this helper has returned so no raw exception enters traceback.
+        passed = False
+    finally:
+        if cursor is not None and not _close_integrity_cursor(cursor):
+            passed = False
+        # Drop diagnostics before the normal return even for debuggers/profilers
+        # that retain completed Python frames temporarily.
+        cursor = None
+        first_row = None
+        second_row = None
+    return passed
+
+
+def _assert_pre_migration_integrity(conn: sqlite3.Connection) -> None:
+    """Reject corrupt or referentially inconsistent databases before DDL.
+
+    Keep every diagnostic content-free: SQLite integrity rows can contain table,
+    index, row, or file details. The caller only needs a stable startup error
+    class and message; repair remains an explicit Owner action.
+    """
+
+    quick_ok = _integrity_pragma_passes(conn, _QUICK_CHECK_SQL)
+    foreign_keys_ok = quick_ok and _integrity_pragma_passes(
+        conn,
+        _FOREIGN_KEY_CHECK_SQL,
+    )
+    if not quick_ok or not foreign_keys_ok:
+        _restore_after_integrity_failure(conn)
+        raise DatabaseIntegrityError("database integrity check failed")
+
+
 def migrate(
     conn: sqlite3.Connection,
     migrations_dir: Path = MIGRATIONS_DIR,
@@ -330,6 +441,11 @@ def migrate(
                 raise SchemaCompatibilityError(
                     "database schema is newer than this application"
                 )
+            if current == latest:
+                # A process that waited for another migration owner keeps the
+                # same no-check fast path as an initially current connection.
+                return current
+            _assert_pre_migration_integrity(conn)
             for migration in manifest:
                 number = migration.number
                 if number <= current:
