@@ -36,7 +36,7 @@
 | T7 | 备份仓库误设为 public | 安装文档强制检查；backup worker 启动时调 `gh repo view --json visibility` 校验（失败仅告警不阻断，离线可用优先） |
 | T8 | 同步对端实现 bug 把密钥 clip/memory 发过来 | 接收端独立再过 Secret Guard；clip 本地隔离，memory 安全拒绝，均记内容安全的 ERROR |
 | T9 | 误判放行（false negative） | 熵启发兜底 + 规则集可独立升级 + 闸门 C 用"当时最新规则"复扫 |
-| T10 | 误判拦截（false positive）烦人 | suspect 级别 + 一键释放流程，释放留审计字段 |
+| T10 | 误判拦截（false positive）烦人 | suspect 级别 + 权威设备本地一键释放并留审计字段；release 不作为 sync wire 授权，接收设备仍独立执行 Gate A 与候选出口复扫 |
 
 ## 4. Secret Guard 三道闸门（ADR-0006）
 
