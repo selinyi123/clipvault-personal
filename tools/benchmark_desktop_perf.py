@@ -39,11 +39,13 @@ from clipvault.config import Config
 from clipvault.pipeline.ingest import STATUS_NEW
 from clipvault.service import ClipVaultService
 from clipvault.store import db
+from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.outbox_repo import OutboxRepo
 from clipvault.sync import engine as sync_engine
 
 
 DEFAULT_ROWS = 100_000
+CI_REGRESSION_PROFILE_ROWS = 10_000
 DEFAULT_ITERATIONS = 7
 DEFAULT_INGEST_SAMPLES = 20
 SYNC_EVENT_COUNT = 100
@@ -53,6 +55,8 @@ _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _SEED_RECENCY_DAYS = 28
 _OLD_SKEW_START_DAY = 14
 _OLD_SKEW_TOKEN = "old-skew-token"
+_CJK_TAIL_TOKEN = "尾痕"
+_CJK_NO_MATCH_TOKEN = "未觅"
 
 # These intentionally generous ceilings are for the 10k hosted-CI smoke test.
 # They catch order-of-magnitude regressions while tolerating shared-runner
@@ -61,11 +65,14 @@ CI_REGRESSION_CEILINGS_MS = {
     "api_status_backlog": 100.0,
     "api_search_cjk_1_char": 250.0,
     "api_search_cjk_2_char": 250.0,
+    "api_search_cjk_2_char_tail": 300.0,
+    "api_search_cjk_2_char_none": 300.0,
     "api_search_cjk_3_char_common": 300.0,
     "api_search_trigram_old_skew": 300.0,
     "api_search_trigram_medium": 300.0,
     "api_search_trigram_rare": 300.0,
     "api_search_trigram_none": 300.0,
+    "fts_clean_drift_audit": 1_000.0,
     "suggest_request": 300.0,
     "ingest_new": 500.0,
     "sync_pull_100_events": 1_000.0,
@@ -93,6 +100,18 @@ def _percentile(samples: list[float], fraction: float) -> float:
 
 def _is_old_skew_seed(index: int) -> bool:
     return index % _SEED_RECENCY_DAYS >= _OLD_SKEW_START_DAY
+
+
+def _cjk_tail_index(rows: int) -> int:
+    """Choose the newest id in the oldest timestamp bucket.
+
+    Public API order is ``last_seen_at DESC, id DESC`` for this unpinned
+    dataset.  A two-character marker on this row therefore makes LIKE inspect
+    nearly the complete 28-day population before finding its only match.
+    """
+
+    oldest_day = min(rows - 1, _SEED_RECENCY_DAYS - 1)
+    return rows - 1 - ((rows - 1 - oldest_day) % _SEED_RECENCY_DAYS)
 
 
 def _summary(samples: list[float]) -> dict:
@@ -155,12 +174,20 @@ def _measure(operation: Callable[[], None], iterations: int) -> dict:
     return _summary(samples)
 
 
-def _clip_seed_row(index: int, *, seen: str, created: str) -> tuple[tuple, tuple]:
+def _clip_seed_row(
+    index: int,
+    *,
+    seen: str,
+    created: str,
+    cjk_tail_index: int | None = None,
+) -> tuple[tuple, tuple]:
     clip_id = f"P{index:025d}"
     medium_token = " medium-fallback-token" if index % 250 == 0 else ""
     old_skew_token = f" {_OLD_SKEW_TOKEN}" if _is_old_skew_seed(index) else ""
     content = f"记录 {index:06d} 服务器部署文档 alpha beta{medium_token}"
     content += old_skew_token
+    if index == cjk_tail_index:
+        content += f" {_CJK_TAIL_TOKEN}"
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
     # New clips start with times_seen=1 in production. Keep the suggestion
     # population deliberately sparse so a recency-only index cannot hide an
@@ -216,6 +243,7 @@ def _seed_dataset(conn: sqlite3.Connection, rows: int) -> None:
     created = (reference_now - timedelta(days=_SEED_RECENCY_DAYS)).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
+    cjk_tail_index = _cjk_tail_index(rows)
     last_search_id = int(
         conn.execute("SELECT COALESCE(MAX(search_id), 0) FROM clip_search_map")
         .fetchone()[0]
@@ -228,6 +256,7 @@ def _seed_dataset(conn: sqlite3.Connection, rows: int) -> None:
                 index,
                 seen=seen_values[index % len(seen_values)],
                 created=created,
+                cjk_tail_index=cjk_tail_index,
             )
             clips.append(clip)
             map_rows.append((clip[0],))
@@ -295,8 +324,8 @@ def _clear_status_backlog(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _api_search(api: Api, query: str, expected: int) -> None:
-    status, body = api.list_clips({"q": query, "limit": "50"})
+def _api_search(api: Api, query: str, expected: int, *, limit: int = 50) -> None:
+    status, body = api.list_clips({"q": query, "limit": str(limit)})
     clips = body.get("clips") if isinstance(body, dict) else None
     if status != 200 or not isinstance(clips, list) or len(clips) != expected:
         actual = len(clips) if isinstance(clips, list) else "invalid"
@@ -309,6 +338,11 @@ def _api_status(api: Api, expected_pending: int) -> None:
     status, body = api.status()
     if status != 200 or body.get("backup_pending") != expected_pending:
         raise RuntimeError("API status benchmark did not preserve queue depth")
+
+
+def _clean_search_index_audit(repo: ClipsRepo) -> None:
+    if repo.repair_search_index():
+        raise RuntimeError("clean FTS audit unexpectedly repaired search-index drift")
 
 
 def _measure_ingest(service: ClipVaultService, rows: int, samples: int) -> dict:
@@ -434,6 +468,8 @@ def run_benchmark(
         common_count = min(rows, 50)
         search_1 = lambda: _api_search(api, "部", common_count)
         search_2 = lambda: _api_search(api, "部署", common_count)
+        search_2_tail = lambda: _api_search(api, _CJK_TAIL_TOKEN, 1, limit=1)
+        search_2_none = lambda: _api_search(api, _CJK_NO_MATCH_TOKEN, 0)
         search_3_common = lambda: _api_search(api, "服务器", common_count)
         old_skew_count = min(
             50,
@@ -506,6 +542,21 @@ def run_benchmark(
             time.perf_counter_ns() - status_cleanup_started
         ) / 1_000_000_000.0
 
+        # These adversarial scans were added after the original report was
+        # established. Run them only after every pre-existing workload so they
+        # cannot warm SQLite pages or CPU caches and make older metrics look
+        # artificially faster.
+        metrics["api_search_cjk_2_char_tail"] = _measure(
+            search_2_tail, iterations
+        )
+        metrics["api_search_cjk_2_char_none"] = _measure(
+            search_2_none, iterations
+        )
+        metrics["fts_clean_drift_audit"] = _measure(
+            lambda: _clean_search_index_audit(ClipsRepo(conn)),
+            iterations,
+        )
+
         return {
             "report_schema_version": 2,
             "source_revision": _source_revision(),
@@ -525,6 +576,7 @@ def run_benchmark(
                 "platform": platform.platform(),
             },
             "metrics": metrics,
+            "ci_regression_profile_rows": CI_REGRESSION_PROFILE_ROWS,
             "ci_regression_ceilings_ms": CI_REGRESSION_CEILINGS_MS,
             "architecture_reference_budgets_ms": ARCHITECTURE_REFERENCE_BUDGETS_MS,
             "interpretation": {

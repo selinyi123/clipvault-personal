@@ -23,6 +23,7 @@ def test_small_cli_smoke_uses_temporary_database_and_emits_json(capsys):
 
     report = json.loads(capsys.readouterr().out)
     assert report["rows"] == 200
+    assert report["ci_regression_profile_rows"] == 10_000
     assert report["report_schema_version"] == 2
     assert report["source_revision"] == "unknown" or re.fullmatch(
         r"[0-9a-f]{40}", report["source_revision"]
@@ -140,6 +141,58 @@ def test_old_skew_seed_keeps_recent_probe_window_empty():
 
     assert recent_matches == 0
     assert total_matches == 4_998
+
+
+def test_cjk_tail_seed_is_unique_and_near_end_of_public_api_order():
+    conn = benchmark.db.connect(":memory:")
+    try:
+        benchmark.db.migrate(conn)
+        benchmark._seed_dataset(conn, 10_000)
+        matching = conn.execute(
+            "SELECT id,last_seen_at FROM clips WHERE instr(content, ?) > 0",
+            (benchmark._CJK_TAIL_TOKEN,),
+        ).fetchall()
+        assert len(matching) == 1
+        clip_id, last_seen_at = matching[0]
+        rows_before = conn.execute(
+            "SELECT COUNT(*) FROM clips WHERE last_seen_at > ? "
+            "OR (last_seen_at = ? AND id > ?)",
+            (last_seen_at, last_seen_at, clip_id),
+        ).fetchone()[0]
+        no_match = conn.execute(
+            "SELECT COUNT(*) FROM clips WHERE instr(content, ?) > 0",
+            (benchmark._CJK_NO_MATCH_TOKEN,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert len(benchmark._CJK_TAIL_TOKEN) == 2
+    assert len(benchmark._CJK_NO_MATCH_TOKEN) == 2
+    assert rows_before >= 9_500
+    assert no_match == 0
+
+
+def test_tail_probe_requests_one_result_so_position_controls_scan_work():
+    class ApiProbe:
+        def list_clips(self, query):
+            assert query == {"q": benchmark._CJK_TAIL_TOKEN, "limit": "1"}
+            return 200, {"clips": [{"id": "tail"}]}
+
+    benchmark._api_search(
+        ApiProbe(), benchmark._CJK_TAIL_TOKEN, expected=1, limit=1
+    )
+
+
+def test_clean_fts_audit_validates_without_rebuilding():
+    conn = benchmark.db.connect(":memory:")
+    try:
+        benchmark.db.migrate(conn)
+        benchmark._seed_dataset(conn, 100)
+        benchmark._clean_search_index_audit(benchmark.ClipsRepo(conn))
+        assert conn.execute("SELECT COUNT(*) FROM clip_search_map").fetchone()[0] == 100
+        assert conn.execute("SELECT COUNT(*) FROM clips_fts").fetchone()[0] == 100
+    finally:
+        conn.close()
 
 
 @pytest.mark.parametrize(
