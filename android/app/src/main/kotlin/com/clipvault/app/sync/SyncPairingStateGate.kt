@@ -19,10 +19,13 @@ internal class SyncRequestSnapshot(
         get() = "http://$host:$port/api"
 }
 
-/** Process-wide pairing state shared by every Settings instance. Android's
- * current application topology is single-process; a source-boundary test
- * guards that assumption. Requests only hold this monitor while copying the
- * endpoint/token state, never while doing network I/O.
+/** Opaque ownership token for one process-wide WorkManager sync cycle. */
+internal class SyncFlightLease internal constructor()
+
+/** Process-wide pairing and sync-flight state shared by every Settings
+ * instance. Android's current application topology is single-process; a
+ * source-boundary test guards that assumption. Requests only hold this monitor
+ * while copying or committing local state, never while doing network I/O.
  */
 internal class SyncPairingProcessState {
     internal val monitor = Any()
@@ -30,6 +33,7 @@ internal class SyncPairingProcessState {
     internal var endpointRevision: Long = 0L
     internal var pairingAttempt: Long = 0L
     internal var activePairingAttempt: Long? = null
+    internal var activeSyncFlight: SyncFlightLease? = null
 }
 
 private val DEFAULT_SYNC_PAIRING_PROCESS_STATE = SyncPairingProcessState()
@@ -38,6 +42,22 @@ internal class SyncPairingStateGate(
     private val state: SyncPairingProcessState = DEFAULT_SYNC_PAIRING_PROCESS_STATE,
 ) {
     fun <T> read(block: () -> T): T = synchronized(state.monitor) { block() }
+
+    /** Immediate and periodic WorkManager requests use different unique names,
+     * so they still need one process-wide flight gate. The opaque lease keeps a
+     * stale/double release from unlocking a newer cycle. */
+    fun tryBeginSyncFlight(): SyncFlightLease? = synchronized(state.monitor) {
+        if (state.activeSyncFlight != null) return@synchronized null
+        val lease = SyncFlightLease()
+        state.activeSyncFlight = lease
+        lease
+    }
+
+    fun finishSyncFlight(lease: SyncFlightLease): Boolean = synchronized(state.monitor) {
+        if (state.activeSyncFlight !== lease) return@synchronized false
+        state.activeSyncFlight = null
+        true
+    }
 
     fun snapshot(
         read: (revision: Long, endpointRevision: Long) -> SyncRequestSnapshot,

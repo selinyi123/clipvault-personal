@@ -230,17 +230,65 @@ class SyncWorkerSourceTest {
     @Test
     fun workerPinsOnePairingAndGuardsEveryResponseSideEffect() {
         val worker = readSource("SyncWorker.kt")
+        val settings = readSource("Sync.kt")
 
+        val doWork = worker.substring(
+            worker.indexOf("override fun doWork(): Result"),
+            worker.indexOf("private fun pullAll("),
+        )
+        val acquire = doWork.indexOf("val syncFlight = s.tryBeginSyncFlight() ?: return Result.retry()")
+        val guardedTry = doWork.indexOf("return try {", acquire)
+        val unpairedReturn = doWork.indexOf("s.host.isNullOrBlank()", guardedTry)
+        val releaseFinally = doWork.indexOf("finally {", unpairedReturn)
+        val release = doWork.indexOf("s.finishSyncFlight(syncFlight)", releaseFinally)
+        val genericCatch = doWork.indexOf("catch (e: Exception)", unpairedReturn)
+        assertTrue(acquire >= 0)
+        assertTrue(guardedTry > acquire)
+        assertTrue(unpairedReturn > guardedTry)
+        assertTrue(genericCatch > unpairedReturn)
+        assertTrue(releaseFinally > genericCatch)
+        assertTrue(release > releaseFinally)
         assertTrue(worker.contains("val cycleSnapshot = s.requestSnapshot(hostOverride = null, auth = true)"))
         assertTrue(worker.contains("val client = SyncClient(s, cycleSnapshot)"))
         assertTrue(worker.contains("runIfCurrentOrThrow(s, cycleSnapshot) { s.markSyncPushBlocked(state) }"))
         assertTrue(worker.contains("runIfCurrentOrThrow(s, cycleSnapshot) { s.clearSyncPushBlocked() }"))
         assertTrue(worker.contains("runIfCurrentOrThrow(s, cycleSnapshot) { outbox.clearUpTo(seq) }"))
         assertTrue(worker.contains("pullAll(db, s, client, cycleSnapshot)"))
-        assertTrue(worker.contains("runIfCurrentOrThrow(s, cycleSnapshot)"))
+        assertTrue(worker.contains("s.applyPullPageIfCurrent("))
+        assertTrue(worker.contains("expectedSince = since"))
+        assertTrue(worker.contains("if (!applied) throw SyncPairingChangedException()"))
         assertTrue(worker.contains("SyncApply.applyEvents(db, events)"))
-        assertTrue(worker.contains("s.sinceSeq = nextSince"))
+        assertFalse(worker.contains("s.sinceSeq = nextSince"))
         assertTrue(worker.contains("catch (e: SyncPairingChangedException)"))
+
+        val cursorMethod = settings.substring(
+            settings.indexOf("internal fun applyPullPageIfCurrent("),
+            settings.indexOf("internal fun tryBeginSyncFlight()", settings.indexOf("internal fun applyPullPageIfCurrent(")),
+        )
+        assertTrue(cursorMethod.contains("currentEndpointMatches(expected)"))
+        assertTrue(cursorMethod.contains("sp.getLong(\"since\", 0L) == expectedSince"))
+        assertTrue(cursorMethod.indexOf("applyPage()") < cursorMethod.indexOf("putLong(\"since\", nextSince).commit()"))
+        assertTrue(cursorMethod.contains("throw IOException(\"sync cursor write failed\")"))
+        assertFalse(cursorMethod.contains(".apply()"))
+
+        val cursorProperty = settings.substring(
+            settings.indexOf("var sinceSeq: Long"),
+            settings.indexOf("internal val syncPushBlocked", settings.indexOf("var sinceSeq: Long")),
+        )
+        assertTrue(cursorProperty.contains("putLong(\"since\", v).commit()"))
+        assertTrue(cursorProperty.contains("throw IOException(\"sync cursor write failed\")"))
+        assertFalse(cursorProperty.contains(".apply()"))
+
+        assertTrue(settings.contains("internal fun tryBeginSyncFlight(): SyncFlightLease? = pairingGate.tryBeginSyncFlight()"))
+        assertTrue(settings.contains("pairingGate.finishSyncFlight(lease)"))
+    }
+
+    @Test
+    fun periodicAndImmediateWorkKeepDistinctUniqueNamesBehindProcessFlightGate() {
+        val worker = readSource("SyncWorker.kt")
+
+        assertTrue(worker.contains("enqueueUniqueWork(\"sync-now\", ExistingWorkPolicy.APPEND_OR_REPLACE, req)"))
+        assertTrue(worker.contains("enqueueUniquePeriodicWork(\"sync-periodic\", ExistingPeriodicWorkPolicy.KEEP, req)"))
     }
 
     @Test
