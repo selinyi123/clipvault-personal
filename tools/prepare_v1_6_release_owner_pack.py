@@ -211,7 +211,7 @@ function Test-FullyQualifiedWindowsPath([string]$path) {{
   }} catch {{ return $false }}
   return $true
 }}
-$workingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\', '/')
+$workingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd([char]92, [char]47)
 $separator = [IO.Path]::DirectorySeparatorChar
 function Assert-NoReparsePathComponent([IO.FileSystemInfo]$item, [string]$label) {{
   $cursor = $item
@@ -241,7 +241,7 @@ if (-not (Test-FullyQualifiedWindowsPath $gitPath) -or
 }}
 $repoRoot = (& $gitPath -C $workingDirectory rev-parse --show-toplevel).Trim()
 if ($LASTEXITCODE -ne 0) {{ throw "repository root lookup failed" }}
-$repoRoot = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\', '/')
+$repoRoot = [IO.Path]::GetFullPath($repoRoot).TrimEnd([char]92, [char]47)
 if (-not $workingDirectory.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase)) {{
   throw "Run every Owner release step from the repository root"
 }}
@@ -378,7 +378,7 @@ $env:NO_COLOR = "1"
 function Assert-NativeSuccess([string]$label) {{
   if ($LASTEXITCODE -ne 0) {{ throw "$label failed with exit code $LASTEXITCODE" }}
 }}
-$workingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\', '/')
+$workingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd([char]92, [char]47)
 $separator = [IO.Path]::DirectorySeparatorChar
 function Assert-NoReparsePathComponent([IO.FileSystemInfo]$item, [string]$label) {{
   $cursor = $item
@@ -408,7 +408,7 @@ if (-not (Test-FullyQualifiedWindowsPath $gitPath) -or
 }}
 $repoRoot = (& $gitPath -C $workingDirectory rev-parse --show-toplevel).Trim()
 Assert-NativeSuccess "repository root lookup"
-$repoRoot = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\', '/')
+$repoRoot = [IO.Path]::GetFullPath($repoRoot).TrimEnd([char]92, [char]47)
 if (-not $workingDirectory.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase)) {{
   throw "Run every Owner release step from the repository root"
 }}
@@ -687,7 +687,7 @@ function Test-FullyQualifiedWindowsPath([string]$path) {{
   return $true
 }}
 $targetCommit = "REPLACE_WITH_FROZEN_40_HEX_MAIN_COMMIT"
-$workingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\', '/')
+$workingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd([char]92, [char]47)
 $separator = [IO.Path]::DirectorySeparatorChar
 function Assert-NoReparsePathComponent([IO.FileSystemInfo]$item, [string]$label) {{
   $cursor = $item
@@ -717,7 +717,7 @@ if (-not (Test-FullyQualifiedWindowsPath $gitPath) -or
 }}
 $repoRoot = (& $gitPath -C $workingDirectory rev-parse --show-toplevel).Trim()
 if ($LASTEXITCODE -ne 0) {{ throw "repository root lookup failed" }}
-$repoRoot = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\', '/')
+$repoRoot = [IO.Path]::GetFullPath($repoRoot).TrimEnd([char]92, [char]47)
 if (-not $workingDirectory.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase)) {{
   throw "Run every Owner release step from the repository root"
 }}
@@ -913,7 +913,7 @@ $ownerApprovedBinding = "REPLACE_WITH_OWNER_APPROVED_64_HEX_BINDING"
 if ($ownerApprovedBinding -cnotmatch '^[0-9a-f]{{64}}$') {{
   throw "Copy the exact 64-lowercase-hex binding from the Owner approval statement"
 }}
-$workingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\', '/')
+$workingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd([char]92, [char]47)
 $separator = [IO.Path]::DirectorySeparatorChar
 function Assert-NoReparsePathComponent([IO.FileSystemInfo]$item, [string]$label) {{
   $cursor = $item
@@ -943,7 +943,7 @@ if (-not (Test-FullyQualifiedWindowsPath $gitPath) -or
 }}
 $repoRoot = (& $gitPath -C $workingDirectory rev-parse --show-toplevel).Trim()
 if ($LASTEXITCODE -ne 0) {{ throw "repository root lookup failed" }}
-$repoRoot = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\', '/')
+$repoRoot = [IO.Path]::GetFullPath($repoRoot).TrimEnd([char]92, [char]47)
 if (-not $workingDirectory.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase)) {{
   throw "Run every Owner release step from the repository root"
 }}
@@ -1339,7 +1339,7 @@ certificate input, helper functions, and clean checkout checks from a fresh pack
 do not execute the draft checks or `PATCH` again.
 
 ```powershell
-$recoveryWorkingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\', '/')
+$recoveryWorkingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd([char]92, [char]47)
 if (-not $recoveryWorkingDirectory.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase)) {{
   throw "Run post-publication recovery from the repository root"
 }}
