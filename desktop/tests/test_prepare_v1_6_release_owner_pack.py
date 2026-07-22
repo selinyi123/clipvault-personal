@@ -145,6 +145,8 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert guide.count('$ErrorActionPreference = "Stop"') >= 4
     assert guide.count("Set-StrictMode -Version Latest") == 4
     assert guide.count("function Test-FullyQualifiedWindowsPath") == 4
+    assert "TrimEnd('', '/')" not in guide
+    assert guide.count(".TrimEnd([char]92, [char]47)") == 9
     assert "IsPathFullyQualified" not in guide
     assert guide.count("function Reset-ReleaseGitEnvironment") == 4
     assert guide.count('$env:GIT_NO_REPLACE_OBJECTS = "1"') == 4
@@ -353,6 +355,36 @@ def test_generated_absolute_path_helper_runs_on_windows_powershell_5_1():
         "if (Test-FullyQualifiedWindowsPath 'C:relative.exe') { throw 'drive-relative path accepted' }",
         "if (Test-FullyQualifiedWindowsPath '\\root-relative.exe') { throw 'root-relative path accepted' }",
         "if (Test-FullyQualifiedWindowsPath '.\\relative.exe') { throw 'relative path accepted' }",
+    ])
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_generated_trim_end_arguments_run_on_windows_powershell_5_1():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell 5.1 is unavailable")
+    guide = owner_pack.owner_action_pack(
+        owner_pack.VERSION,
+        owner_pack.ISSUE_URL,
+        generated_at="2026-07-13T00:00:00Z",
+    )
+    matches = re.findall(r"\.TrimEnd\(([^\r\n]+)\)", guide)
+    assert matches == ["[char]92, [char]47"] * 9
+    script = "\n".join([
+        '$ErrorActionPreference = "Stop"',
+        "Set-StrictMode -Version Latest",
+        f"$trimmed = 'C:\\trusted\\/'.TrimEnd({matches[0]})",
+        "if ($trimmed -cne 'C:\\trusted') { throw \"unexpected result: $trimmed\" }",
     ])
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
 
