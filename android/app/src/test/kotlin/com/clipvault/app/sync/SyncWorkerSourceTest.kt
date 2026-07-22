@@ -141,6 +141,23 @@ class SyncWorkerSourceTest {
     }
 
     @Test
+    fun desktopReseedPrivacyMarkerHasNoAndroidBusinessSideEffect() {
+        val sync = readSource("Sync.kt")
+        val applyStart = sync.indexOf("fun applyEvents(")
+        val applyEnd = sync.indexOf("private fun applyClipNew", applyStart)
+        assertTrue("pulled-event apply boundary is missing", applyStart >= 0)
+        assertTrue("clip apply boundary is missing", applyEnd > applyStart)
+
+        val applyBody = sync.substring(applyStart, applyEnd)
+        assertTrue(applyBody.contains("\"privacy_noop\" -> {"))
+        assertTrue(applyBody.contains("ev.getJSONObject(\"payload\")"))
+        assertTrue(applyBody.contains("payload.length() != 0"))
+        assertTrue(applyBody.contains("ev.getString(\"created_at\") != PRIVACY_NOOP_TIMESTAMP"))
+        assertTrue(applyBody.contains("throw org.json.JSONException(\"invalid privacy noop\")"))
+        assertFalse(applyBody.contains("\"privacy_noop\" -> apply"))
+    }
+
+    @Test
     fun allPairingEntrypointsClearTokenAndOldBlockedStateBeforeFreshToken() {
         val src = readSource("Sync.kt")
 

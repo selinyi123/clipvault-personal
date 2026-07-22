@@ -24,10 +24,12 @@ one exact current-main commit:
    values are verified from that same run and draft.
 7. API 26 and API 27 execute the named non-skipped CursorWindow regression and
    all four `OutboxBaseSeqTest` cases with SDK, JUnit, debug app APK, and
-   instrumentation APK evidence. The schema-v3 high-water row binds distinct
+   instrumentation APK evidence. The schema-v4 high-water row binds distinct
    result references and SHA-256 values.
-8. Physical Android/IME/sync and Windows QA use the exact final draft assets.
-9. Owner approval binds the target commit, draft URL, and final digest set.
+8. Physical Android/IME/sync and Windows QA use the exact final draft assets,
+   and all seven schema-v4 signing-reset migration rows pass independently.
+9. Owner approval binds the target commit, draft URL, final digest set, and the
+   SHA-256 of the validator-rendered release-ready manual-QA report.
 10. The existing draft is published without rebuilding, and the resulting
     non-prerelease Release targets the same commit with the exact assets.
 
@@ -79,10 +81,11 @@ pack file is replaced, and a failed replacement attempts to restore every
 previous known file before returning an error.
 
 The manual template is generated directly from
-`tools/manual_qa_evidence.py`, so it uses schema v3 and the exact 19-item gate.
-Its read-only compatibility mode accepts an older schema-v2 report with the
-former 18-item shape, but it can never become release-ready. Regenerate the
-schema-v3 template and execute the required re-pair outbox high-water row. The
+`tools/manual_qa_evidence.py`, so it uses schema v4 and the exact 26-item gate,
+including seven independent Android signing-reset migration rows. Its read-only
+compatibility mode accepts older schema-v3 (19-item) and schema-v2 (18-item)
+reports, but neither can ever become release-ready. Regenerate the schema-v4
+template and execute the required signing-reset and re-pair high-water rows. The
 generated Owner path always requires strict cross-checking against
 `final-draft-artifact-evidence.json`.
 The release-artifact JSON is explicitly a coordination worksheet and is not

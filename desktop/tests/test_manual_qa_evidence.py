@@ -313,7 +313,12 @@ def _valid_report():
                 "next_step": "",
                 "notes": item.label,
             }
-            if section.key in {"android_device_qa", "ime_privacy_qa", "sync_qa"}:
+            if section.key in {
+                "android_device_qa",
+                "android_signing_reset_qa",
+                "ime_privacy_qa",
+                "sync_qa",
+            }:
                 item_data["run_ids"] = ["signed-release-physical"]
             if item.key == "re_pair_outbox_high_water":
                 item_data["instrumented_test_class"] = (
@@ -338,10 +343,17 @@ def _valid_report():
     return data
 
 
+def _valid_schema_v3_report():
+    data = _valid_report()
+    data["schema_version"] = manual_qa_evidence.LEGACY_V3_SCHEMA_VERSION
+    del data["sections"]["android_signing_reset_qa"]
+    return data
+
+
 def test_template_contains_every_required_manual_qa_item():
     template = manual_qa_evidence.build_template()
 
-    assert template["schema_version"] == 3
+    assert template["schema_version"] == 4
     assert template["version"] == "v1.6.0"
     assert template["scope_note"] == manual_qa_evidence.scope_note()
     assert template["release_artifact_binding"]["artifact_evidence_type"] == (
@@ -350,6 +362,22 @@ def test_template_contains_every_required_manual_qa_item():
     assert [run["sdk_int"] for run in template["android_runs"][:2]] == [26, 27]
     assert template["android_runs"][0]["test_apk_name"] == "app-debug-androidTest.apk"
     assert template["android_runs"][2]["apk_name"] == "ClipVault-Android-v1.6.0-release-signed.apk"
+    assert "one-time pairing code" in template["sections"]["android_device_qa"]["items"]["pairing"]["notes"]
+    assert "Desktop -> Android" in template["sections"]["sync_qa"]["items"]["public_clips_memory_sync"]["notes"]
+    signing_reset_items = template["sections"]["android_signing_reset_qa"]["items"]
+    assert tuple(signing_reset_items) == (
+        "dual_backup_verified",
+        "old_outbox_barrier_drained",
+        "quarantine_decision",
+        "zero_peer_reseed",
+        "update_incompatible",
+        "fresh_install",
+        "reseed_delivery_verified",
+    )
+    assert all(
+        row["run_ids"] == ["signed-release-physical"]
+        for row in signing_reset_items.values()
+    )
     assert (
         template["android_compatibility_qa"]["cursorwindow_large_payload"]["test_name"]
         == manual_qa_evidence.CURSORWINDOW_TEST_NAME
@@ -380,7 +408,7 @@ def test_helper_is_scoped_to_issue_36_v1_6_0():
 
 
 def test_legacy_all_pass_evidence_is_compatible_but_remains_release_blocked():
-    report = _valid_report()
+    report = _valid_schema_v3_report()
 
     result = manual_qa_evidence.validate_evidence(report)
     markdown = manual_qa_evidence.render_markdown(report, result)
@@ -390,6 +418,7 @@ def test_legacy_all_pass_evidence_is_compatible_but_remains_release_blocked():
     assert result.release_ready is False
     assert result.final_draft_binding_assurance == "not_present_legacy_compatibility"
     assert result.item_counts == {"blocked": 0, "fail": 0, "pass": 19}
+    assert any("schema-v3 evidence is accepted only" in warning for warning in result.warnings)
     assert "Manual QA evidence for Issue #36" in markdown
     assert "Status: **BLOCKED**" in markdown
     assert "final_draft_binding_assurance=not_present_legacy_compatibility" in markdown
@@ -405,6 +434,24 @@ def test_legacy_all_pass_evidence_is_compatible_but_remains_release_blocked():
     assert "signed-release-physical" in markdown
     assert "does not replace signed artifact evidence" in markdown
     assert "Owner-attested inputs" in markdown
+
+
+def test_schema_v3_all_pass_with_verified_binding_still_cannot_be_release_ready():
+    artifact_report = _final_draft_artifact_report()
+    report = _bind_report_to_final_draft(_valid_schema_v3_report(), artifact_report)
+
+    result = manual_qa_evidence.validate_evidence(
+        report,
+        final_draft_artifact_evidence=artifact_report,
+        require_final_draft_binding=True,
+    )
+
+    assert result.ok is True
+    assert result.structurally_complete is True
+    assert result.release_ready is False
+    assert result.final_draft_binding_assurance == "verified_external_snapshot"
+    assert result.item_counts == {"blocked": 0, "fail": 0, "pass": 19}
+    assert any("schema-v3 evidence is accepted only" in warning for warning in result.warnings)
 
 
 def test_schema_v2_is_readable_but_cannot_satisfy_current_release_gate():
@@ -430,7 +477,7 @@ def test_schema_v2_is_readable_but_cannot_satisfy_current_release_gate():
     assert "re-pairing preserves" not in markdown
 
 
-@pytest.mark.parametrize("invalid_schema", [3.0, 2.0, True])
+@pytest.mark.parametrize("invalid_schema", [4.0, 3.0, 2.0, True])
 def test_non_integer_schema_version_cannot_be_release_ready(invalid_schema):
     report = _valid_report()
     report["schema_version"] = invalid_schema
@@ -446,7 +493,7 @@ def test_non_integer_schema_version_cannot_be_release_ready(invalid_schema):
     assert result.ok is False
     assert result.structurally_complete is False
     assert result.release_ready is False
-    assert any("schema_version must be 3, or 2" in error for error in result.errors)
+    assert any("schema_version must be 4, 3, or 2" in error for error in result.errors)
     assert result.as_dict()["evidence_assurance"] == "owner_attested_structural_validation"
 
 
@@ -769,7 +816,54 @@ def test_missing_required_section_item_is_an_error():
 
     assert result.ok is False
     assert any("secret_private_isolation is required" in error for error in result.errors)
-    assert any("expected 19 QA items" in error for error in result.errors)
+    assert any("expected 26 QA items" in error for error in result.errors)
+
+
+@pytest.mark.parametrize(
+    "item_key",
+    [
+        "dual_backup_verified",
+        "old_outbox_barrier_drained",
+        "quarantine_decision",
+        "zero_peer_reseed",
+        "update_incompatible",
+        "fresh_install",
+        "reseed_delivery_verified",
+    ],
+)
+def test_schema_v4_requires_every_android_signing_reset_row(item_key):
+    report = _valid_report()
+    del report["sections"]["android_signing_reset_qa"]["items"][item_key]
+
+    result = manual_qa_evidence.validate_evidence(report)
+
+    assert result.ok is False
+    assert result.structurally_complete is False
+    assert result.release_ready is False
+    assert any(
+        f"sections.android_signing_reset_qa.items.{item_key} is required" in error
+        for error in result.errors
+    )
+    assert any("expected 26 QA items" in error for error in result.errors)
+
+
+def test_android_signing_reset_rows_require_evidence_and_final_physical_run():
+    report = _valid_report()
+    row = report["sections"]["android_signing_reset_qa"]["items"][
+        "dual_backup_verified"
+    ]
+    row["evidence"] = ""
+    row["run_ids"] = ["api26-cursorwindow"]
+
+    result = manual_qa_evidence.validate_evidence(report)
+
+    assert result.release_ready is False
+    assert any("dual_backup_verified.evidence" in error for error in result.errors)
+    assert any(
+        "dual_backup_verified.run_ids must include the physical final signed APK run"
+        in error
+        for error in result.errors
+    )
 
 
 def test_re_pair_outbox_high_water_is_required_release_evidence():
@@ -781,7 +875,7 @@ def test_re_pair_outbox_high_water_is_required_release_evidence():
     assert result.ok is False
     assert result.release_ready is False
     assert any("re_pair_outbox_high_water is required" in error for error in result.errors)
-    assert any("expected 19 QA items" in error for error in result.errors)
+    assert any("expected 26 QA items" in error for error in result.errors)
 
 
 def test_re_pair_outbox_high_water_requires_executed_api26_and_api27_results():
@@ -893,7 +987,7 @@ def test_schema_v1_is_blocked_instead_of_silently_accepted():
     result = manual_qa_evidence.validate_evidence(report)
 
     assert result.release_ready is False
-    assert any("schema_version must be 3, or 2" in error for error in result.errors)
+    assert any("schema_version must be 4, 3, or 2" in error for error in result.errors)
 
 
 def test_timestamps_and_app_versions_are_strict():
@@ -1381,7 +1475,7 @@ def test_cli_writes_template_and_json_summary(tmp_path, capsys):
     assert output["ok"] is True
     assert output["release_ready"] is False
     assert output["final_draft_binding_assurance"] == "not_present_legacy_compatibility"
-    assert output["item_counts"]["pass"] == 19
+    assert output["item_counts"]["pass"] == 26
 
     markdown_path = tmp_path / "manual-qa-comment.md"
     assert manual_qa_evidence.main(
@@ -1440,10 +1534,10 @@ def test_cli_release_ready_mode_rejects_frozen_schema_v2_without_output(tmp_path
     assert output_path.exists() is False
 
 
-def test_cli_release_ready_mode_writes_passing_schema_v3_output(tmp_path):
+def test_cli_release_ready_mode_writes_passing_schema_v4_output(tmp_path):
     artifact_report = _final_draft_artifact_report()
     report = _bind_report_to_final_draft(_valid_report(), artifact_report)
-    input_path = tmp_path / "manual-qa-v3.json"
+    input_path = tmp_path / "manual-qa-v4.json"
     artifact_path = tmp_path / "final-draft-artifacts.json"
     output_path = tmp_path / "final-comment.md"
     input_path.write_text(json.dumps(report), encoding="utf-8")
@@ -1727,7 +1821,7 @@ def test_cli_refuses_to_overwrite_template_without_force(tmp_path):
     assert manual_qa_evidence.main(
         ["--write-template", str(template_path), "--force"]
     ) == 0
-    assert json.loads(template_path.read_text(encoding="utf-8"))["schema_version"] == 3
+    assert json.loads(template_path.read_text(encoding="utf-8"))["schema_version"] == 4
 
 
 def test_cli_refuses_to_overwrite_rendered_output_without_force(tmp_path):

@@ -10,6 +10,7 @@ import py_compile
 import re
 import shutil
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -58,21 +59,47 @@ def test_local_module_loader_ignores_unchecked_hash_bytecode_cache(
     assert module.VALUE == "trusted-source"
 
 
-def test_manual_template_reuses_canonical_schema_v3_contract():
+def test_manual_template_reuses_canonical_schema_v4_contract():
     generated = owner_pack.manual_qa_template(owner_pack.VERSION)
     canonical = owner_pack.manual_qa_evidence.build_template(owner_pack.VERSION)
 
     assert generated == canonical
-    assert generated["schema_version"] == 3
+    assert generated["schema_version"] == 4
     assert len(generated["android_runs"]) == 3
     assert [run["sdk_int"] for run in generated["android_runs"][:2]] == [26, 27]
     assert generated["android_runs"][2]["apk_name"] == (
         "ClipVault-Android-v1.6.0-release-signed.apk"
     )
+
+
+def test_release_workflow_and_owner_pack_share_exact_canonical_release_body():
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(
+        r"(?ms)^\s*cat > release-notes\.md <<EOF\r?\n(?P<body>.*?)^\s*EOF\r?$",
+        workflow,
+    )
+    assert match is not None
+    workflow_body = textwrap.dedent(match.group("body")).rstrip("\r\n")
+    workflow_body = (
+        workflow_body
+        .replace("${RELEASE_TAG}", owner_pack.VERSION)
+        .replace(
+            "${old_android_cert_sha256}",
+            owner_pack.OLD_ANDROID_CERT_SHA256,
+        )
+        .replace(
+            "${ANDROID_RELEASE_CERT_SHA256}",
+            owner_pack.NEW_ANDROID_CERT_SHA256,
+        )
+    )
+
+    assert workflow_body == owner_pack.SIGNING_RESET_RELEASE_BODY
     expected_items = 1 + sum(
         len(section.items) for section in owner_pack.manual_qa_evidence.REQUIRED_SECTIONS
     )
-    assert expected_items == 19
+    assert expected_items == 26
 
 
 def test_artifact_worksheet_is_scoped_and_never_claims_validation():
@@ -112,7 +139,8 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "app-debug-androidTest.apk" in guide
     assert "ClipVault-Android-v1.6.0-release-signed.apk" in guide
     assert "& $pythonPath -I -S $evidenceTool" in guide
-    assert "--expected-android-cert-sha256 $env:ANDROID_RELEASE_CERT_SHA256" in guide
+    assert "--expected-android-cert-sha256 $expectedAndroidCertSha256" in guide
+    assert "--expected-android-cert-sha256 $env:ANDROID_RELEASE_CERT_SHA256" not in guide
     assert "--require-live-final-draft" in guide
     assert '--draft-release-dir "$releaseRoot"' in guide
     assert "GH_CLI_PATH" in guide
@@ -133,8 +161,8 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "final-draft-artifact-evidence.json" in guide
     assert "final-draft-artifact-comment.md" in guide
     assert '--final-draft-artifact-evidence "$finalDraftEvidence"' in guide
-    assert guide.count("--require-final-draft-binding") == 2
-    assert guide.count("--require-release-ready") == 2
+    assert guide.count("--require-final-draft-binding") == 3
+    assert guide.count("--require-release-ready") == 3
     assert "release_artifact_binding" in guide
     assert "artifact_evidence_type <- evidence_type" in guide
     assert "artifacts` row whose role is `android_signed_apk`" in guide
@@ -161,13 +189,13 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert '"repos/selinyi123/clipvault-personal/branches/main"' in guide
     assert guide.count(
         'Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"'
-    ) == 11
+    ) == 12
     assert guide.count(
         'Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"'
-    ) == 11
+    ) == 12
     assert guide.count(
         'Assert-TrackedSourceMatchesCommit "tools/manual_qa_evidence.py"'
-    ) == 3
+    ) == 5
     assert "Manual QA validator must run from the exact clean frozen target" in guide
     assert "Manual QA validator checkout changed during validation" in guide
     assert "Final-draft artifact evidence must be a regular non-reparse file" in guide
@@ -230,6 +258,41 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert step_f.count("Get-TrustedEvidenceSha256 $finalDraftEvidence") == 3
     assert "Manual QA or final-draft artifact evidence changed after preview" in step_f
     assert "Manual QA or final-draft artifact evidence changed during final render" in step_f
+
+    step_h = guide.split(
+        "### Step H - publish the existing draft, then verify published state", 1
+    )[1]
+    step_h = step_h.split("### Step H recovery - read-only", 1)[0]
+    manual_qa_recheck = step_h.index(
+        "Manual QA recheck differs from the Owner-approved report"
+    )
+    final_environment = step_h.index(
+        "final release certificate environment variable lookup failed"
+    )
+    final_main = step_h.index("final pre-publication main lookup failed")
+    final_tag = step_h.index(
+        "Release tag changed during manual QA revalidation; do not publish"
+    )
+    final_draft = step_h.index("final pre-publication draft lookup failed")
+    final_asset_check = step_h.index(
+        'Assert-ReleaseAssetsMatchEvidence $finalDraft $freshEvidence.artifacts "final pre-publication"'
+    )
+    publication_patch = step_h.index(
+        "& $ghPath api -X PATCH --hostname github.com $releaseEndpoint -F draft=false"
+    )
+    assert (
+        manual_qa_recheck
+        < final_environment
+        < final_main
+        < final_tag
+        < final_draft
+        < final_asset_check
+        < publication_patch
+    )
+    final_check_window = step_h[final_asset_check:publication_patch]
+    assert "& $" not in final_check_window
+    assert "Start-Process" not in final_check_window
+    assert "manualQaTool" not in final_check_window
     assert 'Move-Item -LiteralPath $pendingOutput -Destination $finalOutput' in step_f
     assert "Final manual QA output already exists" in step_f
     assert "OutboxBaseSeqTest" in step_f
@@ -242,12 +305,30 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "re_pair_outbox_high_water" in step_f
     assert "Remove-Item -LiteralPath $pendingOutput" in step_f
     assert "Refusing stale prepublish directory" in guide
+    assert "$prepublishNonce = [DateTime]::UtcNow.ToString(" in guide
+    assert '[Guid]::NewGuid().ToString("N")' in guide
+    assert (
+        'v1.6.0-prepublish-$runId-$prepublishNonce' in guide
+    )
     assert "Draft assets changed after QA" in guide
-    assert "prepublish-live-artifact-evidence.json" in guide
+    assert "prepublish-live-artifact-evidence-$prepublishNonce.json" in guide
+    assert "prepublish-live-artifact-comment-$prepublishNonce.md" in guide
     assert "fresh pre-publication evidence verification failed" in guide
     assert "REPLACE_WITH_OWNER_APPROVED_64_HEX_BINDING" in guide
-    assert "local evidence JSON is not the approval source" in guide
+    assert "REPLACE_WITH_OWNER_APPROVED_MANUAL_QA_64_HEX_SHA256" in guide
+    assert "local evidence files are not the approval" in guide
+    assert "manual-QA report SHA-256" in guide
+    assert "Manual QA report does not match the Owner-approved digest" in guide
+    assert "Manual QA pre-publication revalidation failed" in guide
+    assert "Manual QA recheck differs from the Owner-approved report" in guide
     assert "$freshEvidence.artifact_binding_sha256 -cne $ownerApprovedBinding" in guide
+    assert guide.count(
+        '$expectedAndroidCertSha256 = '
+        '"86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"'
+    ) == 2
+    assert guide.count(
+        "$env:ANDROID_RELEASE_CERT_SHA256 -cne $expectedAndroidCertSha256"
+    ) == 2
     assert "--owner-approved-binding $ownerApprovedBinding" in guide
     assert "--publication-projection-stdout" in guide
     assert "$freshProjectionJson = & $pythonPath" in guide
@@ -259,6 +340,10 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "Release verifier checkout changed after QA; do not publish" in guide
     assert '$release.targetCommitish -ne $targetCommit' in guide
     assert 'api -X PATCH --hostname github.com $releaseEndpoint -F draft=false' in guide
+    assert "$publicationPatchExitCode = $LASTEXITCODE" in guide
+    assert "Publication outcome is unknown after PATCH" in guide
+    assert "exact-ID GET proves the Release is public" in guide
+    assert "PATCH may have reached GitHub" in guide
     assert '$releaseId = [long]$freshEvidence.draft_release.id' in guide
     assert "Current main moved immediately before publication; do not publish" in guide
     assert "function Resolve-ExactReleaseTagCommit" in guide
@@ -267,6 +352,34 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "exact draft Release changed after fresh verification" in guide
     assert "Assert-ReleaseAssetsMatchEvidence" in guide
     assert "asset API identity/size/digest mismatch" in guide
+    assert "function Assert-SigningResetReleaseBody" in guide
+    assert "function Normalize-ReleaseBody" in guide
+    assert "$canonicalReleaseBody = @'" in guide
+    assert "Draft Release body is not the canonical signing-reset disclosure" in guide
+    assert "Android signing reset" in guide
+    assert "not an in-place update" in guide
+    assert "com\\.clipvault\\.app" in guide
+    assert "v1\\.5\\.10.*uninstall" in guide
+    assert "synchroni[sz]e.*public clips" in guide
+    assert "public memory.*Desktop|Desktop.*public memory" in guide
+    assert "one-time Desktop.*reseed preparation" in guide
+    assert "no supported export path.*quarantined" in guide
+    assert "Android-only secret/private" in guide
+    assert "quarantine is empty" in guide
+    assert "accept.*permanent loss" in guide
+    assert "no cryptographic signing continuity" in guide
+    assert "898f21c2b59a4a4729fd386d91a86711b81ea567d5d85bf391a2e0fff2f1f9f1" in guide
+    assert "Release body contains an unresolved placeholder" in guide
+    assert "each approved signing-reset fingerprint exactly once" in guide
+    assert "environments/release/variables/ANDROID_RELEASE_CERT_SHA256" in guide
+    assert "$releaseCertSha256 -cne $expectedAndroidCertSha256" in guide
+    assert "Assert-SigningResetReleaseBody $approvedReleaseBody $expectedAndroidCertSha256" in guide
+    assert "Draft Release body or metadata changed immediately before publication" in guide
+    assert "[string]$published.body -cne $approvedReleaseBody" in guide
+    assert (
+        "Assert-SigningResetReleaseBody ([string]$published.body) "
+        "$expectedAndroidCertSha256"
+    ) in guide
     assert "v1.6.0-postpublish-$runId" in guide
     assert "$published.draft" in guide
     assert "Published Release metadata mismatch" in guide
@@ -316,7 +429,9 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert '$postpublishComment = "$artifactRoot/' in guide
     assert '$postpublishEvidence = "$postpublishRoot/' not in guide
     assert '$postpublishComment = "$postpublishRoot/' not in guide
-    recovery_start = guide.index("### Step H recovery - read-only after a successful PATCH")
+    recovery_start = guide.index(
+        "### Step H recovery - read-only after PATCH may have reached GitHub"
+    )
     recovery_end = guide.index("## 3. Hard blockers", recovery_start)
     recovery = guide[recovery_start:recovery_end]
     assert "-X PATCH" not in recovery
@@ -325,7 +440,11 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "Run post-publication recovery from the repository root" in recovery
     assert "--require-live-published-release" in recovery
     assert "Post-publication recovery checkout changed during validation" in recovery
+    assert "Post-publication recovery Release body or identity mismatch" in recovery
+    assert "Assert-SigningResetReleaseBody ([string]$recoveryRelease.body)" in recovery
     assert "Closure recommendation: `BLOCKED`" in draft
+    assert "Android signing-reset migration" in draft
+    assert "manual-QA report SHA-256" in draft
     assert guide.isascii()
     assert draft.isascii()
 
@@ -355,6 +474,61 @@ def test_generated_absolute_path_helper_runs_on_windows_powershell_5_1():
         "if (Test-FullyQualifiedWindowsPath 'C:relative.exe') { throw 'drive-relative path accepted' }",
         "if (Test-FullyQualifiedWindowsPath '\\root-relative.exe') { throw 'root-relative path accepted' }",
         "if (Test-FullyQualifiedWindowsPath '.\\relative.exe') { throw 'relative path accepted' }",
+    ])
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_generated_signing_reset_body_validator_runs_fail_closed_on_windows_powershell_5_1():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell 5.1 is unavailable")
+    guide = owner_pack.owner_action_pack(
+        owner_pack.VERSION,
+        owner_pack.ISSUE_URL,
+        generated_at="2026-07-13T00:00:00Z",
+    )
+    start = guide.index("function Assert-SigningResetReleaseBody")
+    end = guide.index("$liveDraft =", start)
+    validator = guide[start:end].strip()
+    new_cert = "86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"
+    old_cert = "898f21c2b59a4a4729fd386d91a86711b81ea567d5d85bf391a2e0fff2f1f9f1"
+    valid_body = "\n".join([
+        "Android signing reset - this is not an in-place update from v1.5.10.",
+        "The v1.6.0 APK retains application ID com.clipvault.app.",
+        "The installed v1.5.10 package must be uninstalled.",
+        "Before uninstalling v1.5.10, synchronize and verify public clips and public memory on Desktop.",
+        "Complete the one-time Desktop public-data reseed preparation.",
+        "There is no supported export path, so Android-only secret/private items must be quarantined.",
+        "Confirm the quarantine is empty or explicitly accept permanent loss.",
+        f"Old certificate SHA-256: {old_cert}",
+        f"New certificate SHA-256: {new_cert}",
+        "There is no cryptographic signing continuity between these certificates.",
+    ])
+    script = "\n".join([
+        '$ErrorActionPreference = "Stop"',
+        "Set-StrictMode -Version Latest",
+        f'$expectedAndroidCertSha256 = "{new_cert}"',
+        validator,
+        f"$validBody = @'\n{valid_body}\n'@",
+        "Assert-SigningResetReleaseBody $validBody $expectedAndroidCertSha256",
+        "function Assert-Rejected([scriptblock]$Action) {",
+        "  try { & $Action } catch { return }",
+        '  throw "invalid Release body was accepted"',
+        "}",
+        "Assert-Rejected { Assert-SigningResetReleaseBody ($validBody + \"`nTODO\") $expectedAndroidCertSha256 }",
+        "Assert-Rejected { Assert-SigningResetReleaseBody ($validBody -replace 'public memory', 'public records') $expectedAndroidCertSha256 }",
+        "Assert-Rejected { Assert-SigningResetReleaseBody ($validBody + \"`nNew certificate SHA-256: $expectedAndroidCertSha256\") $expectedAndroidCertSha256 }",
+        "Assert-Rejected { Assert-SigningResetReleaseBody $validBody ('a' * 64) }",
     ])
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
 

@@ -175,20 +175,25 @@ jobs:
             echo "::error::ANDROID_RELEASE_CERT_SHA256 must be exactly 64 lowercase hex characters"
             exit 1
           fi
+          expected_android_release_cert_sha256="86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"
+          if [[ "${ANDROID_RELEASE_CERT_SHA256}" != "${expected_android_release_cert_sha256}" ]]; then
+            echo "::error::ANDROID_RELEASE_CERT_SHA256 does not match the approved v1.6.0 signing-reset certificate"
+            exit 1
+          fi
 
       - name: Build signed Android release APK
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.validate-release-input.outputs.version }}
           ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
-          ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
-          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
-          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+          ORG_GRADLE_PROJECT_CV_KEYSTORE_PASS: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_CV_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_CV_KEY_PASS: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
           ANDROID_RELEASE_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
           set -euo pipefail
           keystore=""
-          trap 'rm -f "${keystore:-}"' EXIT
+          trap 'rm -f -- "${keystore:-}"' EXIT
           version="${RELEASE_VERSION}"
           source_version="$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)"
           if [[ "${version}" != "${source_version}" ]]; then
@@ -198,11 +203,15 @@ jobs:
           umask 077
           keystore="${RUNNER_TEMP}/clipvault-release.jks"
           printf '%s' "${ANDROID_RELEASE_KEYSTORE_B64}" | base64 -d > "${keystore}"
-          ./gradlew :core:test :app:testDebugUnitTest :app:lintRelease :app:assembleRelease --no-daemon \
-            -PCV_KEYSTORE="${keystore}" \
-            -PCV_KEYSTORE_PASS="${ANDROID_RELEASE_KEYSTORE_PASSWORD}" \
-            -PCV_KEY_ALIAS="${ANDROID_RELEASE_KEY_ALIAS}" \
-            -PCV_KEY_PASS="${ANDROID_RELEASE_KEY_PASSWORD}"
+          unset ANDROID_RELEASE_KEYSTORE_B64
+          export ORG_GRADLE_PROJECT_CV_KEYSTORE="${keystore}"
+          ./gradlew :core:test :app:testDebugUnitTest :app:lintRelease :app:assembleRelease --no-daemon
+          unset ORG_GRADLE_PROJECT_CV_KEYSTORE \
+            ORG_GRADLE_PROJECT_CV_KEYSTORE_PASS \
+            ORG_GRADLE_PROJECT_CV_KEY_ALIAS \
+            ORG_GRADLE_PROJECT_CV_KEY_PASS
+          rm -f -- "${keystore}"
+          keystore=""
 
           rm -rf ../release-artifacts
           mkdir -p ../release-artifacts
@@ -214,6 +223,21 @@ jobs:
           release_apk="${release_apks[0]}"
           signed_apk="../release-artifacts/ClipVault-Android-v${version}-release-signed.apk"
           cp "${release_apk}" "${signed_apk}"
+          aapt="$(find "${ANDROID_HOME}/build-tools" -name aapt -type f | sort -V | tail -n 1)"
+          if [[ -z "${aapt}" || ! -x "${aapt}" ]]; then
+            echo "::error::No executable aapt found under ANDROID_HOME/build-tools"
+            exit 1
+          fi
+          badging_output="$("${aapt}" dump badging "${signed_apk}")"
+          package_line="${badging_output%%$'\n'*}"
+          if [[ "${package_line}" != "package: name='com.clipvault.app'"* ]]; then
+            echo "::error::Final APK application ID is not com.clipvault.app"
+            exit 1
+          fi
+          if [[ "${package_line}" != *" versionName='${version}'"* ]]; then
+            echo "::error::Final APK manifest versionName does not match ${version}"
+            exit 1
+          fi
           apksigner="$(find "${ANDROID_HOME}/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
           if [[ -z "${apksigner}" || ! -x "${apksigner}" ]]; then
             echo "::error::No executable apksigner found under ANDROID_HOME/build-tools"
@@ -290,6 +314,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.version }}
+          ANDROID_RELEASE_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
           set -euo pipefail
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
@@ -320,8 +345,38 @@ jobs:
               cp "${file}" "upload-assets/${asset}"
             done < <(find "${dir}" -maxdepth 1 -type f -print0)
           done
-          cat > release-notes.md <<'EOF'
-          ClipVault Personal release draft.
+          old_android_cert_sha256="898f21c2b59a4a4729fd386d91a86711b81ea567d5d85bf391a2e0fff2f1f9f1"
+          expected_android_release_cert_sha256="86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"
+          if [[ ! "${ANDROID_RELEASE_CERT_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::ANDROID_RELEASE_CERT_SHA256 must be exactly 64 lowercase hex characters"
+            exit 1
+          fi
+          if [[ "${ANDROID_RELEASE_CERT_SHA256}" != "${expected_android_release_cert_sha256}" ]]; then
+            echo "::error::Draft Release certificate does not match the approved v1.6.0 signing-reset certificate"
+            exit 1
+          fi
+          cat > release-notes.md <<EOF
+          # ClipVault Personal ${RELEASE_TAG}
+
+          > [!WARNING]
+          > **Android signing reset - this is not an in-place update from v1.5.10.**
+          >
+          > The ${RELEASE_TAG} APK retains application ID com.clipvault.app but uses a
+          > new signing identity. Android therefore requires the installed v1.5.10
+          > package to be uninstalled before this APK can be installed.
+          >
+          > Before uninstalling v1.5.10, synchronize and verify public clips on
+          > Desktop and verify Desktop-authoritative public memory. After draining the
+          > old outbox, revoke the old peer and run the documented one-time Desktop
+          > reseed preparation. v1.5.10 has no supported export path for quarantined
+          > Android-only secret/private items: confirm its quarantine is empty, or
+          > explicitly accept their permanent loss; otherwise stop.
+          > After uninstalling, install ${RELEASE_TAG} fresh, pair again, pull the
+          > prepared reseed, and re-enable the ClipVault Panel IME and Quick Settings Tile.
+          >
+          > Old certificate SHA-256: ${old_android_cert_sha256}
+          > New certificate SHA-256: ${ANDROID_RELEASE_CERT_SHA256}
+          > There is no cryptographic signing continuity between these certificates.
 
           Do not publish this draft until Issue #36 has signed APK evidence and
           manual Android IME/privacy/sync and Windows clipboard privacy evidence.

@@ -7,6 +7,9 @@ It does not replace the manual Android/IME/sync/Windows clipboard QA evidence.
 
 - Do not publish `v1.6.0` until Issue #36 has all required evidence.
 - Do not commit keystores, passwords, generated `.b64` files, or release artifacts.
+- Android signing continuity with v1.5.10 is not available. Follow
+  [ANDROID_SIGNING_RESET_V1_6_0.md](ANDROID_SIGNING_RESET_V1_6_0.md) and do not
+  describe the v1.6.0 Android APK as an in-place update.
 - Run the workflow first with `create_draft_release=false` as a signed,
   no-draft preflight; never use its bytes as final QA/publication evidence.
 - Treat `Release candidate dry run` artifacts as unsigned packaging evidence only.
@@ -19,6 +22,29 @@ It does not replace the manual Android/IME/sync/Windows clipboard QA evidence.
   `Release artifacts v1.6.0 from main draft=false`. The final asset build must
   appear as `Release artifacts v1.6.0 from main draft=true`; download its draft
   Release assets before final QA and publish that same draft without rebuilding.
+
+## Approved Android signing reset (compatibility break)
+
+The Owner approved the signing reset on 2026-07-22: retain the application ID
+`com.clipvault.app`, accept that v1.5.10 must be uninstalled before v1.6.0 can
+be installed, and complete Android data migration first. The v1.5.10 APK has
+one verified v2 signer whose certificate SHA-256 is
+`898f21c2b59a4a4729fd386d91a86711b81ea567d5d85bf391a2e0fff2f1f9f1`, but
+the corresponding private key is unavailable. There is therefore **no
+cryptographic signing continuity** from v1.5.10 to v1.6.0.
+
+This approval authorizes the reset procedure; it is not manual-QA, artifact, or
+publication evidence. Before deleting the old installation, drain and verify
+public clips on Desktop, verify Desktop-authoritative public Memory, revoke the
+old peer, and run the documented one-shot Desktop reseed with zero peers. The
+old app has no supported export path for quarantined secret/private content:
+confirm quarantine is empty or explicitly accept permanent loss; otherwise
+stop.
+Then use the exact final draft APK to record the expected
+`adb install -r` signature-mismatch failure, uninstall the old package, install
+v1.6.0 fresh, pair again, and rerun Android, IME privacy, QS Tile, and sync QA.
+The dedicated signing-reset document defines the required ordering, evidence,
+new-key custody, and release-note wording.
 
 ## 0. Run the read-only readiness report
 
@@ -107,21 +133,31 @@ the Owner value before attestation or upload. A generic
 valid APK signature or an unbound `apksigner` text file is not Owner identity
 proof.
 
+For v1.6.0, this variable must contain the fingerprint of the **new** long-lived
+release certificate created under the approved reset:
+`86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c`.
+It must not contain the old v1.5.10 fingerprint above or any other valid-looking
+fingerprint. Before dispatching any workflow that can access the secrets,
+complete and verify two encrypted keystore backups in independent Owner-controlled storage
+locations as required by
+[ANDROID_SIGNING_RESET_V1_6_0.md](ANDROID_SIGNING_RESET_V1_6_0.md). Record only
+the public certificate fingerprint, alias, and backup verification dates in
+release evidence; never record passwords, keystore bytes, or private storage
+paths.
+
 Example CLI setup for the keystore value:
 
 ```powershell
-try {
-  [Convert]::ToBase64String([IO.File]::ReadAllBytes("clipvault-release.jks")) |
-    Set-Content -Encoding ascii -ErrorAction Stop keystore.b64
-  Get-Content -LiteralPath keystore.b64 -Raw -ErrorAction Stop |
-    gh secret set ANDROID_RELEASE_KEYSTORE_B64 `
-      --repo selinyi123/clipvault-personal `
-      --env release
-  if ($LASTEXITCODE -ne 0) { throw "Failed to set the release keystore secret" }
-} finally {
-  Remove-Item keystore.b64 -ErrorAction SilentlyContinue
-}
+[Convert]::ToBase64String(
+  [IO.File]::ReadAllBytes("clipvault-release.jks")
+) | gh secret set ANDROID_RELEASE_KEYSTORE_B64 `
+  --repo selinyi123/clipvault-personal `
+  --env release
+if ($LASTEXITCODE -ne 0) { throw "Failed to set the release keystore secret" }
 ```
+
+Do not create a plaintext `.b64` staging file. The pipeline keeps the encoded
+value in memory and sends it directly to the GitHub CLI standard input.
 
 Set the password/alias secrets without echoing them into logs:
 
@@ -141,6 +177,11 @@ if ($LASTEXITCODE -ne 0) { throw "Failed to set the key password secret" }
 ```
 
 ## 4. Run the signed no-draft preflight
+
+Do not dispatch this workflow until the new signer fingerprint has been
+independently verified from both retained keystore copies, all four environment
+secret names are present, and `ANDROID_RELEASE_CERT_SHA256` contains that new
+fingerprint.
 
 The workflow must run from current `main`, and its target must equal the SHA
 selected in section 1:
@@ -254,6 +295,18 @@ After running the real Android device, IME privacy, sync, and Windows clipboard
 privacy checks from `docs/MANUAL_QA_V1_6_0.md`, the local helper may be used for
 a drafting preview. The commands below are not the final eligible render:
 
+The physical Android lane must also follow the ordered signing-reset migration
+in [ANDROID_SIGNING_RESET_V1_6_0.md](ANDROID_SIGNING_RESET_V1_6_0.md). In
+particular, retain redacted evidence that public clips drained before uninstall,
+Desktop-authoritative Memory was included in the zero-peer reseed, the old
+quarantine was empty or its permanent loss was explicitly accepted, and
+`adb install -r` of the
+new final-draft APK over an installed v1.5.10 failed with
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE`, the fresh install succeeded only after
+the old package was removed, and the device was paired and configured again.
+The expected update rejection proves the compatibility break; it is not a
+successful installation or final QA result.
+
 ```powershell
 $qaEvidenceDir = ".\.field-test-artifacts\v1.6.0-manual-qa"
 $finalDraftEvidence = ".\.field-test-artifacts\v1.6.0-draft-run-REPLACE_WITH_DRAFT_TRUE_RUN_ID\final-draft-artifact-evidence.json"
@@ -294,7 +347,7 @@ Legacy schema-v2 compatibility mode can return `ok=true`, but it remains
 outbox high-water row. Its historical success exit status means structural
 completeness only, not Issue #36 release eligibility.
 
-The evidence file must use `schema_version=3` and bind all observations to the
+The evidence file must use `schema_version=4` and bind all observations to the
 exact target commit, including the Windows environment source commit. Before
 final device QA, run the targeted CursorWindow regression and the Android
 outbox-baseline Room regression once on API 26 and once on API 27 (an emulator
@@ -411,7 +464,7 @@ run, and artifact-evidence reference. Use that physical release run ID for
 every passing Android, IME, and sync row.
 Debug instrumentation evidence never substitutes for signed-release manual QA.
 Run the Windows installer/portable and clipboard privacy cases with the EXEs
-downloaded from that same draft Release. The schema-v3 manual helper does not
+downloaded from that same draft Release. The schema-v4 manual helper does not
 independently cross-check Windows bytes, so each Windows evidence row must cite
 the draft URL plus the exact EXE name/SHA-256 from the saved digest set; this is
 still an Owner-attested observation.
@@ -430,8 +483,23 @@ Before approval, record on Issue #36:
 - the final `draft=true` run and draft Release URLs;
 - the exact eight-asset names, sizes, and SHA-256 digest set;
 - constrained provenance and Owner Android certificate identity evidence;
+- the approved signing-reset decision, old and new public certificate
+  fingerprints, dual-backup verification dates, expected update-rejection
+  evidence, completed data-migration safeguards, and successful fresh-install
+  evidence;
 - the validator-rendered manual QA report and its referenced evidence;
 - an Owner publication statement binding all of the above.
+
+The draft and published Release notes must prominently state that the Android
+APK is not an in-place update from v1.5.10, requires public-clip drain and the
+documented zero-peer Desktop reseed before uninstall, and that the old app has
+no supported export for quarantined Android-only secret/private content. The
+notes must require an empty-quarantine confirmation or explicit acceptance of
+permanent loss, plus fresh installation, pairing, reseed pull, IME enablement,
+and QS Tile setup.
+They must identify both public certificate fingerprints and must not imply that
+the old signer authorized, rotated to, or is cryptographically continuous with
+the new signer.
 
 Do not reconstruct the publication commands from snippets in this runbook.
 Generate a fresh Owner pack and execute its Step H as one intact, fail-closed
@@ -457,10 +525,15 @@ annotated-tag chains.
 
 ### Post-publication recovery
 
-If the numeric Release `PATCH` succeeded but a later API lookup, download, hash,
-or verifier command failed, assume `v1.6.0` is already public. Do not rebuild,
-edit the Release, delete evidence, or run the normal draft publication path
-again. Keep Issue #36 open and preserve the first failure output.
+Once the numeric Release `PATCH` is sent, a nonzero client exit is not proof that
+GitHub left the Release as a draft: the response can be lost after publication.
+Step H therefore always follows it with an exact-ID read-only GET. If that GET
+cannot establish the state, or any later lookup, download, hash, or verifier
+command fails, assume `v1.6.0` may already be public. Do not rebuild, edit the
+Release, delete evidence, or run the normal draft publication path again. Keep
+Issue #36 open and preserve the first failure output. If exact-ID GET proves the
+Release remains a draft, stop and review before starting a new nonce-bound Step
+H; never blindly retry the previous mutation path.
 
 Use a newly generated Owner pack and the dedicated **Step H recovery** block. In
 the original trusted PowerShell session it reuses the already validated values.

@@ -281,12 +281,22 @@ def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
     assert "vars.ANDROID_RELEASE_CERT_SHA256" in workflow
     assert "secrets.ANDROID_RELEASE_CERT_SHA256" not in workflow
     assert "ANDROID_RELEASE_CERT_SHA256 must be exactly 64 lowercase hex characters" in workflow
+    assert "ANDROID_RELEASE_CERT_SHA256 does not match the approved v1.6.0 signing-reset certificate" in workflow
+    assert "898f21c2b59a4a4729fd386d91a86711b81ea567d5d85bf391a2e0fff2f1f9f1" in workflow
+    assert "86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c" in workflow
     assert "apksigner" in workflow
     assert "verify --verbose -Werr --print-certs" in workflow
     assert workflow.count("--expected-android-cert-sha256") == 2
     assert 'mapfile -t release_apks' in workflow
     assert '[[ "${#release_apks[@]}" -ne 1 ]]' in workflow
-    assert "trap 'rm -f \"${keystore:-}\"' EXIT" in workflow
+    assert 'aapt="$(find "${ANDROID_HOME}/build-tools" -name aapt' in workflow
+    assert '"${aapt}" dump badging "${signed_apk}"' in workflow
+    assert 'badging_output="$("${aapt}" dump badging "${signed_apk}")"' in workflow
+    assert "package_line=\"${badging_output%%$'\\n'*}\"" in workflow
+    assert "dump badging \"${signed_apk}\" |" not in workflow
+    assert "Final APK application ID is not com.clipvault.app" in workflow
+    assert "Final APK manifest versionName does not match" in workflow
+    assert "trap 'rm -f -- \"${keystore:-}\"' EXIT" in workflow
     assert "umask 077" in workflow
     assert "actions/attest-build-provenance@v4" in workflow
     assert "create_draft_release" in workflow
@@ -309,17 +319,54 @@ def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
     assert "needs.validate-release-input.outputs.version" in workflow
 
 
+def test_signed_release_keeps_gradle_passwords_out_of_process_arguments():
+    workflow = _read(".github/workflows/release.yml")
+    android = _workflow_job_block(workflow, "android-signed-release")
+
+    assert "ORG_GRADLE_PROJECT_CV_KEYSTORE_PASS: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}" in android
+    assert "ORG_GRADLE_PROJECT_CV_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}" in android
+    assert "ORG_GRADLE_PROJECT_CV_KEY_PASS: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}" in android
+    assert 'export ORG_GRADLE_PROJECT_CV_KEYSTORE="${keystore}"' in android
+    decode = android.index("base64 -d")
+    gradle = android.index("./gradlew :core:test")
+    cleanup = android.index('rm -f -- "${keystore}"', gradle)
+    stage = android.index("rm -rf ../release-artifacts", cleanup)
+    assert decode < android.index("unset ANDROID_RELEASE_KEYSTORE_B64") < gradle
+    assert gradle < android.index("unset ORG_GRADLE_PROJECT_CV_KEYSTORE", gradle) < cleanup < stage
+    assert 'keystore=""' in android[cleanup:stage]
+    assert "-PCV_KEYSTORE" not in android
+    assert "-PCV_KEYSTORE_PASS" not in android
+    assert "-PCV_KEY_ALIAS" not in android
+    assert "-PCV_KEY_PASS" not in android
+
+
 def test_signed_release_verifies_owner_signer_before_attestation_and_upload():
     workflow = _read(".github/workflows/release.yml")
     android = _workflow_job_block(workflow, "android-signed-release")
 
+    gradle = android.index("./gradlew :core:test")
+    aapt = android.index('aapt="$(find "${ANDROID_HOME}/build-tools"')
+    badging = android.index('badging_output="$("${aapt}" dump badging')
+    package_check = android.index("Final APK application ID is not com.clipvault.app")
+    version_check = android.index("Final APK manifest versionName does not match")
     apksigner = android.index("verify --verbose -Werr --print-certs")
     manifest = android.index("python scripts/release_candidate_manifest.py")
     verifier = android.index("python scripts/verify_release_manifest.py")
     attestation = android.index("Attest Android signed release artifacts")
     upload = android.index("Upload Android signed release artifacts")
 
-    assert apksigner < manifest < verifier < attestation < upload
+    assert (
+        gradle
+        < aapt
+        < badging
+        < package_check
+        < version_check
+        < apksigner
+        < manifest
+        < verifier
+        < attestation
+        < upload
+    )
     assert '--expected-android-cert-sha256 "${ANDROID_RELEASE_CERT_SHA256}"' in android
     assert "vars.ANDROID_RELEASE_CERT_SHA256" in android
     assert 'echo "${ANDROID_RELEASE_CERT_SHA256}"' not in android
@@ -402,8 +449,8 @@ def test_manual_qa_evidence_helper_is_documented_without_release_overclaim():
     assert "does not run device QA" in research
     assert "does not replace signed artifact evidence" in research
     assert "tools/manual_qa_evidence.py" in handoff
-    assert "fail-closed schema v3" in handoff
-    assert "Frozen schema v2" in handoff
+    assert "fail-closed schema v4" in handoff
+    assert "Frozen schema v3 and v2" in handoff
     assert "does not run device QA" in handoff
     assert "does not replace signed-artifact/final-release evidence" in handoff
     assert "OutboxBaseSeqTest" in evidence_readme
@@ -414,7 +461,10 @@ def test_release_runbook_uses_powershell_safe_secret_stdin_and_checks_failures()
     runbook = _read("docs/RELEASE_RUNBOOK_V1_6_0.md")
 
     assert "--env release <" not in runbook
-    assert "Get-Content -LiteralPath keystore.b64 -Raw -ErrorAction Stop |" in runbook
+    assert "[Convert]::ToBase64String(" in runbook
+    assert '[IO.File]::ReadAllBytes("clipvault-release.jks")' in runbook
+    assert "Do not create a plaintext `.b64` staging file" in runbook
+    assert "Get-Content -LiteralPath keystore.b64" not in runbook
     assert "Failed to set the release keystore secret" in runbook
     assert "Failed to set the keystore password secret" in runbook
     assert "Failed to set the key alias secret" in runbook
@@ -618,6 +668,36 @@ def test_draft_release_staging_fails_on_duplicate_asset_names():
     assert duplicate_check < copy
     assert '[[ -e "upload-assets/${asset}" ]]' in draft
     assert "exit 1" in draft[duplicate_check:copy]
+
+
+def test_draft_release_notes_disclose_signing_reset_and_dynamic_new_certificate():
+    workflow = _read(".github/workflows/release.yml")
+    draft = _workflow_job_block(workflow, "draft-github-release")
+
+    notes = draft.index("cat > release-notes.md")
+    create = draft.index("gh release create")
+
+    assert notes < create
+    assert "Android signing reset - this is not an in-place update from v1.5.10" in draft
+    assert "retains application ID com.clipvault.app" in draft
+    assert "package to be uninstalled before this APK can be installed" in draft
+    assert "synchronize and verify public clips" in draft
+    assert "Desktop-authoritative public memory" in draft
+    assert "one-time Desktop" in draft
+    assert "reseed preparation" in draft
+    assert "no supported export path for quarantined" in draft
+    assert "Android-only secret/private item" in draft
+    assert "quarantine is empty" in draft
+    assert "explicitly accept their permanent loss" in draft
+    assert "pull the" in draft and "prepared reseed" in draft
+    assert "pair again, pull the" in draft
+    assert "re-enable" in draft
+    assert "ClipVault Panel IME and Quick Settings Tile" in draft
+    assert "898f21c2b59a4a4729fd386d91a86711b81ea567d5d85bf391a2e0fff2f1f9f1" in draft
+    assert "New certificate SHA-256: ${ANDROID_RELEASE_CERT_SHA256}" in draft
+    assert "There is no cryptographic signing continuity" in draft
+    assert "Draft Release certificate does not match the approved v1.6.0 signing-reset certificate" in draft
+    assert "86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c" in draft
 
 
 def _pull_request_paths(workflow_text: str) -> set[str]:
