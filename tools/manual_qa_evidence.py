@@ -23,7 +23,8 @@ from typing import Any, Iterable
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_VERSION = "v1.6.0"
 DEFAULT_ISSUE = 36
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+LEGACY_V3_SCHEMA_VERSION = 3
 LEGACY_SCHEMA_VERSION = 2
 COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -112,6 +113,97 @@ class QaSection:
 
 
 REQUIRED_SECTIONS: tuple[QaSection, ...] = (
+    QaSection(
+        key="android_device_qa",
+        title="Manual Android device QA",
+        items=(
+            QaItem(
+                "pairing",
+                "Pair the fresh final signed Android installation with the desktop node using a one-time pairing code.",
+            ),
+            QaItem("share_capture", "Share text from another app into ClipVault and confirm it appears locally."),
+            QaItem("qs_tile_capture", "Use the Quick Settings tile to explicitly save current clipboard content."),
+            QaItem("panel_ime_paste", "Enable ClipVault Panel IME and confirm a candidate tap commits text."),
+            QaItem("explicit_save_requires_tap", "Confirm Panel IME explicit save requires a user tap."),
+        ),
+    ),
+    QaSection(
+        key="ime_privacy_qa",
+        title="Manual IME privacy QA",
+        items=(
+            QaItem("normal_field_candidates", "Open a normal text field and confirm candidates can appear."),
+            QaItem("sensitive_field_entry", "Move to password/incognito/no-suggestions fields."),
+            QaItem("sensitive_field_suppression", "Confirm candidates are hidden or replaced with the suppression message."),
+            QaItem("inflight_candidates_cleared", "Confirm in-flight candidates are cleared on the transition into a sensitive field."),
+            QaItem("typed_text_not_persisted", "Confirm typed text is not written to Room, outbox, logs, sync payloads, or desktop storage."),
+        ),
+    ),
+    QaSection(
+        key="sync_qa",
+        title="Manual sync QA",
+        items=(
+            QaItem(
+                "public_clips_memory_sync",
+                "Confirm public clips sync desktop <-> Android and public Memory syncs Desktop -> Android.",
+            ),
+            QaItem(
+                "secret_private_isolation",
+                "Confirm secret/private content remains isolated under the current contracts.",
+            ),
+            QaItem(
+                "re_pair_outbox_high_water",
+                "Confirm re-pairing preserves both pending Android outbox rows and the next sequence after a fully acknowledged queue.",
+            ),
+        ),
+    ),
+    QaSection(
+        key="android_signing_reset_qa",
+        title="Android signing-reset migration QA",
+        items=(
+            QaItem(
+                "dual_backup_verified",
+                "Independently restore or open both encrypted new-key backups and confirm they identify the approved replacement certificate fingerprint.",
+            ),
+            QaItem(
+                "old_outbox_barrier_drained",
+                "Pause new captures, send a benign old-install marker, and confirm the old Android outbox cleared after the desktop cursor acknowledged through that barrier.",
+            ),
+            QaItem(
+                "quarantine_decision",
+                "Confirm the v1.5.10 quarantine is empty, or record the Owner's explicit acceptance that unexportable quarantined data will be permanently lost.",
+            ),
+            QaItem(
+                "zero_peer_reseed",
+                "Stop or revoke the old Android peer, confirm Desktop has zero peers, and atomically replace retained outbound history with the current public-state reseed and its content-free marker.",
+            ),
+            QaItem(
+                "update_incompatible",
+                "Install the exact final signed APK over v1.5.10 and confirm it fails specifically with INSTALL_FAILED_UPDATE_INCOMPATIBLE.",
+            ),
+            QaItem(
+                "fresh_install",
+                "Uninstall v1.5.10, fresh-install the exact final signed APK, then re-pair and re-enable the required Android components.",
+            ),
+            QaItem(
+                "reseed_delivery_verified",
+                "Keep Desktop outbound writes frozen, run the safe reseed delivery verification, and confirm exactly one post-reseed peer acknowledged through the unchanged reseed high-water.",
+            ),
+        ),
+    ),
+    QaSection(
+        key="windows_clipboard_privacy_qa",
+        title="Manual Windows clipboard privacy QA",
+        items=(
+            QaItem("exclude_monitor", "`ExcludeClipboardContentFromMonitorProcessing` prevents capture."),
+            QaItem("viewer_ignore", "`Clipboard Viewer Ignore` prevents capture."),
+            QaItem("history_off", "`CanIncludeInClipboardHistory=0` prevents capture."),
+            QaItem("cloud_off", "`CanUploadToCloudClipboard=0` prevents capture."),
+            QaItem("normal_control", "A normal text clipboard item without those formats is still captured."),
+        ),
+    ),
+)
+
+LEGACY_V3_REQUIRED_SECTIONS: tuple[QaSection, ...] = (
     QaSection(
         key="android_device_qa",
         title="Manual Android device QA",
@@ -212,6 +304,8 @@ LEGACY_V2_ITEM_KEYS: dict[str, tuple[str, ...]] = {
 def _required_sections_for_schema(schema_version: object) -> tuple[QaSection, ...]:
     if type(schema_version) is int and schema_version == LEGACY_SCHEMA_VERSION:
         return LEGACY_V2_REQUIRED_SECTIONS
+    if type(schema_version) is int and schema_version == LEGACY_V3_SCHEMA_VERSION:
+        return LEGACY_V3_REQUIRED_SECTIONS
     return REQUIRED_SECTIONS
 
 
@@ -402,7 +496,12 @@ def build_template(version: str = DEFAULT_VERSION) -> dict[str, object]:
                         "evidence": "",
                         **(
                             {"run_ids": ["signed-release-physical"]}
-                            if section.key in {"android_device_qa", "ime_privacy_qa", "sync_qa"}
+                            if section.key in {
+                                "android_device_qa",
+                                "android_signing_reset_qa",
+                                "ime_privacy_qa",
+                                "sync_qa",
+                            }
                             else {}
                         ),
                         **(
@@ -956,11 +1055,13 @@ def _validate_metadata(
     schema_version = data.get("schema_version")
     if type(schema_version) is not int or schema_version not in {
         LEGACY_SCHEMA_VERSION,
+        LEGACY_V3_SCHEMA_VERSION,
         SCHEMA_VERSION,
     }:
         errors.append(
-            f"schema_version must be {SCHEMA_VERSION}, or {LEGACY_SCHEMA_VERSION} "
-            "for read-only legacy validation; regenerate the current template"
+            f"schema_version must be {SCHEMA_VERSION}, {LEGACY_V3_SCHEMA_VERSION}, "
+            f"or {LEGACY_SCHEMA_VERSION}; v2/v3 are read-only legacy formats, so "
+            "regenerate the current template"
         )
 
     version = _require_non_empty_string(data.get("version"), "version", errors)
@@ -1245,7 +1346,12 @@ def _validate_item(
     if status in {"blocked", "fail"} and (not next_step or _is_placeholder(next_step)):
         errors.append(f"{path}.next_step must describe the remediation or unblock step when status is {status}")
 
-    if section_key in {"android_device_qa", "ime_privacy_qa", "sync_qa"}:
+    if section_key in {
+        "android_device_qa",
+        "android_signing_reset_qa",
+        "ime_privacy_qa",
+        "sync_qa",
+    }:
         raw_run_ids = item_data.get("run_ids")
         if raw_run_ids is None and status != "pass":
             raw_run_ids = []
@@ -1511,7 +1617,13 @@ def validate_evidence(
     if type(schema_version) is int and schema_version == LEGACY_SCHEMA_VERSION:
         warnings.append(
             "schema-v2 evidence is accepted only for read-only legacy validation; "
-            "regenerate schema-v3 and execute the re-pair outbox high-water QA row"
+            "regenerate schema-v4 and execute the re-pair outbox high-water and "
+            "Android signing-reset migration QA rows"
+        )
+    elif type(schema_version) is int and schema_version == LEGACY_V3_SCHEMA_VERSION:
+        warnings.append(
+            "schema-v3 evidence is accepted only for read-only legacy validation; "
+            "regenerate schema-v4 and execute every Android signing-reset migration QA row"
         )
 
     ok = not errors
@@ -1695,7 +1807,7 @@ def render_markdown(
         )
     lines.append("")
 
-    if data.get("schema_version") == SCHEMA_VERSION:
+    if data.get("schema_version") in {LEGACY_V3_SCHEMA_VERSION, SCHEMA_VERSION}:
         high_water = _item(data, "sync_qa", "re_pair_outbox_high_water")
         lines.extend([
             "### API 26/27 Android outbox baseline evidence",

@@ -16,7 +16,11 @@ from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.obsidian_queue_repo import ObsidianQueueRepo
 from clipvault.store.outbox_repo import OutboxRepo
-from clipvault.store.peers_repo import PeersRepo
+from clipvault.store.peers_repo import (
+    LEGACY_UNKNOWN_PEER_CURSOR,
+    SQLITE_INT_MAX,
+    PeersRepo,
+)
 from clipvault.store.unit_of_work import unit_of_work
 
 log = logging.getLogger("clipvault.sync")
@@ -628,15 +632,30 @@ def apply_push(conn, device_id: str, events: list[dict], service) -> int:
     """
     peers = PeersRepo(conn)
     peer = peers.get(device_id)
-    cursor = peer["peer_cursor"] if peer else 0
+    stored_cursor = peer["peer_cursor"] if peer else 0
+    legacy_base_unknown = stored_cursor == LEGACY_UNKNOWN_PEER_CURSOR
+    cursor = 0 if legacy_base_unknown else stored_cursor
     acked = cursor
 
     orderable = []
     for ev in events:
-        if isinstance(ev, dict) and isinstance(ev.get("seq"), int) and not isinstance(ev.get("seq"), bool):
+        if (
+            isinstance(ev, dict)
+            and isinstance(ev.get("seq"), int)
+            and not isinstance(ev.get("seq"), bool)
+            and 1 <= ev["seq"] <= SQLITE_INT_MAX
+        ):
             orderable.append(ev)
         else:
             log.error("sync event without integer seq, dropped")
+
+    if legacy_base_unknown and orderable:
+        # v1.5.10 prunes acknowledged rows but its pairing request predates
+        # outbox_base_seq.  The first retained row is therefore the only safe
+        # baseline a newly paired Desktop can observe.  Modern clients never
+        # enter this branch, even when their announced base is exactly one.
+        cursor = min(ev["seq"] for ev in orderable) - 1
+        acked = cursor
 
     seen_batch_seqs = set()
     for ev in sorted(orderable, key=lambda e: e["seq"]):
@@ -652,9 +671,10 @@ def apply_push(conn, device_id: str, events: list[dict], service) -> int:
             acked = seq
         elif seq > acked + 1:
             log.warning("sync gap from device=%s cursor=%d saw=%d", device_id, acked, seq)
-    if peer:
+    if peer and (not legacy_base_unknown or orderable):
         peers.set_peer_cursor(device_id, acked)
-    return acked
+    # The wire contract has never exposed the internal negative sentinel.
+    return max(acked, 0)
 
 
 def _apply_clip_new(conn, data: dict, service) -> None:
@@ -799,6 +819,17 @@ def _event_wire_size(event: dict) -> int:
     return len(json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
+def _outbox_event_for_wire(event: dict) -> dict:
+    """Project internal marker metadata to the frozen wire representation."""
+
+    if event.get("kind") == "privacy_noop":
+        # Signing-reset preparation stores its Owner run id in created_at so a
+        # retained snapshot can be identified without content.  That internal
+        # marker must never relax the protocol's fixed content-free timestamp.
+        return {**event, "created_at": _PRIVACY_NOOP_TIMESTAMP}
+    return event
+
+
 def _outbox_clip_event_is_blocked(conn, event: dict) -> bool:
     """Fail closed for legacy or malformed clip events at the Gate B boundary.
 
@@ -894,6 +925,11 @@ def _outbox_event_is_blocked(conn, event: dict) -> bool:
             return _memory_key_is_secret(
                 conn, payload["kind"], payload["text"]
             )
+        if kind == "privacy_noop":
+            # Content-free sequence markers let a fresh peer durably advance
+            # even when there is no public snapshot data.  Any payload shape
+            # other than the frozen empty object remains blocked.
+            return payload != {}
     except MalformedSyncEvent:
         return True
     # A downgraded or corrupted writer must not turn an unknown payload shape
@@ -953,7 +989,8 @@ def build_pull(conn, since_seq: int, limit: int = SYNC_PULL_EVENT_LIMIT,
             )
             next_seq = event["seq"]
             continue
-        event_bytes = _event_wire_size(event)
+        wire_event = _outbox_event_for_wire(event)
+        event_bytes = _event_wire_size(wire_event)
         if event_bytes > max_bytes:
             if events:
                 stopped_by_budget = True
@@ -966,7 +1003,7 @@ def build_pull(conn, since_seq: int, limit: int = SYNC_PULL_EVENT_LIMIT,
         if events and used_bytes + event_bytes > max_bytes:
             stopped_by_budget = True
             break
-        events.append(event)
+        events.append(wire_event)
         used_bytes += event_bytes
         next_seq = event["seq"]
     return {

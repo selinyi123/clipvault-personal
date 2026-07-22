@@ -24,6 +24,36 @@ from typing import Any, Iterable
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "v1.6.0"
 ISSUE_URL = "https://github.com/selinyi123/clipvault-personal/issues/36"
+OLD_ANDROID_CERT_SHA256 = (
+    "898f21c2b59a4a4729fd386d91a86711b81ea567d5d85bf391a2e0fff2f1f9f1"
+)
+NEW_ANDROID_CERT_SHA256 = (
+    "86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"
+)
+SIGNING_RESET_RELEASE_BODY = f"""# ClipVault Personal {VERSION}
+
+> [!WARNING]
+> **Android signing reset - this is not an in-place update from v1.5.10.**
+>
+> The {VERSION} APK retains application ID com.clipvault.app but uses a
+> new signing identity. Android therefore requires the installed v1.5.10
+> package to be uninstalled before this APK can be installed.
+>
+> Before uninstalling v1.5.10, synchronize and verify public clips on
+> Desktop and verify Desktop-authoritative public memory. After draining the
+> old outbox, revoke the old peer and run the documented one-time Desktop
+> reseed preparation. v1.5.10 has no supported export path for quarantined
+> Android-only secret/private items: confirm its quarantine is empty, or
+> explicitly accept their permanent loss; otherwise stop.
+> After uninstalling, install {VERSION} fresh, pair again, pull the
+> prepared reseed, and re-enable the ClipVault Panel IME and Quick Settings Tile.
+>
+> Old certificate SHA-256: {OLD_ANDROID_CERT_SHA256}
+> New certificate SHA-256: {NEW_ANDROID_CERT_SHA256}
+> There is no cryptographic signing continuity between these certificates.
+
+Do not publish this draft until Issue #36 has signed APK evidence and
+manual Android IME/privacy/sync and Windows clipboard privacy evidence."""
 DEFAULT_OUTPUT_DIR = Path(".field-test-artifacts") / "v1.6.0-owner-pack"
 ANDROID_SIGNING_SECRET_NAMES = (
     "ANDROID_RELEASE_KEYSTORE_B64",
@@ -86,7 +116,7 @@ def _validate_scope(version: str, issue_url: str = ISSUE_URL) -> None:
 
 
 def manual_qa_template(version: str) -> dict[str, Any]:
-    """Return the canonical schema-v3 template without copying its contract."""
+    """Return the canonical schema-v4 template without copying its contract."""
 
     _validate_scope(version)
     return manual_qa_evidence.build_template(version)
@@ -544,8 +574,9 @@ Get-ChildItem $releaseRoot -File | Sort-Object Name | ForEach-Object {{
   "{{0}}  {{1}}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(), $_.Name
 }} | Set-Content -Encoding ascii $digestReport
 
-if ($env:ANDROID_RELEASE_CERT_SHA256 -cnotmatch '^[0-9a-f]{{64}}$') {{
-  throw "Set the independently confirmed 64-lowercase-hex ANDROID_RELEASE_CERT_SHA256 locally"
+$expectedAndroidCertSha256 = "86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"
+if ($env:ANDROID_RELEASE_CERT_SHA256 -cne $expectedAndroidCertSha256) {{
+  throw "ANDROID_RELEASE_CERT_SHA256 does not match the frozen v1.6.0 Owner trust anchor"
 }}
 if ([string]::IsNullOrWhiteSpace($env:APKSIGNER_JAR_PATH) -or
     -not (Test-FullyQualifiedWindowsPath $env:APKSIGNER_JAR_PATH)) {{
@@ -584,7 +615,7 @@ if ($javaItem.PSIsContainer -or
   --version {version} `
   --commit $targetCommit `
   --run-url $run.url `
-  --expected-android-cert-sha256 $env:ANDROID_RELEASE_CERT_SHA256 `
+  --expected-android-cert-sha256 $expectedAndroidCertSha256 `
   --require-live-final-draft `
   --evidence-output "$artifactRoot/final-draft-artifact-evidence.json" `
   --comment-output "$artifactRoot/final-draft-artifact-comment.md"
@@ -628,11 +659,15 @@ Fill `manual-qa-v1.6.0.template.json`. Follow
   abort on a nonzero Gradle exit or if no fresh result directory is created;
 - physical-device Android, IME privacy, and sync QA using the exact signed APK
   `ClipVault-Android-{version}-release-signed.apk` from the draft=true run;
-- the schema-v3 `re_pair_outbox_high_water` row, covering both an empty
+- the schema-v4 `re_pair_outbox_high_water` row, covering both an empty
   acknowledged high-water mark and a pending-row re-pair without clip content;
+- all seven independent signing-reset migration rows, including dual backups,
+  quarantine decision, zero-peer reseed, update rejection, and fresh-peer ACK;
 - Windows installer/portable and clipboard privacy QA using the exact draft assets.
 
-The schema-v3 validator machine-binds Android rows to the exact signed APK run.
+The schema-v4 validator machine-binds Android and signing-reset rows to the exact
+signed APK run. Schemas v3 and v2 remain read-only compatibility formats and
+can never authorize publication.
 Populate `release_artifact_binding` from the final-draft report with this exact
 field mapping: `artifact_evidence_type <- evidence_type`,
 `artifact_binding_sha256 <- artifact_binding_sha256`,
@@ -861,10 +896,12 @@ after every gate is bound to the same target commit and final asset digests.
 ### Step H - publish the existing draft, then verify published state
 
 After an Owner approval statement binds the target commit, draft Release URL,
-and final digest set, re-download the still-mutable draft into another fresh
-directory and compare it with the recorded digest set. Copy the 64-hex artifact
-binding from that already-posted Owner approval into `$ownerApprovedBinding`;
-the local evidence JSON is not the approval source:
+final digest set, and validator-rendered manual-QA report, re-download the
+still-mutable draft into another fresh directory and compare it with the
+recorded digest set. Copy the 64-hex artifact binding and manual-QA report
+SHA-256 from that already-posted Owner approval into `$ownerApprovedBinding`
+and `$ownerApprovedManualQaSha256`; local evidence files are not the approval
+source:
 
 ```powershell
 $ErrorActionPreference = "Stop"
@@ -910,8 +947,12 @@ $env:NO_COLOR = "1"
 $runId = "REPLACE_WITH_DRAFT_TRUE_RUN_ID"
 $targetCommit = "REPLACE_WITH_FROZEN_40_HEX_MAIN_COMMIT"
 $ownerApprovedBinding = "REPLACE_WITH_OWNER_APPROVED_64_HEX_BINDING"
+$ownerApprovedManualQaSha256 = "REPLACE_WITH_OWNER_APPROVED_MANUAL_QA_64_HEX_SHA256"
 if ($ownerApprovedBinding -cnotmatch '^[0-9a-f]{{64}}$') {{
   throw "Copy the exact 64-lowercase-hex binding from the Owner approval statement"
+}}
+if ($ownerApprovedManualQaSha256 -cnotmatch '^[0-9a-f]{{64}}$') {{
+  throw "Copy the exact manual-QA report SHA-256 from the Owner approval statement"
 }}
 $workingDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd([char]92, [char]47)
 $separator = [IO.Path]::DirectorySeparatorChar
@@ -927,6 +968,15 @@ function Assert-NoReparsePathComponent([IO.FileSystemInfo]$item, [string]$label)
       $cursor = $cursor.Parent
     }}
   }}
+}}
+function Get-TrustedEvidenceSha256([string]$path, [string]$label) {{
+  $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+  Assert-NoReparsePathComponent $item $label
+  if ($item.PSIsContainer -or
+      (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {{
+    throw "$label must be a regular non-reparse file"
+  }}
+  return (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
 }}
 if ([string]::IsNullOrWhiteSpace($env:GIT_EXE_PATH) -or
     -not (Test-FullyQualifiedWindowsPath $env:GIT_EXE_PATH)) {{
@@ -975,6 +1025,7 @@ function Resolve-TrustedExecutablePath([string]$environmentName) {{
 $ghPath = Resolve-TrustedExecutablePath "GH_CLI_PATH"
 $pythonPath = Resolve-TrustedExecutablePath "PYTHON_EXE_PATH"
 $evidenceTool = Join-Path $repoRoot "tools/release_artifact_evidence.py"
+$manualQaTool = Join-Path $repoRoot "tools/manual_qa_evidence.py"
 function Resolve-ExactReleaseTagCommit() {{
   $records = & $ghPath api -X GET `
     --hostname github.com `
@@ -1027,10 +1078,15 @@ function Assert-TrackedSourceMatchesCommit([string]$relativePath) {{
 }}
 Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"
 Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
+Assert-TrackedSourceMatchesCommit "tools/manual_qa_evidence.py"
 $artifactRoot = ".field-test-artifacts/v1.6.0-draft-run-$runId"
 $actionsRoot = "$artifactRoot/actions"
 $digestReport = "$artifactRoot/draft-release-SHA256SUMS.txt"
-$prepublishRoot = ".field-test-artifacts/v1.6.0-prepublish-$runId"
+$prepublishNonce = [DateTime]::UtcNow.ToString(
+  "yyyyMMddTHHmmssfffffffZ",
+  [Globalization.CultureInfo]::InvariantCulture
+) + "-" + [Guid]::NewGuid().ToString("N")
+$prepublishRoot = ".field-test-artifacts/v1.6.0-prepublish-$runId-$prepublishNonce"
 if (Test-Path $prepublishRoot) {{ throw "Refusing stale prepublish directory" }}
 New-Item -ItemType Directory -Path $prepublishRoot | Out-Null
 $release = & $ghPath release view {version} `
@@ -1058,8 +1114,9 @@ if (@(Compare-Object @(Get-Content $digestReport) $prepublishDigests).Count -ne 
 # the freshly downloaded draft immediately before the irreversible publication
 # action so current main, run identity, draft metadata/API digests, attestations,
 # bytes, and the Owner signer trust anchor are all checked again.
-if ($env:ANDROID_RELEASE_CERT_SHA256 -cnotmatch '^[0-9a-f]{{64}}$') {{
-  throw "Set the independently confirmed 64-lowercase-hex ANDROID_RELEASE_CERT_SHA256 locally"
+$expectedAndroidCertSha256 = "86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"
+if ($env:ANDROID_RELEASE_CERT_SHA256 -cne $expectedAndroidCertSha256) {{
+  throw "ANDROID_RELEASE_CERT_SHA256 does not match the frozen v1.6.0 Owner trust anchor"
 }}
 if ([string]::IsNullOrWhiteSpace($env:APKSIGNER_JAR_PATH) -or
     -not (Test-FullyQualifiedWindowsPath $env:APKSIGNER_JAR_PATH)) {{
@@ -1096,8 +1153,8 @@ if ($run.displayTitle -ne "Release artifacts {version} from main draft=true" -or
     $run.headSha -ne $targetCommit -or $run.conclusion -ne "success") {{
   throw "Run identity changed after QA"
 }}
-$prepublishEvidence = "$artifactRoot/prepublish-live-artifact-evidence.json"
-$prepublishComment = "$artifactRoot/prepublish-live-artifact-comment.md"
+$prepublishEvidence = "$artifactRoot/prepublish-live-artifact-evidence-$prepublishNonce.json"
+$prepublishComment = "$artifactRoot/prepublish-live-artifact-comment-$prepublishNonce.md"
 if ((Test-Path $prepublishEvidence) -or (Test-Path $prepublishComment)) {{
   throw "Refusing stale pre-publication evidence outputs"
 }}
@@ -1111,7 +1168,7 @@ $freshProjectionJson = & $pythonPath -I -S $evidenceTool `
   --version {version} `
   --commit $targetCommit `
   --run-url $run.url `
-  --expected-android-cert-sha256 $env:ANDROID_RELEASE_CERT_SHA256 `
+  --expected-android-cert-sha256 $expectedAndroidCertSha256 `
   --require-live-final-draft `
   --owner-approved-binding $ownerApprovedBinding `
   --publication-projection-stdout `
@@ -1135,7 +1192,7 @@ if ($freshEvidence.projection_status -ne "owner_approved_live_snapshot" -or
     ($freshEvidence.release_tag.state -ceq "present" -and
       $freshEvidence.release_tag.commit_sha -cne $targetCommit) -or
     $freshEvidence.artifact_binding_sha256 -cne $ownerApprovedBinding -or
-    $freshEvidence.android_signer.expected_cert_sha256 -cne $env:ANDROID_RELEASE_CERT_SHA256) {{
+    $freshEvidence.android_signer.expected_cert_sha256 -cne $expectedAndroidCertSha256) {{
   throw "fresh evidence is not bound to the Owner-approved draft, run, bytes, and signer"
 }}
 
@@ -1159,6 +1216,15 @@ Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
 
 $releaseId = [long]$freshEvidence.draft_release.id
 $releaseEndpoint = "repos/selinyi123/clipvault-personal/releases/$releaseId"
+$releaseCertVariableEndpoint = "repos/selinyi123/clipvault-personal/environments/release/variables/ANDROID_RELEASE_CERT_SHA256"
+$releaseCertVariable = & $ghPath api -X GET --hostname github.com $releaseCertVariableEndpoint | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) {{ throw "release certificate environment variable lookup failed" }}
+$releaseCertSha256 = [string]$releaseCertVariable.value
+if ($releaseCertVariable.name -cne "ANDROID_RELEASE_CERT_SHA256" -or
+    $releaseCertSha256 -cne $expectedAndroidCertSha256 -or
+    $releaseCertSha256 -cne $env:ANDROID_RELEASE_CERT_SHA256) {{
+  throw "release certificate environment variable does not match the frozen Owner trust anchor"
+}}
 $approvedAssetNames = @(Get-Content $digestReport | ForEach-Object {{
   ($_ -split '\\s{{2,}}', 2)[1]
 }} | Sort-Object)
@@ -1178,6 +1244,60 @@ function Assert-ReleaseAssetsMatchEvidence($releaseRecord, $evidenceRows, [strin
     }}
   }}
 }}
+function Assert-SigningResetReleaseBody([AllowEmptyString()][string]$body, [string]$expectedNewCertificate) {{
+  $expectedOldCertificate = "898f21c2b59a4a4729fd386d91a86711b81ea567d5d85bf391a2e0fff2f1f9f1"
+  if ([string]::IsNullOrWhiteSpace($body)) {{
+    throw "Release body is missing the Android signing-reset disclosure"
+  }}
+  if ($expectedNewCertificate -cne $expectedAndroidCertSha256 -or
+      $expectedNewCertificate -ceq $expectedOldCertificate) {{
+    throw "Release body validator received the wrong signing-reset trust anchor"
+  }}
+  if ($body -cmatch '(?i)(REPLACE_WITH|PLACEHOLDER|<insert|<replace|__NEW_ANDROID_CERT_SHA256__|\\bTODO\\b|\\bTBD\\b)') {{
+    throw "Release body contains an unresolved placeholder"
+  }}
+  $normalizedBody = [regex]::Replace($body, '\\s+', ' ').Trim()
+  $requiredPatterns = @(
+    '(?i)Android signing reset',
+    '(?i)not an in-place update',
+    '(?i)com\\.clipvault\\.app',
+    '(?i)(v1\\.5\\.10.*uninstall|uninstall.*v1\\.5\\.10)',
+    '(?i)synchroni[sz]e.*public clips',
+    '(?i)(public memory.*Desktop|Desktop.*public memory)',
+    '(?i)one-time Desktop.*reseed preparation',
+    '(?i)no supported export path.*quarantined',
+    '(?i)Android-only secret/private',
+    '(?i)quarantine is empty',
+    '(?i)accept.*permanent loss',
+    '(?i)no cryptographic signing continuity'
+  )
+  foreach ($requiredPattern in $requiredPatterns) {{
+    if ($normalizedBody -cnotmatch $requiredPattern) {{
+      throw "Release body is missing required signing-reset disclosure"
+    }}
+  }}
+  $oldFingerprintCount = [regex]::Matches(
+    $body,
+    [regex]::Escape($expectedOldCertificate),
+    [Text.RegularExpressions.RegexOptions]::IgnoreCase
+  ).Count
+  $newFingerprintCount = [regex]::Matches(
+    $body,
+    [regex]::Escape($expectedNewCertificate),
+    [Text.RegularExpressions.RegexOptions]::IgnoreCase
+  ).Count
+  if ($oldFingerprintCount -ne 1 -or $newFingerprintCount -ne 1) {{
+    throw "Release body must contain each approved signing-reset fingerprint exactly once"
+  }}
+}}
+function Normalize-ReleaseBody([AllowEmptyString()][string]$body) {{
+  if ($null -eq $body) {{ return "" }}
+  return [regex]::Replace(($body -replace "`r`n", "`n"), '[\\r\\n]+\\z', '')
+}}
+$canonicalReleaseBody = @'
+{SIGNING_RESET_RELEASE_BODY}
+'@
+$canonicalReleaseBody = Normalize-ReleaseBody $canonicalReleaseBody
 $liveDraft = & $ghPath api -X GET --hostname github.com $releaseEndpoint | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) {{ throw "exact draft Release lookup failed" }}
 $liveDraftAssetNames = @($liveDraft.assets | ForEach-Object name | Sort-Object)
@@ -1191,6 +1311,11 @@ if ($liveDraft.id -ne $releaseId -or
   throw "exact draft Release changed after fresh verification"
 }}
 Assert-ReleaseAssetsMatchEvidence $liveDraft $freshEvidence.artifacts "pre-publication"
+$approvedReleaseBody = [string]$liveDraft.body
+Assert-SigningResetReleaseBody $approvedReleaseBody $expectedAndroidCertSha256
+if ((Normalize-ReleaseBody $approvedReleaseBody) -cne $canonicalReleaseBody) {{
+  throw "Draft Release body is not the canonical signing-reset disclosure"
+}}
 $immediateMain = & $ghPath api -X GET `
   --hostname github.com `
   "repos/selinyi123/clipvault-personal/branches/main" `
@@ -1205,19 +1330,110 @@ if (($freshEvidence.release_tag.state -ceq "absent" -and $null -ne $immediateTag
       $immediateTagCommit -cne $targetCommit)) {{
   throw "Release tag changed after Owner approval; do not publish"
 }}
+$immediateDraft = & $ghPath api -X GET --hostname github.com $releaseEndpoint | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) {{ throw "immediate pre-publication draft lookup failed" }}
+$immediateDraftAssetNames = @($immediateDraft.assets | ForEach-Object name | Sort-Object)
+if ($immediateDraft.id -ne $releaseId -or
+    $immediateDraft.tag_name -ne "{version}" -or
+    $immediateDraft.name -ne "ClipVault Personal {version}" -or
+    -not $immediateDraft.draft -or $immediateDraft.prerelease -or
+    $immediateDraft.target_commitish -ne $targetCommit -or
+    [string]$immediateDraft.body -cne $approvedReleaseBody -or
+    @(Compare-Object $approvedAssetNames $immediateDraftAssetNames).Count -ne 0 -or
+    @($immediateDraft.assets | Where-Object size -LE 0).Count -ne 0) {{
+  throw "Draft Release body or metadata changed immediately before publication"
+}}
+Assert-SigningResetReleaseBody ([string]$immediateDraft.body) $expectedAndroidCertSha256
+Assert-ReleaseAssetsMatchEvidence $immediateDraft $freshEvidence.artifacts "immediate pre-publication"
+
+$manualQaRoot = Join-Path $repoRoot ".field-test-artifacts/v1.6.0-owner-pack"
+$manualQaEvidence = Join-Path $manualQaRoot "manual-qa-v1.6.0.template.json"
+$approvedManualQaReport = Join-Path $manualQaRoot "manual-qa-issue-comment.md"
+$finalDraftEvidence = Join-Path $repoRoot "$artifactRoot/final-draft-artifact-evidence.json"
+$manualQaRecheck = Join-Path $prepublishRoot "manual-qa-prepublication-recheck.md"
+if ((Get-TrustedEvidenceSha256 $approvedManualQaReport "approved manual QA report") -cne
+    $ownerApprovedManualQaSha256) {{
+  throw "Manual QA report does not match the Owner-approved digest"
+}}
+Assert-TrackedSourceMatchesCommit "tools/manual_qa_evidence.py"
+Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"
+Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
+& $pythonPath -I -S $manualQaTool `
+  --input "$manualQaEvidence" `
+  --final-draft-artifact-evidence "$finalDraftEvidence" `
+  --require-final-draft-binding `
+  --require-release-ready `
+  --output "$manualQaRecheck"
+if ($LASTEXITCODE -ne 0) {{ throw "Manual QA pre-publication revalidation failed" }}
+if ((Get-TrustedEvidenceSha256 $manualQaRecheck "manual QA recheck") -cne
+    $ownerApprovedManualQaSha256) {{
+  throw "Manual QA recheck differs from the Owner-approved report"
+}}
+
+# Manual QA validation invokes a separate process and may take long enough for
+# mutable GitHub state to change.  Re-read every publication authority and the
+# exact draft immediately before PATCH; no subprocess or local evidence render
+# is allowed between this final check and the irreversible publication call.
+$finalReleaseCertVariable = & $ghPath api -X GET --hostname github.com $releaseCertVariableEndpoint | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) {{ throw "final release certificate environment variable lookup failed" }}
+$finalReleaseCertSha256 = [string]$finalReleaseCertVariable.value
+if ($finalReleaseCertVariable.name -cne "ANDROID_RELEASE_CERT_SHA256" -or
+    $finalReleaseCertSha256 -cne $expectedAndroidCertSha256 -or
+    $finalReleaseCertSha256 -cne $env:ANDROID_RELEASE_CERT_SHA256) {{
+  throw "release certificate environment variable changed during manual QA revalidation"
+}}
+$finalMain = & $ghPath api -X GET `
+  --hostname github.com `
+  "repos/selinyi123/clipvault-personal/branches/main" `
+  --jq .commit.sha
+if ($LASTEXITCODE -ne 0) {{ throw "final pre-publication main lookup failed" }}
+if ($finalMain.Trim() -ne $targetCommit) {{
+  throw "Current main moved during manual QA revalidation; do not publish"
+}}
+$finalTagCommit = Resolve-ExactReleaseTagCommit
+if (($freshEvidence.release_tag.state -ceq "absent" -and $null -ne $finalTagCommit) -or
+    ($freshEvidence.release_tag.state -ceq "present" -and
+      $finalTagCommit -cne $targetCommit)) {{
+  throw "Release tag changed during manual QA revalidation; do not publish"
+}}
+$finalDraft = & $ghPath api -X GET --hostname github.com $releaseEndpoint | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) {{ throw "final pre-publication draft lookup failed" }}
+$finalDraftAssetNames = @($finalDraft.assets | ForEach-Object name | Sort-Object)
+if ($finalDraft.id -ne $releaseId -or
+    $finalDraft.tag_name -ne "{version}" -or
+    $finalDraft.name -ne "ClipVault Personal {version}" -or
+    -not $finalDraft.draft -or $finalDraft.prerelease -or
+    $finalDraft.target_commitish -ne $targetCommit -or
+    [string]$finalDraft.body -cne $approvedReleaseBody -or
+    @(Compare-Object $approvedAssetNames $finalDraftAssetNames).Count -ne 0 -or
+    @($finalDraft.assets | Where-Object size -LE 0).Count -ne 0) {{
+  throw "Draft Release body or metadata changed during manual QA revalidation"
+}}
+Assert-SigningResetReleaseBody ([string]$finalDraft.body) $expectedAndroidCertSha256
+Assert-ReleaseAssetsMatchEvidence $finalDraft $freshEvidence.artifacts "final pre-publication"
 
 & $ghPath api -X PATCH --hostname github.com $releaseEndpoint -F draft=false | Out-Null
-if ($LASTEXITCODE -ne 0) {{ throw "GitHub Release publication failed" }}
+$publicationPatchExitCode = $LASTEXITCODE
 
 $published = & $ghPath api -X GET --hostname github.com $releaseEndpoint | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0) {{ throw "post-publication exact Release lookup failed" }}
+if ($LASTEXITCODE -ne 0) {{
+  throw "Publication outcome is unknown after PATCH; do not rerun the mutation path. Use exact-ID read-only recovery"
+}}
+if ($publicationPatchExitCode -ne 0 -and $published.draft) {{
+  throw "Publication PATCH failed and the exact Release remains a draft; review before starting a new Step H"
+}}
+if ($publicationPatchExitCode -ne 0) {{
+  Write-Warning "PATCH client reported failure, but exact-ID GET proves the Release is public; continuing read-only verification"
+}}
 if ($published.id -ne $releaseId -or
     $published.tag_name -ne "{version}" -or
     $published.name -ne "ClipVault Personal {version}" -or
     $published.draft -or $published.prerelease -or
-    $published.target_commitish -ne $targetCommit) {{
+    $published.target_commitish -ne $targetCommit -or
+    [string]$published.body -cne $approvedReleaseBody) {{
   throw "Published Release metadata mismatch"
 }}
+Assert-SigningResetReleaseBody ([string]$published.body) $expectedAndroidCertSha256
 $publishedTagCommit = Resolve-ExactReleaseTagCommit
 if ($publishedTagCommit -cne $targetCommit) {{
   throw "Published release tag does not resolve to the frozen target"
@@ -1270,7 +1486,7 @@ Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
   --version {version} `
   --commit $targetCommit `
   --run-url $run.url `
-  --expected-android-cert-sha256 $env:ANDROID_RELEASE_CERT_SHA256 `
+  --expected-android-cert-sha256 $expectedAndroidCertSha256 `
   --owner-approved-binding $ownerApprovedBinding `
   --require-live-published-release `
   --evidence-output $postpublishEvidence `
@@ -1295,7 +1511,7 @@ if ($postpublishReport.evidence_type -cne "clipvault.issue36.published_release" 
     $postpublishReport.published_release.is_prerelease -ne $false -or
     $postpublishReport.release_tag.ref -cne "refs/tags/{version}" -or
     $postpublishReport.release_tag.commit_sha -cne $targetCommit -or
-    $postpublishReport.android_signer.expected_cert_sha256 -cne $env:ANDROID_RELEASE_CERT_SHA256 -or
+    $postpublishReport.android_signer.expected_cert_sha256 -cne $expectedAndroidCertSha256 -or
     $postpublishReport.publication_closure_binding_sha256 -cnotmatch '^[0-9a-f]{{64}}$') {{
   throw "post-publication evidence is not bound to the approved release state"
 }}
@@ -1321,16 +1537,19 @@ publication-closure binding; both remain evidence inputs rather than closure
 authorization. Issue #36 remains open until readiness independently reports no
 blocker and the Owner confirms every remaining manual gate.
 
-If the exact-ID `PATCH` returned success but any later command failed, treat the
-Release as already published. Do not rebuild, mutate the Release, or rerun the
-full Step H draft path. Keep Issue #36 open, preserve the Owner-approved binding,
-use a new post-publish download directory and new evidence/comment filenames,
-then rerun only the read-only `--require-live-published-release` invocation from
-the same frozen checkout. If the PowerShell session or trusted-path variables
-were lost, follow the post-publication recovery procedure in
+After the exact-ID `PATCH` is sent, its client exit status alone is not proof of
+the server outcome: a timeout can occur after GitHub publishes the Release. The
+script therefore always performs an exact-ID read-only GET. If that GET cannot
+establish the state, do not rebuild, mutate the Release, or rerun the full Step H
+draft path. Keep Issue #36 open, preserve the Owner-approved binding, and use
+only the read-only recovery path. If exact-ID GET proves the Release is already
+public, continue post-publication verification even when the PATCH client
+returned nonzero. If it proves the exact Release remains a draft, stop and review
+before starting a new nonce-bound Step H. If the PowerShell session or trusted
+path variables were lost, follow the post-publication recovery procedure in
 `docs/RELEASE_RUNBOOK_V1_6_0.md` before recording any closure evidence.
 
-### Step H recovery - read-only after a successful PATCH
+### Step H recovery - read-only after PATCH may have reached GitHub
 
 Use this block only in the same trusted PowerShell session after Step H reached
 the publication `PATCH`. It never mutates the Release. If that session was lost,
@@ -1361,6 +1580,14 @@ if ($recoveryLocalCommit -ne $targetCommit -or $recoveryStatus.Count -ne 0) {{
 Assert-TrackedSourceMatchesCommit "tools/release_artifact_evidence.py"
 Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
 New-Item -ItemType Directory -Path $recoveryRoot | Out-Null
+$recoveryRelease = & $ghPath api -X GET --hostname github.com $releaseEndpoint | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) {{ throw "post-publication recovery Release lookup failed" }}
+if ($recoveryRelease.id -ne $releaseId -or $recoveryRelease.draft -or
+    $recoveryRelease.prerelease -or
+    [string]$recoveryRelease.body -cne $approvedReleaseBody) {{
+  throw "Post-publication recovery Release body or identity mismatch"
+}}
+Assert-SigningResetReleaseBody ([string]$recoveryRelease.body) $expectedAndroidCertSha256
 & $ghPath release download {version} `
   --repo selinyi123/clipvault-personal `
   --dir $recoveryRoot
@@ -1375,7 +1602,7 @@ if ($LASTEXITCODE -ne 0) {{ throw "post-publication recovery download failed" }}
   --version {version} `
   --commit $targetCommit `
   --run-url $run.url `
-  --expected-android-cert-sha256 $env:ANDROID_RELEASE_CERT_SHA256 `
+  --expected-android-cert-sha256 $expectedAndroidCertSha256 `
   --owner-approved-binding $ownerApprovedBinding `
   --require-live-published-release `
   --evidence-output $recoveryEvidence `
@@ -1409,7 +1636,11 @@ Issue #36 remains open if any of these is missing:
 - non-skipped API 26 and API 27 compatibility evidence;
 - physical-device QA bound to the exact final signed APK digest;
 - IME privacy, sync, and Windows clipboard privacy evidence;
-- Owner publication approval bound to the same target, draft, and digest set;
+- signing-reset migration evidence covering dual-key backups, quarantine decision,
+  old-client drain, zero-peer reseed, fresh-client ACK, update rejection, and
+  fresh pairing;
+- Owner publication approval bound to the same target, draft, digest set, and
+  validator-rendered manual-QA report SHA-256;
 - published, non-prerelease `{version}` Release with exact target and assets.
 """
 
@@ -1433,6 +1664,7 @@ frozen main SHA
   -> draft=true final draft asset build
   -> exact-run provenance and byte verification
   -> API 26 + API 27 compatibility QA
+  -> signing-reset migration + fresh-client reseed ACK
   -> physical signed-APK and Windows QA
   -> Owner publication approval
   -> publish the existing draft without rebuilding
@@ -1466,11 +1698,12 @@ change statuses. Replace it with validator-rendered evidence and exact GitHub UR
 | Android byte/provenance/signer evidence | BLOCKED | exact signed APK and Owner certificate |
 | API 26 compatibility | BLOCKED | non-skipped named test, SDK/JUnit/APK evidence |
 | API 27 compatibility | BLOCKED | non-skipped named test, SDK/JUnit/APK evidence |
+| Android signing-reset migration | BLOCKED | dual backups, quarantine decision, old drain, zero-peer reseed, fresh ACK, update rejection |
 | Physical final signed APK QA | BLOCKED | exact draft APK SHA-256 |
 | IME privacy QA | BLOCKED | exact physical signed run |
 | Sync QA | BLOCKED | exact physical signed run |
 | Windows clipboard privacy QA | BLOCKED | exact draft Windows assets |
-| Owner publication approval | BLOCKED | exact target, draft URL, digest set |
+| Owner publication approval | BLOCKED | exact target, draft URL, digest set, manual-QA report SHA-256 |
 | Published GitHub Release `{version}` | BLOCKED | non-draft, non-prerelease, exact target/assets |
 
 Closure recommendation: `BLOCKED`

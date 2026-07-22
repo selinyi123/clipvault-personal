@@ -22,7 +22,7 @@ from clipvault.store import db
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
 from clipvault.store.outbox_repo import OutboxRepo
-from clipvault.store.peers_repo import PeersRepo
+from clipvault.store.peers_repo import LEGACY_UNKNOWN_PEER_CURSOR, PeersRepo
 from clipvault.store.unit_of_work import unit_of_work
 from clipvault.sync import engine as sync_engine
 from clipvault.sync.pairing import Pairing, hash_token
@@ -66,7 +66,12 @@ def api(conn, cfg):
 
 def _pair(api) -> str:
     code = api.pairing.mint_code()
-    _, body = api.pair({"code": code, "device_id": PEER, "device_name": "Pixel"})
+    _, body = api.pair({
+        "code": code,
+        "device_id": PEER,
+        "device_name": "Pixel",
+        "outbox_base_seq": 1,
+    })
     return body["token"]
 
 
@@ -465,6 +470,78 @@ def test_h1_pair_without_outbox_base_preserves_legacy_cursor_behavior(api):
     assert legacy_status == 200
     assert "outbox_base_seq" not in legacy_body
     assert api.peers.get(PEER)["peer_cursor"] == 150
+
+
+def test_h1_new_legacy_pair_baselines_first_retained_sequence(api):
+    code = api.pairing.mint_code()
+    status, body = api.pair({
+        "code": code,
+        "device_id": PEER,
+        "device_name": "v1.5.10 Android",
+    })
+
+    assert status == 200
+    assert "outbox_base_seq" not in body
+    assert api.peers.get(PEER)["peer_cursor"] == LEGACY_UNKNOWN_PEER_CURSOR
+    assert api.sync_push(body["token"], {"events": []}) == (
+        200,
+        {"acked_upto": 0},
+    )
+    assert api.peers.get(PEER)["peer_cursor"] == LEGACY_UNKNOWN_PEER_CURSOR
+
+    events = [
+        _clip_new_event(5, "first retained legacy event"),
+        _clip_new_event(6, "legacy barrier event"),
+    ]
+    assert api.sync_push(body["token"], {"events": events}) == (
+        200,
+        {"acked_upto": 6},
+    )
+    assert api.peers.get(PEER)["peer_cursor"] == 6
+
+
+def test_h1_legacy_baseline_keeps_a_gap_unacknowledged(api, conn):
+    code = api.pairing.mint_code()
+    status, body = api.pair({
+        "code": code,
+        "device_id": PEER,
+        "device_name": "v1.5.10 Android",
+    })
+    assert status == 200
+
+    push_status, pushed = api.sync_push(
+        body["token"],
+        {
+            "events": [
+                _clip_new_event(5, "legacy contiguous start"),
+                _clip_new_event(7, "legacy event after gap"),
+            ]
+        },
+    )
+
+    assert push_status == 200 and pushed["acked_upto"] == 5
+    assert api.peers.get(PEER)["peer_cursor"] == 5
+    assert conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0] == 2
+
+
+def test_h1_legacy_baseline_rejects_sequence_outside_sqlite_range(api, conn):
+    code = api.pairing.mint_code()
+    status, body = api.pair({
+        "code": code,
+        "device_id": PEER,
+        "device_name": "v1.5.10 Android",
+    })
+    assert status == 200
+
+    event = _clip_new_event(
+        9_223_372_036_854_775_808,
+        "legacy sequence outside sqlite range",
+    )
+    push_status, pushed = api.sync_push(body["token"], {"events": [event]})
+
+    assert push_status == 200 and pushed["acked_upto"] == 0
+    assert api.peers.get(PEER)["peer_cursor"] == LEGACY_UNKNOWN_PEER_CURSOR
+    assert conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize(
@@ -2139,6 +2216,28 @@ def test_h10_privacy_noop_advances_ack_without_business_side_effects(
     assert conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM sync_outbox").fetchone()[0] == 0
     assert not [record for record in caplog.records if record.levelname == "ERROR"]
+
+
+def test_h10_outgoing_privacy_noop_requires_frozen_content_free_shape(conn):
+    outbox = OutboxRepo(conn)
+    valid_seq = outbox.append(
+        "privacy_noop",
+        {},
+        "2026-07-22T12:00:00Z",
+    )
+    malformed_seq = outbox.append(
+        "privacy_noop",
+        {"content": "must never cross the wire"},
+        "1970-01-01T00:00:00Z",
+    )
+
+    pulled = sync_engine.build_pull(conn, 0)
+
+    assert [event["seq"] for event in pulled["events"]] == [valid_seq]
+    assert pulled["events"][0]["kind"] == "privacy_noop"
+    assert pulled["events"][0]["payload"] == {}
+    assert pulled["events"][0]["created_at"] == "1970-01-01T00:00:00Z"
+    assert pulled["next_seq"] == malformed_seq
 
 
 def test_h10_malformed_privacy_noop_is_acked_without_payload_log_leak(

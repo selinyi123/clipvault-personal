@@ -740,6 +740,14 @@ object SyncApply {
                     "clip_meta" -> applyClipMeta(db, ev.getJSONObject("payload"))
                     "memory_upsert" -> applyMemoryUpsert(db, ev.getJSONObject("payload"))
                     "memory_delete" -> applyMemoryDelete(db, ev.getJSONObject("payload"))
+                    "privacy_noop" -> {
+                        val payload = ev.getJSONObject("payload")
+                        if (payload.length() != 0 ||
+                            ev.getString("created_at") != PRIVACY_NOOP_TIMESTAMP
+                        ) {
+                            throw org.json.JSONException("invalid privacy noop")
+                        }
+                    }
                     else -> android.util.Log.w("clipvault.sync", "ignored unknown event kind")
                 }
             } catch (e: org.json.JSONException) {

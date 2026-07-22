@@ -8,8 +8,13 @@ outbox; my_acked_seq = how much of OUR outbox the peer has confirmed.
 import sqlite3
 
 
-_PAIRING_CURSOR_MAX = 9_223_372_036_854_775_806
-_SQLITE_INT_MAX = 9_223_372_036_854_775_807
+SQLITE_INT_MAX = 9_223_372_036_854_775_807
+_PAIRING_CURSOR_MAX = SQLITE_INT_MAX - 1
+# A legacy Android client does not announce the first sequence retained in its
+# pruned outbox.  Keep that state distinct from a modern client whose announced
+# base is exactly one (cursor zero).  The first valid legacy push establishes
+# the missing baseline without guessing that deleted prefix rows still exist.
+LEGACY_UNKNOWN_PEER_CURSOR = -1
 
 
 class InvalidPeerAckState(RuntimeError):
@@ -41,14 +46,25 @@ class PeersRepo:
             )
         if peer_cursor is None:
             # Legacy clients do not announce the first sequence retained in
-            # their outbox. Preserve an existing cursor on re-pair, and let a
-            # newly inserted row use the schema default of zero.
+            # their outbox. Preserve a cursor that has already advanced. A new
+            # peer, or a legacy re-pair that was still at zero, uses the
+            # explicit unknown sentinel until its first non-empty push.
             self.conn.execute(
-                "INSERT INTO sync_peers(device_id, device_name, token_hash, paired_at) "
-                "VALUES (?,?,?,?) "
+                "INSERT INTO sync_peers"
+                "(device_id, device_name, token_hash, paired_at, peer_cursor) "
+                "VALUES (?,?,?,?,?) "
                 "ON CONFLICT(device_id) DO UPDATE SET device_name=excluded.device_name, "
-                "token_hash=excluded.token_hash, paired_at=excluded.paired_at",
-                (device_id, device_name, token_hash, when),
+                "token_hash=excluded.token_hash, paired_at=excluded.paired_at, "
+                "peer_cursor=CASE WHEN sync_peers.peer_cursor = 0 THEN ? "
+                "ELSE sync_peers.peer_cursor END",
+                (
+                    device_id,
+                    device_name,
+                    token_hash,
+                    when,
+                    LEGACY_UNKNOWN_PEER_CURSOR,
+                    LEGACY_UNKNOWN_PEER_CURSOR,
+                ),
             )
         else:
             # A pairing client that announces its durable outbox base lets the
@@ -94,7 +110,7 @@ class PeersRepo:
             or not isinstance(seq, int)
             or isinstance(high_water, bool)
             or not isinstance(high_water, int)
-            or not 0 <= seq <= high_water <= _SQLITE_INT_MAX
+            or not 0 <= seq <= high_water <= SQLITE_INT_MAX
         ):
             raise ValueError(
                 "sync ack and high_water must be integers within durable "
@@ -119,7 +135,7 @@ class PeersRepo:
         if (
             isinstance(high_water, bool)
             or not isinstance(high_water, int)
-            or not 0 <= high_water <= _SQLITE_INT_MAX
+            or not 0 <= high_water <= SQLITE_INT_MAX
         ):
             raise ValueError(
                 "sync ack high_water must be an integer within SQLite range"

@@ -16,7 +16,25 @@
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
-| Last updated | 2026-07-21 |
+| Last updated | 2026-07-22 |
+
+## Current development note - 2026-07-22 / v1.6.0 Android signing reset
+
+- The Owner approved retaining `com.clipvault.app` with a new Android signing
+  identity and accepted that v1.5.10 requires uninstall/reinstall, but only
+  after the documented public-data drain and quarantine decision. The old app
+  must not be removed while migration evidence is incomplete.
+- Legacy v1.5.10 pairing now has an explicit unknown-cursor state so its first
+  retained positive outbox sequence can establish a safe baseline. Modern
+  clients still announce `outbox_base_seq` and retain strict gap handling.
+- `tools/prepare_android_signing_reset.py` atomically replaces retained Desktop
+  outbound history with the current eligible public snapshot plus one
+  content-free marker. Fresh pull is checked from cursor zero; delivery requires
+  one post-reseed peer ACK and an unchanged durable high-water. Separate exact
+  final-APK fresh-install evidence is still mandatory.
+- v1.6.0 remains blocked until two independently verified encrypted key backups,
+  old-device migration/QA, exact signed artifacts, green current-main CI and RC,
+  Owner publication approval, and published Release evidence all exist.
 
 ## Current development note - 2026-07-21 / R000 adversarial Desktop performance baselines
 
@@ -217,10 +235,11 @@
   paused and stale authenticated responses cannot clear outbox rows or advance
   cursors. Multiple overlapping pairing attempts retain latest-attempt-wins
   behavior. Legacy Android requests without the extension remain accepted.
-- Issue #36 manual evidence now emits schema v3 with 19 required items. Its
-  re-pair row binds four executed `OutboxBaseSeqTest` cases on both API 26 and
-  API 27 plus the physical signed-APK observation. Schema v2 remains readable
-  in its frozen 18-item shape but can never be release-ready.
+- Issue #36 manual evidence now emits schema v4 with 26 required items. It adds
+  seven independent Android signing-reset migration gates; its re-pair row
+  binds four executed `OutboxBaseSeqTest` cases on both API 26 and API 27 plus
+  the physical signed-APK observation. Frozen schema v3 (19 items) and schema
+  v2 (18 items) remain readable but can never be release-ready.
 - A pre-existing fail-closed follow-up remains: the Desktop pairing code is
   consumed before the peer-row commit. A database/commit failure must roll back
   the long-lived API connection immediately, and a later slice should make code
@@ -681,7 +700,7 @@
   exact unchecked release-gate checklist items, so the next Owner evidence step
   can target the missing rows directly without treating a count as completion.
 - `tools/manual_qa_evidence.py` is a local Issue #36 manual-QA evidence helper.
-  Its fail-closed schema v3 separately records non-skipped API 26/27
+  Its fail-closed schema v4 separately records non-skipped API 26/27
   CursorWindow and Android outbox-baseline regression runs plus a physical
   final-signed-APK run, binds them
   to the target commit and artifact hashes/evidence, validates Android device
@@ -694,8 +713,9 @@
   GitHub, edit checklist
   rows, sign artifacts, publish a Release, or close Issue #36, and the rendered
   report explicitly does not replace signed-artifact/final-release evidence.
-  Frozen schema v2 remains readable only for its exact legacy 18-item shape and
-  can never satisfy the current release gate.
+  Frozen schema v3 and v2 remain readable only for their exact legacy 19-item
+  and 18-item shapes, respectively, and can never satisfy the current release
+  gate.
 - `tools/release_artifact_evidence.py` retains its compatible local structural
   precheck and adds explicit fail-closed `--require-live-final-draft` and
   `--require-live-published-release` modes.

@@ -18,7 +18,7 @@ from clipvault.store.memory_repo import (
     SecretMemoryError,
 )
 from clipvault.store.outbox_repo import OutboxRepo
-from clipvault.store.peers_repo import PeersRepo
+from clipvault.store.peers_repo import SQLITE_INT_MAX, PeersRepo
 from clipvault.store.unit_of_work import unit_of_work
 from clipvault.sync import engine as sync_engine
 from clipvault.sync.pairing import Pairing, hash_token
@@ -27,7 +27,7 @@ _SUGGEST_WINDOW_DAYS = 30
 _DEVICE_ID_RE = re.compile(r"^[0-9A-Za-z_-]{1,80}$")
 _DEVICE_NAME_MAX_CHARS = 80
 _SYNC_PUSH_EVENT_LIMIT = 100
-_OUTBOX_BASE_SEQ_MAX = 9_223_372_036_854_775_807
+_OUTBOX_BASE_SEQ_MAX = SQLITE_INT_MAX
 
 
 def _now_iso() -> str:

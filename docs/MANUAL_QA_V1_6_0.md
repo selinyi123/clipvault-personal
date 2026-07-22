@@ -102,7 +102,7 @@ output without that assurance is not final Issue #36 release-gate evidence.
 
 The generated report must include:
 
-- `schema_version=3`, `version=v1.6.0`, and the full 40-character target commit.
+- `schema_version=4`, `version=v1.6.0`, and the full 40-character target commit.
 - `release_artifact_binding` copied from the strict final-draft artifact report,
   including its binding SHA-256, exact workflow run/attempt, draft Release ID and
   snapshot URL, and signed APK name/SHA-256. The numeric Release ID is part of the
@@ -125,6 +125,8 @@ The generated report must include:
 - Windows desktop environment/build source and source commit matching the
   report target commit.
 - Manual Android device QA rows.
+- Seven distinct Android signing-reset migration rows. Each row requires its
+  own path-free evidence and must reference the final physical signed run.
 - Manual IME privacy QA rows.
 - Manual sync QA rows.
 - Manual Windows clipboard privacy QA rows.
@@ -135,10 +137,11 @@ evidence, or Owner-approved `v1.6.0` GitHub Release publication.
 Its strict-mode `PASS (OWNER-ATTESTED)` result means the required structure and reported
 values are complete; the helper does not fetch or independently parse the
 referenced SDK/JUnit files and cannot prove that physical observations occurred.
-Legacy schema-v2 compatibility mode may be structurally valid (`ok=true`) but
-always remains `BLOCKED`, even when its former 18 rows pass and a binding object
-is present. Regenerate schema v3 and execute the required re-pair outbox
-high-water row. Other schema versions are intentionally blocked. Historical
+Legacy schema-v2 and schema-v3 compatibility modes may be structurally valid
+(`ok=true`) but always remain `BLOCKED`, even when all rows for those frozen
+formats pass and a binding object is present. Regenerate schema v4 and execute
+the required re-pair outbox high-water row plus all seven Android signing-reset
+migration rows. Other schema versions are intentionally blocked. Historical
 success exit status only reports structural completeness; never interpret it
 as Issue #36 release eligibility.
 
@@ -291,14 +294,16 @@ matches the independently validated release artifact report, then reference
 the corresponding `physical` / `release` `android_runs` entry from every
 passing Android, IME, and sync row:
 
-1. Pair Android with the desktop node using a one-time desktop pairing code.
+1. Pair the fresh final signed Android installation using a one-time Desktop
+   code.
 2. Share text from another app into ClipVault and confirm it appears locally.
 3. Use the Quick Settings tile to explicitly save current clipboard content.
 4. Enable ClipVault Panel IME and confirm a candidate tap commits text.
 5. Confirm Panel IME explicit save requires a user tap.
-6. Confirm public clips and memory sync desktop <-> Android.
-7. Confirm secret/private content remains isolated according to the current
-   contracts.
+6. Confirm public clips sync Desktop -> Android and Android -> Desktop. Confirm
+   public Memory syncs Desktop -> Android; Android -> Desktop Memory sync is not
+   part of the current contract.
+7. Confirm secret/private content remains isolated under the current contracts.
 8. Create and fully sync several explicit Android saves so the local outbox is
    empty but its sequence high-water mark is greater than zero. Unpair that
    device on Desktop, generate a new one-time code, and pair the same Android
@@ -311,6 +316,45 @@ passing Android, IME, and sync row:
    Desktop receive/ACK observations, and whether the Android pending indicator
    cleared; do not require release-APK internal database access and never record
    clip content.
+
+## Android signing-reset migration QA (schema v4)
+
+The signing-reset migration is deliberately separate from ordinary pairing and
+sync QA. Record each gate as its own item under
+`sections.android_signing_reset_qa.items`; do not combine several observations
+into the pairing or sync rows. Every passing item needs non-placeholder,
+path-free evidence and `run_ids` containing the exact
+`final_signed_android_run_id` for the physical final signed APK run.
+
+1. `dual_backup_verified`: independently restore or open both encrypted
+   new-key backups and confirm they identify the Owner-approved replacement
+   certificate fingerprint. Do not publish the keystore, passwords, or private
+   recovery locations.
+2. `old_outbox_barrier_drained`: pause new captures on v1.5.10, send a benign
+   public marker, confirm Desktop has acknowledged through that barrier, and
+   confirm Android cleared the pending row before uninstalling the old app. A
+   marker visible on Desktop without a cleared Android outbox is not a PASS.
+3. `quarantine_decision`: confirm the v1.5.10 quarantine is empty. If it is not
+   exportable, record the Owner's explicit acceptance that those quarantined
+   items will be permanently lost; never copy their contents into evidence.
+4. `zero_peer_reseed`: stop or revoke the old Android peer, confirm Desktop has
+   zero peers, and atomically replace retained Desktop outbound history with the
+   documented current public-state reseed plus content-free marker. Account for
+   every skipped category; unaccepted invalid/unsafe public rows block release.
+5. `update_incompatible`: attempt to install the exact final signed APK over
+   v1.5.10 and record that Android rejects it specifically with
+   `INSTALL_FAILED_UPDATE_INCOMPATIBLE`.
+6. `fresh_install`: uninstall v1.5.10, fresh-install the exact final signed APK,
+   then re-pair and re-enable the Share target, Quick Settings tile, and Panel
+   IME as applicable.
+7. `reseed_delivery_verified`: run the safe reseed delivery verification and
+   confirm exactly one post-reseed peer acknowledged through the unchanged
+   reseed high-water. Keep all Desktop outbox writers frozen from apply through
+   this verification.
+
+Schema v2 and v3 inputs remain readable for historical review, but the helper
+must report `release_ready=false` for them. Only a complete schema-v4 report can
+be eligible for the final Issue #36 release gate.
 
 ## Manual IME privacy QA
 
