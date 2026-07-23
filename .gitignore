@@ -20,6 +20,9 @@ desktop/dist/
 desktop/build_pyi/
 desktop/packaging/*.spec
 *.keystore
+*.jks
+*.p12
+*.pfx
 # Inno Setup output (the built installer ships via GitHub Releases)
 installer/dist/
 # Local field-test downloads and extracted GitHub Actions artifacts

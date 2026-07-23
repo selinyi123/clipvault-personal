@@ -135,7 +135,7 @@ proof.
 
 For v1.6.0, this variable must contain the fingerprint of the **new** long-lived
 release certificate created under the approved reset:
-`86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c`.
+`ef93502c8e5e68f1d0c8b46c36c521b84a09b11be8bc924030b5ada16d761757`.
 It must not contain the old v1.5.10 fingerprint above or any other valid-looking
 fingerprint. Before dispatching any workflow that can access the secrets,
 complete and verify two encrypted keystore backups in independent Owner-controlled storage
@@ -174,6 +174,17 @@ gh secret set ANDROID_RELEASE_KEY_PASSWORD `
   --repo selinyi123/clipvault-personal `
   --env release
 if ($LASTEXITCODE -ne 0) { throw "Failed to set the key password secret" }
+```
+
+Set the public trust-anchor variable only after independently confirming the
+fingerprint from both retained recovery copies:
+
+```powershell
+$approvedAndroidCertSha256 = "ef93502c8e5e68f1d0c8b46c36c521b84a09b11be8bc924030b5ada16d761757"
+$approvedAndroidCertSha256 | gh variable set ANDROID_RELEASE_CERT_SHA256 `
+  --repo selinyi123/clipvault-personal `
+  --env release
+if ($LASTEXITCODE -ne 0) { throw "Failed to set the release certificate trust anchor" }
 ```
 
 ## 4. Run the signed no-draft preflight
