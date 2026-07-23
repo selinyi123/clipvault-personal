@@ -738,7 +738,8 @@
   precheck and adds explicit fail-closed `--require-live-final-draft` and
   `--require-live-published-release` modes.
   Strict mode reads GitHub state without mutating it, binds current `main` to the
-  exact successful `draft=true` run/attempt, verifies all eight downloaded files
+  exact successful `draft=true` run/attempt, verifies all nine downloaded files
+  (including `ClipVault-v1.6.0-LGPL-relink-kit.zip`)
   with strong attestation identity flags and certificate `runInvocationURI`,
   compares Actions bytes with authenticated draft Release API digests/local
   bytes, cross-checks the live `release` environment certificate variable, and

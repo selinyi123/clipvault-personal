@@ -60,25 +60,92 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: desktop/pyproject.toml
+          cache-dependency-path: desktop/packaging/windows-release-requirements.txt
 
-      - name: Install packaging dependencies
+      - name: Resolve hash-locked Windows dependencies
         working-directory: desktop
-        run: python -m pip install --upgrade pip pytest pyinstaller
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path packaging/wheelhouse | Out-Null
+          python -m pip download --require-hashes --only-binary=:all: --dest packaging/wheelhouse --requirement packaging/windows-release-requirements.txt
+
+          python -m venv .venv-build
+          & .\.venv-build\Scripts\python.exe -m pip install --no-index --find-links packaging/wheelhouse --require-hashes --requirement packaging/windows-release-requirements.txt
+          & .\.venv-build\Scripts\python.exe -m pip check
+
+          python -m venv .venv-test
+          & .\.venv-test\Scripts\python.exe -m pip install "pytest>=8.0"
+          & .\.venv-test\Scripts\python.exe -m pip check
+
+      - name: Export locked wheel notices
+        working-directory: desktop
+        shell: pwsh
+        run: >
+          .\packaging\Export-WheelNotices.ps1
+          -Wheelhouse packaging/wheelhouse
+          -Destination packaging/runtime-notices
 
       - name: Run desktop release regression tests
         working-directory: desktop
-        run: python -m pytest -q
+        shell: pwsh
+        run: |
+          . .\.venv-test\Scripts\Activate.ps1
+          python -m pytest -q
 
       - name: Build portable executable
         working-directory: desktop
         run: >
-          python -m PyInstaller --onefile --name clipvault
+          .\.venv-build\Scripts\python.exe -m PyInstaller
+          --clean --noconfirm --onefile --name clipvault
+          --hide-console hide-early
+          --icon "$PWD/packaging/clipvault.ico"
+          --hidden-import pystray._win32
           --workpath build_pyi
           --specpath packaging
           --add-data "$PWD/clipvault/store/migrations;clipvault/store/migrations"
           --add-data "$PWD/clipvault/api/webui;clipvault/api/webui"
+          --add-data "$PWD/../THIRD_PARTY_NOTICES.md;."
+          --add-data "$PWD/../third_party;third_party"
+          --add-data "$PWD/packaging/runtime-notices;third_party/licenses"
           packaging/run_clipvault.py
+
+      - name: Verify frozen tray and record onefile inventory
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $trayReport = @(& .\dist\clipvault.exe --self-test-tray 2>&1)
+          $trayExit = $LASTEXITCODE
+          $trayReport | Set-Content -LiteralPath packaging/tray-self-test.txt -Encoding UTF8
+          $trayReport | ForEach-Object { Write-Host $_ }
+          if ($trayExit -ne 0 -or $trayReport -notcontains "tray self-test ok") {
+            throw "Frozen tray self-test failed with exit code $trayExit"
+          }
+          $inventory = @(
+            & .\.venv-build\Scripts\pyi-archive_viewer.exe -r -l dist/clipvault.exe 2>&1
+          )
+          $inventoryExit = $LASTEXITCODE
+          $inventory |
+            Set-Content -LiteralPath packaging/clipvault-onefile-inventory.txt -Encoding UTF8
+          if ($inventoryExit -ne 0 -or $inventory.Count -eq 0) {
+            throw "Unable to inspect the frozen onefile executable"
+          }
+          $inventoryText = $inventory -join "`n"
+          foreach ($requiredModule in @("pystray._win32", "PIL.Image")) {
+            $requiredToken = "'" + $requiredModule + "'"
+            if (-not $inventoryText.Contains($requiredToken)) {
+              throw "Frozen onefile inventory is missing required module: $requiredModule"
+            }
+          }
+          foreach ($disallowedComponent in @("libimagequant", "raqm")) {
+            if (
+              $inventoryText.IndexOf(
+                $disallowedComponent,
+                [System.StringComparison]::OrdinalIgnoreCase
+              ) -ge 0
+            ) {
+              throw "Frozen onefile inventory contains disallowed component: $disallowedComponent"
+            }
+          }
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
@@ -105,6 +172,15 @@ jobs:
           New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
           Copy-Item desktop/dist/clipvault.exe "release-artifacts/ClipVault-Desktop-v$version-portable.exe"
           Copy-Item "installer/dist/ClipVault-Setup-v$version.exe" "release-artifacts/ClipVault-Setup-v$version.exe"
+          & .\desktop\packaging\Build-LgplRelinkKit.ps1 `
+            -Version $version `
+            -Commit "${{ github.sha }}" `
+            -Wheelhouse desktop/packaging/wheelhouse `
+            -RuntimeNotices desktop/packaging/runtime-notices `
+            -Inventory desktop/packaging/clipvault-onefile-inventory.txt `
+            -TraySelfTestReport desktop/packaging/tray-self-test.txt `
+            -PythonExecutable desktop/.venv-build/Scripts/python.exe `
+            -Output "release-artifacts/ClipVault-v$version-LGPL-relink-kit.zip"
           python scripts/release_candidate_manifest.py --artifact-dir release-artifacts --platform windows --version $version --commit "${{ github.sha }}" --kind release
           python scripts/verify_release_manifest.py --artifact-dir release-artifacts --platform windows --version $version --commit "${{ github.sha }}"
 
@@ -377,6 +453,14 @@ jobs:
           > Old certificate SHA-256: ${old_android_cert_sha256}
           > New certificate SHA-256: ${ANDROID_RELEASE_CERT_SHA256}
           > There is no cryptographic signing continuity between these certificates.
+
+          ## Windows tray dependency and relinking materials
+
+          The Windows artifacts include pystray 0.19.5 under
+          LGPL-3.0-or-later. The exact corresponding pystray source, ClipVault
+          source, hash-locked build wheelhouse, license texts, SBOM, and practical
+          relink instructions are delivered as the ninth Release asset:
+          `ClipVault-${RELEASE_TAG}-LGPL-relink-kit.zip`.
 
           Do not publish this draft until Issue #36 has signed APK evidence and
           manual Android IME/privacy/sync and Windows clipboard privacy evidence.

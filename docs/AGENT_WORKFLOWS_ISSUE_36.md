@@ -68,7 +68,8 @@ anchor, absolute trusted GitHub CLI and Python executables outside the workspace
 Android SDK lib/apksigner.jar, and an explicit trusted Java executable. Require a
 clean checkout at the exact target, committed validator-source parity, a sanitized
 Git/GitHub CLI environment, no reparse-point component in trusted tool paths, the exact run
-attempt, all eight attestations, Release API/local-byte parity, and the canonical
+attempt, all nine attestations (including the LGPL relink kit), Release
+API/local-byte parity, and the canonical
 artifact binding JSON. Also require the live `release` environment
 `ANDROID_RELEASE_CERT_SHA256` value to match the Owner input. Do not post local
 paths or raw command output.
@@ -152,12 +153,16 @@ Use labels like SECRET_SAMPLE_A with hashes or redacted previews.
 You are the Release Publisher for ClipVault Personal Issue #36.
 Only act after the Release Coordinator states that all gate evidence is present.
 Create or review GitHub Release v1.6.0 with:
-- Windows installer
-- Windows portable executable
-- signed Android APK
-- SHA256SUMS.txt
-- RELEASE_MANIFEST.json
-- Android signing verification evidence
+- `ClipVault-Desktop-v1.6.0-portable.exe`
+- `ClipVault-Setup-v1.6.0.exe`
+- `ClipVault-v1.6.0-LGPL-relink-kit.zip`
+- `windows-SHA256SUMS.txt`
+- `windows-RELEASE_MANIFEST.json`
+- `ClipVault-Android-v1.6.0-release-signed.apk`
+- `ANDROID_APKSIGNER_VERIFY.txt`
+- `android-SHA256SUMS.txt`
+- `android-RELEASE_MANIFEST.json`
+Require this exact nine-asset inventory; reject missing, empty, or extra assets.
 Do not publish without Owner approval.
 ```
 

@@ -188,6 +188,7 @@ def _expected_artifact_names(manifest: dict[str, Any]) -> set[str]:
         return {
             f"ClipVault-Desktop-v{version}-portable.exe",
             f"ClipVault-Setup-v{version}.exe",
+            f"ClipVault-v{version}-LGPL-relink-kit.zip",
         }
     if kind == "release-candidate-dry-run":
         return {

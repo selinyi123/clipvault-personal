@@ -119,14 +119,15 @@ particular:
   and path-free comment are evidence inputs, not self-authenticating proof, so
   readiness must rerun or live-cross-check every security-relevant claim;
 - retain the generated artifact binding SHA-256 so manual QA and publication
-  approval can be tied to the same exact eight files; copy that binding from the
+  approval can be tied to the same exact nine files, including the LGPL relink
+  kit; copy that binding from the
   posted Owner approval into Step H, which recomputes it and consumes only the
   verifier's in-memory publication projection;
 - keep both `main` and the exact `refs/tags/v1.6.0` frozen during Step H; the
   generated block resolves direct or annotated tags before and after publication;
 - after publication, re-download with the trusted GitHub CLI, then run the same
   tracked verifier against that fresh directory to revalidate the exact
-  published Release, tag object, eight asset identities and bytes,
+  published Release, tag object, nine asset identities and bytes,
   attestations, run attempt, current `main`, and Owner signer. Retain its separate
   publication-closure binding and path-free comment draft for final gate review.
 

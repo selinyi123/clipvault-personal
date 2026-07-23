@@ -59,6 +59,32 @@ build alone:
 - If Owner approves publication, attach all artifacts and checksums to GitHub
   Release `v1.6.0`.
 
+## Windows third-party notice and relink QA
+
+Use only the exact `draft=true` Windows executable/installer and the draft
+Release asset `ClipVault-v1.6.0-LGPL-relink-kit.zip`.
+
+- Confirm the final Release inventory contains exactly nine non-empty assets.
+- Confirm the installer installs the third-party notices and GPL/LGPL texts.
+- Confirm the portable executable exposes the same notice through the
+  documented command and tray-menu path without requiring the installer.
+- Confirm both notice paths identify `pystray 0.19.5` as
+  LGPL-3.0-or-later and name the exact relink-kit asset.
+- Extract the kit and verify its internal SHA-256 lock before opening any
+  executable or script.
+- Confirm the kit contains the exact target-commit application archive, the
+  pystray commit archive, locked wheelhouse, verbatim wheel licenses/SBOMs,
+  build environment, and relink instructions described in
+  [ADR-0012](ADR/0012-windows-tray-dependencies-and-lgpl-delivery.md).
+- Require the clean-runner relink exercise to succeed with both the original
+  and harmlessly modified pystray wheel.
+- Confirm the exact Pillow wheel report is retained and says
+  `libimagequant=False` and `raqm=False`; stop if the frozen binary inventory
+  contradicts it.
+
+Do not treat the presence of the ZIP, a successful extraction, or a green
+Windows build as proof that the relink instructions work.
+
 ## Structured evidence helper
 
 The local helper can create and preview a report while evidence is being filled.

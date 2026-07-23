@@ -31,6 +31,7 @@ def _build_candidate_fixtures(tmp_path, *, version="1.6.0", commit="a" * 40):
 
     (windows_dir / f"ClipVault-Desktop-v{version}-portable.exe").write_bytes(b"portable")
     (windows_dir / f"ClipVault-Setup-v{version}.exe").write_bytes(b"installer")
+    (windows_dir / f"ClipVault-v{version}-LGPL-relink-kit.zip").write_bytes(b"relink")
     release_candidate_manifest.build_manifest(
         windows_dir,
         platform="windows",
@@ -76,6 +77,7 @@ def test_verify_artifacts_builds_partial_blocked_issue82_comment(tmp_path):
     assert result.ok is True
     assert result.field_test_ready is False
     assert result.item_counts == {"blocked": 12, "fail": 0, "pass": 3}
+    assert "ClipVault-v1.6.0-LGPL-relink-kit.zip" in markdown
     assert "Status: **BLOCKED**" in markdown
     assert "Issue #82" in markdown
     assert "candidate-only artifact verification" in markdown

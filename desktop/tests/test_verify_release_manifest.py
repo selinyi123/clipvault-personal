@@ -29,6 +29,7 @@ VALID_APKSIGNER_EVIDENCE = (
 def _build_fixture(tmp_path):
     (tmp_path / "ClipVault-Desktop-v1.6.0-portable.exe").write_bytes(b"portable")
     (tmp_path / "ClipVault-Setup-v1.6.0.exe").write_bytes(b"installer")
+    (tmp_path / "ClipVault-v1.6.0-LGPL-relink-kit.zip").write_bytes(b"relink")
     release_candidate_manifest.build_manifest(
         tmp_path,
         platform="windows",
@@ -73,6 +74,7 @@ def test_verify_accepts_matching_dry_run_manifest(tmp_path):
     assert [row["name"] for row in manifest["artifacts"]] == [
         "ClipVault-Desktop-v1.6.0-portable.exe",
         "ClipVault-Setup-v1.6.0.exe",
+        "ClipVault-v1.6.0-LGPL-relink-kit.zip",
     ]
 
 
@@ -171,6 +173,7 @@ def test_verify_rejects_extra_artifact_even_when_manifest_and_checksums_include_
 ):
     (tmp_path / "ClipVault-Desktop-v1.6.0-portable.exe").write_bytes(b"portable")
     (tmp_path / "ClipVault-Setup-v1.6.0.exe").write_bytes(b"installer")
+    (tmp_path / "ClipVault-v1.6.0-LGPL-relink-kit.zip").write_bytes(b"relink")
     (tmp_path / "unexpected.bin").write_bytes(b"not part of the release contract")
     release_candidate_manifest.build_manifest(
         tmp_path,

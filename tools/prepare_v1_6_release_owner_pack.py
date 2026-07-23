@@ -52,6 +52,14 @@ SIGNING_RESET_RELEASE_BODY = f"""# ClipVault Personal {VERSION}
 > New certificate SHA-256: {NEW_ANDROID_CERT_SHA256}
 > There is no cryptographic signing continuity between these certificates.
 
+## Windows tray dependency and relinking materials
+
+The Windows artifacts include pystray 0.19.5 under
+LGPL-3.0-or-later. The exact corresponding pystray source, ClipVault
+source, hash-locked build wheelhouse, license texts, SBOM, and practical
+relink instructions are delivered as the ninth Release asset:
+`ClipVault-{VERSION}-LGPL-relink-kit.zip`.
+
 Do not publish this draft until Issue #36 has signed APK evidence and
 manual Android IME/privacy/sync and Windows clipboard privacy evidence."""
 DEFAULT_OUTPUT_DIR = Path(".field-test-artifacts") / "v1.6.0-owner-pack"
@@ -148,6 +156,7 @@ def artifact_template(version: str) -> dict[str, Any]:
             "expected_assets": [
                 f"ClipVault-Desktop-v{numeric}-portable.exe",
                 f"ClipVault-Setup-v{numeric}.exe",
+                f"ClipVault-{version}-LGPL-relink-kit.zip",
                 "SHA256SUMS.txt",
                 "RELEASE_MANIFEST.json",
             ],
@@ -537,6 +546,7 @@ $expectedAssets = @(
   "ClipVault-Android-{version}-release-signed.apk",
   "ClipVault-Desktop-v1.6.0-portable.exe",
   "ClipVault-Setup-v1.6.0.exe",
+  "ClipVault-v1.6.0-LGPL-relink-kit.zip",
   "android-RELEASE_MANIFEST.json",
   "android-SHA256SUMS.txt",
   "windows-RELEASE_MANIFEST.json",
@@ -562,6 +572,7 @@ function Assert-SameSha([string]$left, [string]$right) {{
 }}
 Assert-SameSha "$actionsRoot/clipvault-windows-release-artifacts/ClipVault-Desktop-v1.6.0-portable.exe" "$releaseRoot/ClipVault-Desktop-v1.6.0-portable.exe"
 Assert-SameSha "$actionsRoot/clipvault-windows-release-artifacts/ClipVault-Setup-v1.6.0.exe" "$releaseRoot/ClipVault-Setup-v1.6.0.exe"
+Assert-SameSha "$actionsRoot/clipvault-windows-release-artifacts/ClipVault-v1.6.0-LGPL-relink-kit.zip" "$releaseRoot/ClipVault-v1.6.0-LGPL-relink-kit.zip"
 Assert-SameSha "$actionsRoot/clipvault-windows-release-artifacts/SHA256SUMS.txt" "$releaseRoot/windows-SHA256SUMS.txt"
 Assert-SameSha "$actionsRoot/clipvault-windows-release-artifacts/RELEASE_MANIFEST.json" "$releaseRoot/windows-RELEASE_MANIFEST.json"
 Assert-SameSha "$actionsRoot/clipvault-android-signed-release-artifacts/ClipVault-Android-{version}-release-signed.apk" "$releaseRoot/ClipVault-Android-{version}-release-signed.apk"
@@ -633,7 +644,7 @@ Assert-TrackedSourceMatchesCommit "scripts/verify_release_manifest.py"
 
 Use the APK and EXEs downloaded from `$releaseRoot` for final QA. The artifact
 helper now fails unless it verifies current `main`, the exact successful
-`draft=true` run and attempt, both Actions bundles, all eight per-file
+`draft=true` run and attempt, both Actions bundles, all nine per-file
 attestations, the mutable draft Release metadata/API digests, exact Actions-to-
 draft bytes, and an independent real `apksigner` result against the Owner trust
 anchor. Its JSON is a non-self-authenticating machine snapshot: readiness must

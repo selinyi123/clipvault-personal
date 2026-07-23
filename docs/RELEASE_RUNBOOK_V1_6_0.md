@@ -13,6 +13,12 @@ It does not replace the manual Android/IME/sync/Windows clipboard QA evidence.
 - Run the workflow first with `create_draft_release=false` as a signed,
   no-draft preflight; never use its bytes as final QA/publication evidence.
 - Treat `Release candidate dry run` artifacts as unsigned packaging evidence only.
+- Treat the Windows build as ineligible unless
+  [ADR-0012](ADR/0012-windows-tray-dependencies-and-lgpl-delivery.md) passes:
+  the exact nine-asset draft includes
+  `ClipVault-v1.6.0-LGPL-relink-kit.zip`, notice access works from both
+  installer and portable forms, the clean-runner relink exercise passes, and
+  the final Pillow/binary composition has no unreviewed copyleft component.
 - The release-candidate dry run runs automatically on pushes to `main`; manual
   dispatch remains a fallback if the current-main run is missing, failed, or
   still queued.
@@ -245,9 +251,10 @@ Those commands deliberately:
 - fail after every unsuccessful `gh` or Python command;
 - validate the run title, event, branch, head SHA, and conclusion;
 - require a draft, non-prerelease `v1.6.0` Release targeting `$mainSha`;
-- require the exact eight-asset inventory with no empty asset;
+- require the exact nine-asset inventory with no empty asset, including
+  `ClipVault-v1.6.0-LGPL-relink-kit.zip`;
 - download both Actions artifacts and the current mutable draft Release assets;
-- compare all eight files byte-for-byte by SHA-256;
+- compare all nine files byte-for-byte by SHA-256;
 - save the draft Release digest set for the pre-publication recheck.
 
 Execute `tools/release_artifact_evidence.py --require-live-final-draft` only
@@ -265,7 +272,7 @@ ignored bytecode cannot hide a modified verifier. Strict mode fails unless it ve
 - current `main` and the exact successful `draft=true` run ID/attempt, workflow,
   branch, source commit, event, and display title;
 - the exact two non-expired Actions bundles and their archive digests;
-- the exact eight regular, non-empty files in both Actions and draft Release
+- the exact nine regular, non-empty files in both Actions and draft Release
   inventories, including Release API size/digest parity;
 - `gh attestation verify` for every Actions file with fixed repository, exact
   workflow/ref certificate identity, OIDC issuer, `refs/heads/main`, exact
@@ -492,7 +499,8 @@ Before approval, record on Issue #36:
 
 - the exact target SHA, current-main CI, and RC dry-run URLs;
 - the final `draft=true` run and draft Release URLs;
-- the exact eight-asset names, sizes, and SHA-256 digest set;
+- the exact nine-asset names, sizes, and SHA-256 digest set, including the
+  attested `ClipVault-v1.6.0-LGPL-relink-kit.zip`;
 - constrained provenance and Owner Android certificate identity evidence;
 - the approved signing-reset decision, old and new public certificate
   fingerprints, dual-backup verification dates, expected update-rejection

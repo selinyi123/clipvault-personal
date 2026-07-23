@@ -162,6 +162,13 @@ def _asset_specs(version: str) -> tuple[AssetSpec, ...]:
             f"ClipVault-Setup-v{numeric}.exe",
         ),
         AssetSpec(
+            "windows_lgpl_relink_kit",
+            "windows",
+            "clipvault-windows-release-artifacts",
+            f"ClipVault-v{numeric}-LGPL-relink-kit.zip",
+            f"ClipVault-v{numeric}-LGPL-relink-kit.zip",
+        ),
+        AssetSpec(
             "windows_checksums",
             "windows",
             "clipvault-windows-release-artifacts",
@@ -1180,7 +1187,10 @@ def build_final_draft_manual_qa_binding_projection(
     specs = {spec.role: spec for spec in _asset_specs(DEFAULT_VERSION)}
     artifacts = data.get("artifacts")
     if not isinstance(artifacts, list) or len(artifacts) != len(specs):
-        raise ValueError("final-draft evidence must contain the exact eight artifacts")
+        raise ValueError(
+            "final-draft evidence must contain the exact canonical artifact set "
+            f"(expected {len(specs)})"
+        )
     by_role: dict[str, dict[str, Any]] = {}
     release_asset_ids: set[int] = set()
     observed_release_names: list[str] = []
@@ -1634,7 +1644,7 @@ def collect_final_draft_evidence(
         "assurance": "live_exact_run_and_draft_snapshot",
         "consumer_requirement": "rerun_or_live_cross_check_before_release_readiness",
         "scope_note": (
-            "This evidence verifies one exact successful draft=true run, eight attested "
+            f"This evidence verifies one exact successful draft=true run, {len(specs)} attested "
             "artifact files, matching draft Release bytes, the exact release-tag state, "
             "and the Owner Android signer. "
             "This JSON is not self-authenticating: a readiness consumer must rerun these "
@@ -1917,7 +1927,7 @@ def collect_published_release_evidence(
         "assurance": "live_exact_run_and_published_release_snapshot",
         "consumer_requirement": "rerun_or_live_cross_check_before_release_readiness",
         "scope_note": (
-            "This evidence revalidates the exact successful draft=true run, eight attested "
+            f"This evidence revalidates the exact successful draft=true run, {len(specs)} attested "
             "artifact files, published Release ID and bytes, exact current release tag, and "
             "Owner Android signer against the Owner-approved pre-publication binding. This "
             "JSON is not self-authenticating and does not replace manual QA, Owner closure "
@@ -1971,7 +1981,8 @@ def render_issue_comment(report: dict[str, Any]) -> str:
         "for downloaded artifacts.",
         "",
         "Mandatory provenance follow-up: use `--require-live-final-draft` to validate",
-        "the exact GitHub run, `gh attestation verify` for all eight files, draft Release bytes, and an",
+        "the exact GitHub run, `gh attestation verify` for all "
+        f"{len(_asset_specs(str(report['version'])))} files, draft Release bytes, and an",
         "independent APK signer check before this can satisfy Issue #36.",
         "",
         str(report["scope_note"]),
