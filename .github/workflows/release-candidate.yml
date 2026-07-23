@@ -75,7 +75,7 @@ jobs:
           .\.venv-build\Scripts\python.exe -m PyInstaller
           --clean --noconfirm --onefile --name clipvault
           --hide-console hide-early
-          --icon packaging/clipvault.ico
+          --icon "$PWD/packaging/clipvault.ico"
           --hidden-import pystray._win32
           --workpath build_pyi
           --specpath packaging

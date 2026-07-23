@@ -117,7 +117,7 @@ python -m venv .venv-build
 .\.venv-build\Scripts\python -m PyInstaller `
   --clean --noconfirm --onefile --name clipvault `
   --hide-console hide-early `
-  --icon packaging/clipvault.ico `
+  --icon "$PWD/packaging/clipvault.ico" `
   --hidden-import pystray._win32 `
   --workpath build_pyi `
   --specpath packaging `

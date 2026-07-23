@@ -141,7 +141,7 @@ function Build-ClipVaultRecipient {
     & $python -m PyInstaller `
       --clean --noconfirm --onefile --name clipvault `
       --hide-console hide-early `
-      --icon packaging/clipvault.ico `
+      --icon "$PWD/packaging/clipvault.ico" `
       --hidden-import pystray._win32 `
       --distpath "$output\dist" `
       --workpath "$output\build-pyi" `

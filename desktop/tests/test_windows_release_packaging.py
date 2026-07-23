@@ -98,6 +98,8 @@ def test_windows_workflows_build_from_locked_wheels_and_gate_frozen_tray():
         assert "python -m pytest -q" in workflow
         assert r".\.venv-build\Scripts\python.exe -m PyInstaller" in workflow
         assert "--hide-console hide-early" in workflow
+        assert '--icon "$PWD/packaging/clipvault.ico"' in workflow
+        assert "--icon packaging/clipvault.ico" not in workflow
         assert "--hidden-import pystray._win32" in workflow
         assert "--self-test-tray" in workflow
         assert '"tray self-test ok"' in workflow
@@ -175,6 +177,7 @@ def test_readme_uses_supported_locked_windows_build_instructions():
     assert "packaging/windows-release-requirements.txt" in readme
     assert "--require-hashes --only-binary=:all:" in readme
     assert "--hidden-import pystray._win32" in readme
+    assert '--icon "$PWD/packaging/clipvault.ico"' in readme
     assert "--self-test-tray" in readme
     assert "ClipVault-v1.6.0-LGPL-relink-kit.zip" in readme
     assert "pip install pyinstaller" not in readme.lower()
