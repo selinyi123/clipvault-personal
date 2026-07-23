@@ -16,7 +16,7 @@
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
-| Last updated | 2026-07-22 |
+| Last updated | 2026-07-23 |
 
 ## Current development note - 2026-07-23 / v1.6 clipboard privacy probe markers
 
