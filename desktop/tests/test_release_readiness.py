@@ -162,7 +162,7 @@ def _base_responses(*, sha="a" * 40, environments=None, issue_body="- [ ] missin
         ]))
         responses[_variable_list_command()] = _success(_json([{
             "name": release_readiness.REQUIRED_RELEASE_ENV_VARIABLE,
-            "value": "ab" * 32,
+            "value": release_readiness.APPROVED_ANDROID_RELEASE_CERT_SHA256,
             "updatedAt": "2026-07-04T00:00:00Z",
         }]))
     return responses
@@ -302,8 +302,33 @@ def test_release_environment_owner_certificate_variable_can_pass_without_echoing
         "release environment Owner certificate"
     ]
     assert gate["status"] == "pass"
-    assert "ab" * 32 not in gate["detail"]
+    assert release_readiness.APPROVED_ANDROID_RELEASE_CERT_SHA256 not in gate["detail"]
     assert gate["metadata"]["updated_at"] == "2026-07-04T00:00:00Z"
+
+
+def test_release_environment_owner_certificate_variable_rejects_other_canonical_fingerprint():
+    other_fingerprint = "ab" * 32
+    responses = _base_responses(environments=[{"name": "release"}])
+    responses[_variable_list_command()] = _success(_json([{
+        "name": release_readiness.REQUIRED_RELEASE_ENV_VARIABLE,
+        "value": other_fingerprint,
+        "updatedAt": "2026-07-04T00:00:00Z",
+    }]))
+    fake = FakeGh(responses)
+
+    report = release_readiness.build_report(
+        runner=fake,
+        repo="owner/repo",
+        version="v1.6.0",
+        branch="main",
+    )
+
+    gate = {gate["name"]: gate for gate in report["gates"]}[
+        "release environment Owner certificate"
+    ]
+    assert gate["status"] == "blocked"
+    assert "does not match the approved v1.6.0 trust anchor" in gate["detail"]
+    assert other_fingerprint not in gate["detail"]
 
 
 def test_release_environment_owner_certificate_variable_command_failure_blocks():

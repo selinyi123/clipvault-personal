@@ -15,10 +15,25 @@ from clipvault import __version__
 from clipvault.instance_lock import INSTANCE_MUTEX_NAME, InstanceLock
 
 _ROOT = Path(__file__).resolve().parents[2]
+_FINAL_ANDROID_CERT_SHA256 = (
+    "ef93502c8e5e68f1d0c8b46c36c521b84a09b11be8bc924030b5ada16d761757"
+)
+_SUPERSEDED_ANDROID_CERT_SHA256 = (
+    "86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"
+)
 
 
 def _read(rel: str) -> str:
     return (_ROOT / rel).read_text(encoding="utf-8")
+
+
+def _parenthesized_python_string_constant(rel: str, name: str) -> str:
+    match = re.search(
+        rf'(?m)^{re.escape(name)}\s*=\s*\(\s*"([0-9a-f]{{64}})"\s*\)',
+        _read(rel),
+    )
+    assert match, f"{name} not found in {rel}"
+    return match.group(1)
 
 
 def test_desktop_pyproject_matches_runtime_version():
@@ -283,7 +298,8 @@ def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
     assert "ANDROID_RELEASE_CERT_SHA256 must be exactly 64 lowercase hex characters" in workflow
     assert "ANDROID_RELEASE_CERT_SHA256 does not match the approved v1.6.0 signing-reset certificate" in workflow
     assert "898f21c2b59a4a4729fd386d91a86711b81ea567d5d85bf391a2e0fff2f1f9f1" in workflow
-    assert "86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c" in workflow
+    assert _FINAL_ANDROID_CERT_SHA256 in workflow
+    assert _SUPERSEDED_ANDROID_CERT_SHA256 not in workflow
     assert "apksigner" in workflow
     assert "verify --verbose -Werr --print-certs" in workflow
     assert workflow.count("--expected-android-cert-sha256") == 2
@@ -317,6 +333,32 @@ def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
     assert r"^v[0-9]+\.[0-9]+\.[0-9]+$" in workflow
     assert "needs: validate-release-input" in workflow
     assert "needs.validate-release-input.outputs.version" in workflow
+
+
+def test_final_android_signer_trust_anchor_is_aligned_across_release_gates():
+    owner_pack_anchor = _parenthesized_python_string_constant(
+        "tools/prepare_v1_6_release_owner_pack.py",
+        "NEW_ANDROID_CERT_SHA256",
+    )
+    readiness_anchor = _parenthesized_python_string_constant(
+        "tools/release_readiness.py",
+        "APPROVED_ANDROID_RELEASE_CERT_SHA256",
+    )
+    workflow = _read(".github/workflows/release.yml")
+    runbook = _read("docs/RELEASE_RUNBOOK_V1_6_0.md")
+    signing_reset = _read("docs/ANDROID_SIGNING_RESET_V1_6_0.md")
+
+    assert owner_pack_anchor == readiness_anchor == _FINAL_ANDROID_CERT_SHA256
+    assert (
+        workflow.count(
+            f'expected_android_release_cert_sha256="{_FINAL_ANDROID_CERT_SHA256}"'
+        )
+        == 2
+    )
+    assert _FINAL_ANDROID_CERT_SHA256 in runbook
+    assert _FINAL_ANDROID_CERT_SHA256 in signing_reset
+    assert _SUPERSEDED_ANDROID_CERT_SHA256 not in workflow
+    assert _SUPERSEDED_ANDROID_CERT_SHA256 not in runbook
 
 
 def test_signed_release_keeps_gradle_passwords_out_of_process_arguments():
@@ -697,7 +739,8 @@ def test_draft_release_notes_disclose_signing_reset_and_dynamic_new_certificate(
     assert "New certificate SHA-256: ${ANDROID_RELEASE_CERT_SHA256}" in draft
     assert "There is no cryptographic signing continuity" in draft
     assert "Draft Release certificate does not match the approved v1.6.0 signing-reset certificate" in draft
-    assert "86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c" in draft
+    assert _FINAL_ANDROID_CERT_SHA256 in draft
+    assert _SUPERSEDED_ANDROID_CERT_SHA256 not in draft
 
 
 def _pull_request_paths(workflow_text: str) -> set[str]:

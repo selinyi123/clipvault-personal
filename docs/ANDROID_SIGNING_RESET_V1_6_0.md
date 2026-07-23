@@ -40,12 +40,21 @@ longer available to the Owner. Consequently:
 Owner approval permits this reset but does not by itself satisfy signed-artifact
 verification, physical-device QA, publication approval, or Issue #36 closure.
 
-The replacement long-lived release certificate was generated on 2026-07-22
-and is the only signer approved for the v1.6.0 Android release:
+An initial replacement candidate was generated on 2026-07-22 with certificate
+SHA-256
+`86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c`.
+It was configured as the GitHub `release` environment's public trust-anchor
+variable on 2026-07-22, but no Release artifact build ran and it was never used
+for a published v1.6.0 release. The Owner superseded it before publication after
+the required independent backup verification could not be completed.
+
+The final replacement long-lived release certificate was generated and
+independently recovery-tested on 2026-07-23. It is the only signer approved for
+the v1.6.0 Android release:
 
 ```text
 certificate subject: CN=ClipVault Personal, OU=Release, O=Personal, L=NA, ST=NA, C=NA
-certificate SHA-256: 86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c
+certificate SHA-256: ef93502c8e5e68f1d0c8b46c36c521b84a09b11be8bc924030b5ada16d761757
 ```
 
 The release workflow and Owner publication gate must reject any other new
@@ -320,7 +329,7 @@ accept their permanent loss; otherwise stop. Uninstall v1.5.10, install v1.6.0
 fresh, pair again, pull the prepared reseed, and re-enable the Panel IME and
 Quick Settings Tile.
 Old certificate SHA-256: 898f21c2b59a4a4729fd386d91a86711b81ea567d5d85bf391a2e0fff2f1f9f1
-New certificate SHA-256: 86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c
+New certificate SHA-256: ef93502c8e5e68f1d0c8b46c36c521b84a09b11be8bc924030b5ada16d761757
 There is no cryptographic signing continuity between these certificates.
 ```
 

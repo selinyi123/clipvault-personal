@@ -324,8 +324,12 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "$freshEvidence.artifact_binding_sha256 -cne $ownerApprovedBinding" in guide
     assert guide.count(
         '$expectedAndroidCertSha256 = '
-        '"86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"'
+        f'"{owner_pack.NEW_ANDROID_CERT_SHA256}"'
     ) == 2
+    assert (
+        "86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"
+        not in guide
+    )
     assert guide.count(
         "$env:ANDROID_RELEASE_CERT_SHA256 -cne $expectedAndroidCertSha256"
     ) == 2
@@ -500,7 +504,7 @@ def test_generated_signing_reset_body_validator_runs_fail_closed_on_windows_powe
     start = guide.index("function Assert-SigningResetReleaseBody")
     end = guide.index("$liveDraft =", start)
     validator = guide[start:end].strip()
-    new_cert = "86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"
+    new_cert = owner_pack.NEW_ANDROID_CERT_SHA256
     old_cert = "898f21c2b59a4a4729fd386d91a86711b81ea567d5d85bf391a2e0fff2f1f9f1"
     valid_body = "\n".join([
         "Android signing reset - this is not an in-place update from v1.5.10.",

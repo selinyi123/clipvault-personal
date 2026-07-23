@@ -175,7 +175,7 @@ jobs:
             echo "::error::ANDROID_RELEASE_CERT_SHA256 must be exactly 64 lowercase hex characters"
             exit 1
           fi
-          expected_android_release_cert_sha256="86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"
+          expected_android_release_cert_sha256="ef93502c8e5e68f1d0c8b46c36c521b84a09b11be8bc924030b5ada16d761757"
           if [[ "${ANDROID_RELEASE_CERT_SHA256}" != "${expected_android_release_cert_sha256}" ]]; then
             echo "::error::ANDROID_RELEASE_CERT_SHA256 does not match the approved v1.6.0 signing-reset certificate"
             exit 1
@@ -346,7 +346,7 @@ jobs:
             done < <(find "${dir}" -maxdepth 1 -type f -print0)
           done
           old_android_cert_sha256="898f21c2b59a4a4729fd386d91a86711b81ea567d5d85bf391a2e0fff2f1f9f1"
-          expected_android_release_cert_sha256="86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"
+          expected_android_release_cert_sha256="ef93502c8e5e68f1d0c8b46c36c521b84a09b11be8bc924030b5ada16d761757"
           if [[ ! "${ANDROID_RELEASE_CERT_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
             echo "::error::ANDROID_RELEASE_CERT_SHA256 must be exactly 64 lowercase hex characters"
             exit 1

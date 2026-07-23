@@ -28,7 +28,7 @@ OLD_ANDROID_CERT_SHA256 = (
     "898f21c2b59a4a4729fd386d91a86711b81ea567d5d85bf391a2e0fff2f1f9f1"
 )
 NEW_ANDROID_CERT_SHA256 = (
-    "86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"
+    "ef93502c8e5e68f1d0c8b46c36c521b84a09b11be8bc924030b5ada16d761757"
 )
 SIGNING_RESET_RELEASE_BODY = f"""# ClipVault Personal {VERSION}
 
@@ -574,7 +574,7 @@ Get-ChildItem $releaseRoot -File | Sort-Object Name | ForEach-Object {{
   "{{0}}  {{1}}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(), $_.Name
 }} | Set-Content -Encoding ascii $digestReport
 
-$expectedAndroidCertSha256 = "86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"
+$expectedAndroidCertSha256 = "{NEW_ANDROID_CERT_SHA256}"
 if ($env:ANDROID_RELEASE_CERT_SHA256 -cne $expectedAndroidCertSha256) {{
   throw "ANDROID_RELEASE_CERT_SHA256 does not match the frozen v1.6.0 Owner trust anchor"
 }}
@@ -1114,7 +1114,7 @@ if (@(Compare-Object @(Get-Content $digestReport) $prepublishDigests).Count -ne 
 # the freshly downloaded draft immediately before the irreversible publication
 # action so current main, run identity, draft metadata/API digests, attestations,
 # bytes, and the Owner signer trust anchor are all checked again.
-$expectedAndroidCertSha256 = "86bdcbca45f0e9bce4c7cfbb3bc52f85f34a482acff8220af11dc659a2ec567c"
+$expectedAndroidCertSha256 = "{NEW_ANDROID_CERT_SHA256}"
 if ($env:ANDROID_RELEASE_CERT_SHA256 -cne $expectedAndroidCertSha256) {{
   throw "ANDROID_RELEASE_CERT_SHA256 does not match the frozen v1.6.0 Owner trust anchor"
 }}

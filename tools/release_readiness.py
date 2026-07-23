@@ -9,6 +9,7 @@ the `gh` CLI and reports which release-gate evidence is present or missing.
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import re
 import subprocess
@@ -27,6 +28,9 @@ REQUIRED_RELEASE_ENV_SECRETS = {
     "ANDROID_RELEASE_KEY_PASSWORD",
 }
 REQUIRED_RELEASE_ENV_VARIABLE = "ANDROID_RELEASE_CERT_SHA256"
+APPROVED_ANDROID_RELEASE_CERT_SHA256 = (
+    "ef93502c8e5e68f1d0c8b46c36c521b84a09b11be8bc924030b5ada16d761757"
+)
 ANDROID_CERT_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 GIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
 CHECKLIST_ITEM_RE = re.compile(r"(?m)^\s*[-*]\s+\[(?P<mark>[ xX])\]\s+(?P<text>.+?)\s*$")
@@ -445,9 +449,16 @@ def check_release_environment_signer_variable(
             next_step="Owner must correct the public certificate trust anchor before any signed release run.",
             metadata={"updated_at": str(rows[0].get("updatedAt") or "")},
         )
+    if not hmac.compare_digest(value, APPROVED_ANDROID_RELEASE_CERT_SHA256):
+        return _blocked(
+            gate_name,
+            f"{REQUIRED_RELEASE_ENV_VARIABLE} does not match the approved v1.6.0 trust anchor.",
+            next_step="Owner must update the public certificate trust anchor before any signed release run.",
+            metadata={"updated_at": str(rows[0].get("updatedAt") or "")},
+        )
     return _pass(
         gate_name,
-        "The Owner certificate trust-anchor variable is present and canonically formatted; its value is not printed.",
+        "The Owner certificate trust-anchor variable matches the approved v1.6.0 signer; its value is not printed.",
         metadata={"updated_at": str(rows[0].get("updatedAt") or "")},
     )
 
