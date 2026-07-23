@@ -19,9 +19,11 @@ from __future__ import annotations
 import argparse
 import ctypes
 import platform
+import secrets
 import struct
 import sys
 from ctypes import wintypes
+from datetime import datetime, timezone
 
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
@@ -38,6 +40,29 @@ PROBES = {
     "history-off": (CAN_INCLUDE_HISTORY_FORMAT, "dword-zero"),
     "cloud-off": (CAN_UPLOAD_CLOUD_FORMAT, "dword-zero"),
 }
+
+
+def _default_probe_text(
+    case: str,
+    *,
+    now: datetime | None = None,
+    nonce: str | None = None,
+) -> str:
+    """Return a unique marker that Secret Guard will keep in the public list.
+
+    Each whitespace-delimited token stays below the entropy heuristic's minimum
+    token length.  The timestamp also prevents a repeated manual run from being
+    mistaken for the current capture because content-hash deduplication reused
+    a fixed marker.
+    """
+    if case not in PROBES:
+        raise ValueError(f"unknown probe case: {case}")
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("probe timestamp must include a timezone")
+    timestamp = current.astimezone(timezone.utc).strftime("%Y%m%d %H%M%S %f")
+    run_nonce = nonce or secrets.token_hex(4)
+    return f"ClipVault QA {timestamp} {run_nonce} {case.replace('-', ' ')}"
 
 
 def _require_windows() -> None:
@@ -156,7 +181,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    text = args.text or f"CLIPVAULT_PRIVACY_PROBE_{args.case.upper().replace('-', '_')}"
+    text = args.text or _default_probe_text(args.case)
     write_probe_clipboard(args.case, text)
     expected = "should be captured" if args.case == "normal" else "should be ignored by ClipVault"
     print(f"Wrote {args.case!r} probe to the Windows clipboard; expected result: {expected}.")

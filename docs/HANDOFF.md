@@ -18,6 +18,24 @@
 | Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
 | Last updated | 2026-07-22 |
 
+## Current development note - 2026-07-23 / v1.6 clipboard privacy probe markers
+
+- The Windows manual clipboard privacy probe now generates a unique UTC marker
+  whose whitespace-delimited tokens stay below Secret Guard's entropy minimum.
+  A successful normal control therefore remains visible in the public list
+  instead of being silently quarantined, and repeated runs no longer reuse one
+  content hash.
+- The v1.6 manual checklist explicitly requires checking both the public list
+  and quarantine and waiting for the watcher between cases. It also routes the
+  run through one isolated QA database/log/Vault with backup and pairing
+  disabled, after the ordinary Desktop watcher has exited, so successful
+  controls do not pollute personal stores. The probe still overwrites the
+  current clipboard and does not observe or attest to ClipVault behavior by
+  itself.
+- This QA-helper correction changes no clipboard exclusion policy, Secret Guard
+  threshold, runtime dependency, version metadata, signed artifact, release
+  authority, or Issue #36 state.
+
 ## Current development note - 2026-07-22 / v1.6.0 Android signing reset
 
 - The Owner approved retaining `com.clipvault.app` with a new Android signing
