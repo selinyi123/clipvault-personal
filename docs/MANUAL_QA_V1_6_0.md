@@ -380,8 +380,27 @@ python tools/clipboard_privacy_probe.py normal
 ```
 
 The probe overwrites the current Windows clipboard with non-sensitive marker
-text. It is a manual QA helper only; running it does not by itself satisfy the
-Issue #36 gate unless the Owner also records the observed ClipVault result.
+text. Its default marker is case-specific, UTC-timestamped, and deliberately
+split into low-entropy tokens so Secret Guard leaves a successful control in
+the public list instead of quarantining it. The UTC timestamp plus a short
+random nonce also prevents an earlier content-hash duplicate from being
+mistaken for the current run.
+It is a manual QA helper only; running it does not by itself satisfy the Issue
+#36 gate unless the Owner also records the observed ClipVault result. For every
+case, check both the public list and quarantine; wait for at least two watcher
+polls before moving to the next probe.
+Run these cases with an isolated QA configuration/database. First exit the
+ordinary ClipVault Desktop instance and confirm that no `clipvault.exe` watcher
+or API listener remains. Before starting the final portable artifact, create a
+separate QA config whose absolute database, log, and Obsidian Vault paths all
+stay under one disposable QA directory, whose backup is disabled, whose server
+uses a separate loopback port, and whose fresh database has no paired device.
+Start only that artifact with its explicit `--config` path and confirm it is the
+sole clipboard watcher for the run. A successful normal control is a real
+public clip and would otherwise be eligible for persistence, sync, Obsidian,
+and private-repository backup. Stop the QA instance before restarting the
+ordinary instance; preserve only the redacted evidence, then discard the
+isolated QA data after the release decision.
 
 1. `ExcludeClipboardContentFromMonitorProcessing` prevents capture.
 2. `Clipboard Viewer Ignore` prevents capture.
