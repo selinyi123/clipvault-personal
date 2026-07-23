@@ -140,6 +140,7 @@ def _build_fixture(root: Path):
 
     (windows / "ClipVault-Desktop-v1.6.0-portable.exe").write_bytes(b"portable")
     (windows / "ClipVault-Setup-v1.6.0.exe").write_bytes(b"installer")
+    (windows / "ClipVault-v1.6.0-LGPL-relink-kit.zip").write_bytes(b"relink")
     manifest_builder.build_manifest(
         windows,
         kind="release",
@@ -167,6 +168,9 @@ def _build_fixture(root: Path):
         windows / "ClipVault-Desktop-v1.6.0-portable.exe": release
         / "ClipVault-Desktop-v1.6.0-portable.exe",
         windows / "ClipVault-Setup-v1.6.0.exe": release / "ClipVault-Setup-v1.6.0.exe",
+        windows
+        / "ClipVault-v1.6.0-LGPL-relink-kit.zip": release
+        / "ClipVault-v1.6.0-LGPL-relink-kit.zip",
         windows / "SHA256SUMS.txt": release / "windows-SHA256SUMS.txt",
         windows / "RELEASE_MANIFEST.json": release / "windows-RELEASE_MANIFEST.json",
         android / apk_name: release / apk_name,
@@ -475,7 +479,7 @@ def test_live_evidence_binds_exact_run_draft_bytes_attestations_and_signer(tmp_p
         "release_environment": "release",
         "release_environment_variable": "ANDROID_RELEASE_CERT_SHA256",
     }
-    assert len(report["artifacts"]) == 8
+    assert len(report["artifacts"]) == 9
     assert all(row["attestation_verified"] for row in report["artifacts"])
     assert all(row["matching_invocation_count"] == 1 for row in report["artifacts"])
     assert {
@@ -546,7 +550,7 @@ def test_live_evidence_uses_all_identity_flags_and_explicit_apksigner(tmp_path):
         for args, _ in runner.calls
         if args[0] == str(runner.gh) and args[1:3] == ["attestation", "verify"]
     ]
-    assert len(attestations) == 8
+    assert len(attestations) == 9
     for args in attestations:
         assert args[args.index("--repo") + 1] == "selinyi123/clipvault-personal"
         assert args[args.index("--hostname") + 1] == "github.com"
@@ -1032,7 +1036,7 @@ def test_binding_is_stable_across_validation_time(tmp_path):
     report_b["validated_at"] = "2099-01-01T00:00:00Z"
 
     assert report_a["artifact_binding_sha256"] == (
-        "fdd831b421a3bf89afb2251c44b0327f58513a6b03a963175eb0bd081a0d98dc"
+        "47fee9fc970ac007863c5aac0bd9bbbe96b9afcd7577f51a98e3cecb9a93c383"
     )
     assert report_a["artifact_binding_sha256"] == evidence._compute_binding_sha256(report_a)
     assert evidence._compute_binding_sha256(report_a) == evidence._compute_binding_sha256(report_b)
@@ -1076,7 +1080,7 @@ def test_publication_projection_recomputes_binding_and_rejects_tampered_snapshot
     assert projection["artifact_binding_sha256"] == report["artifact_binding_sha256"]
     assert projection["draft_release"]["id"] == report["draft_release"]["id"]
     assert projection["release_tag"] == report["release_tag"]
-    assert len(projection["artifacts"]) == 8
+    assert len(projection["artifacts"]) == 9
     serialized = json.dumps(projection)
     assert all(str(path) not in serialized for path in paths)
 
@@ -1130,7 +1134,7 @@ def test_published_evidence_recovers_owner_binding_and_revalidates_live_state(
         "ref_object_type": "commit",
         "ref_object_sha": COMMIT,
     }
-    assert len(report["artifacts"]) == 8
+    assert len(report["artifacts"]) == 9
     assert all(row["attestation_verified"] for row in report["artifacts"])
     assert report["publication_closure_binding_sha256"] == (
         evidence._compute_publication_closure_sha256(report)

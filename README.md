@@ -80,7 +80,7 @@ App 内填桌面 IP + 码完成配对。详见 [android/README.md](android/READM
 
 ```text
 clipvault/
-  desktop/      Python 桌面主节点（零运行时依赖：stdlib + ctypes）
+  desktop/      Python 桌面主节点（Windows 托盘运行时：Pillow + pystray）
     clipvault/  core·store·pipeline·watcher·obsidian·backup·sync·api(+webui)
     tests/      pytest 回归套件（具体数量以当前命令输出为准）
     packaging/  PyInstaller 入口
@@ -95,16 +95,42 @@ clipvault/
 ## 从源码构建
 
 ```powershell
-# 桌面测试
-cd desktop; python -m venv .venv; .\.venv\Scripts\python -m pip install pytest
-.\.venv\Scripts\python -m pytest -q                    # 以当前输出为准
+# 桌面测试（测试工具与冻结构建环境隔离，不进入发布二进制）
+cd desktop
+python -m venv .venv-test
+.\.venv-test\Scripts\python -m pip install "pytest>=8.0"
+.\.venv-test\Scripts\python -m pytest -q               # 以当前输出为准
 # Linux/CI 会根据平台能力自动跳过 Windows-only 用例；不要把旧测试数量写成发布证据。
 
-# 桌面打包（单文件 exe）
-.\.venv\Scripts\python -m pip install pyinstaller
-.\.venv\Scripts\python -m PyInstaller --onefile --name clipvault `
+# 桌面打包（固定 Pillow/pystray/PyInstaller 完整 wheel 闭包）
+New-Item -ItemType Directory -Force packaging/wheelhouse | Out-Null
+python -m pip download --require-hashes --only-binary=:all: `
+  --dest packaging/wheelhouse `
+  --requirement packaging/windows-release-requirements.txt
+python -m venv .venv-build
+.\.venv-build\Scripts\python -m pip install --no-index `
+  --find-links packaging/wheelhouse --require-hashes `
+  --requirement packaging/windows-release-requirements.txt
+.\packaging\Export-WheelNotices.ps1 `
+  -Wheelhouse packaging/wheelhouse `
+  -Destination packaging/runtime-notices
+.\.venv-build\Scripts\python -m PyInstaller `
+  --clean --noconfirm --onefile --name clipvault `
+  --hide-console hide-early `
+  --icon packaging/clipvault.ico `
+  --hidden-import pystray._win32 `
+  --workpath build_pyi `
+  --specpath packaging `
   --add-data "clipvault/store/migrations;clipvault/store/migrations" `
-  --add-data "clipvault/api/webui;clipvault/api/webui" packaging/run_clipvault.py
+  --add-data "clipvault/api/webui;clipvault/api/webui" `
+  --add-data "$PWD/../THIRD_PARTY_NOTICES.md;." `
+  --add-data "$PWD/../third_party;third_party" `
+  --add-data "$PWD/packaging/runtime-notices;third_party/licenses" `
+  packaging/run_clipvault.py
+.\dist\clipvault.exe --self-test-tray
+
+# v1.6.0 正式发布还必须由 release workflow 生成、校验并证明第九项
+# ClipVault-v1.6.0-LGPL-relink-kit.zip；详见 ADR-0012 与发布 runbook。
 
 # Android（需 Android SDK）
 cd android; .\gradlew :core:test            # VEC-1 跨平台一致性

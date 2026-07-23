@@ -110,6 +110,9 @@ def test_artifact_worksheet_is_scoped_and_never_claims_validation():
     assert worksheet["android"]["expected_assets"][0] == (
         "ClipVault-Android-v1.6.0-release-signed.apk"
     )
+    assert "ClipVault-v1.6.0-LGPL-relink-kit.zip" in (
+        worksheet["windows"]["expected_assets"]
+    )
     assert "BLOCKED_UNTIL_ANDROID_RELEASE_CERT_SHA256" in (
         worksheet["android"]["owner_certificate_identity"]
     )
@@ -166,7 +169,8 @@ def test_generated_guide_binds_same_draft_bytes_and_fail_closed_manual_qa():
     assert "release_artifact_binding" in guide
     assert "artifact_evidence_type <- evidence_type" in guide
     assert "artifacts` row whose role is `android_signed_apk`" in guide
-    assert "all eight per-file" in guide
+    assert "all nine per-file" in guide
+    assert "ClipVault-v1.6.0-LGPL-relink-kit.zip" in guide
     assert "-cnotmatch '^[0-9a-f]{64}$'" in guide
     assert "& $pythonPath -I -S $manualQaTool" in guide
     assert "manual QA validation failed or remains blocked" in guide

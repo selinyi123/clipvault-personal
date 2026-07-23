@@ -48,7 +48,54 @@ def main(argv: list[str] | None = None) -> int:
                         help="run the service without tray/browser (for autostart)")
     parser.add_argument("--no-open", action="store_true",
                         help="run with tray but do not auto-open the browser (login autostart)")
+    parser.add_argument(
+        "--self-test-tray",
+        action="store_true",
+        help="validate tray dependencies and icon construction, then exit",
+    )
+    parser.add_argument(
+        "--self-test-tray-relink-marker",
+        action="store_true",
+        help="validate the recipient-modified pystray marker and tray, then exit",
+    )
+    parser.add_argument(
+        "--third-party-notices",
+        action="store_true",
+        help="print bundled third-party notices, then exit",
+    )
     args = parser.parse_args(argv)
+
+    if args.self_test_tray or args.self_test_tray_relink_marker:
+        try:
+            if args.self_test_tray_relink_marker:
+                launcher.self_test_tray(require_relink_marker=True)
+            else:
+                launcher.self_test_tray()
+        except Exception as exc:
+            # Dependency or backend messages can contain private installation
+            # paths. The exception class is sufficient release-gate evidence.
+            print(
+                f"tray self-test failed err={exc.__class__.__name__}",
+                file=sys.stderr,
+            )
+            return 1
+        if args.self_test_tray_relink_marker:
+            print("tray relink self-test ok")
+        else:
+            print("tray self-test ok")
+        return 0
+
+    if args.third_party_notices:
+        try:
+            notices = launcher.read_third_party_notices()
+        except Exception as exc:
+            print(
+                f"third-party notices unavailable err={exc.__class__.__name__}",
+                file=sys.stderr,
+            )
+            return 1
+        print(notices, end="" if notices.endswith("\n") else "\n")
+        return 0
 
     if args.once:
         try:
@@ -121,7 +168,19 @@ def main(argv: list[str] | None = None) -> int:
                         runtime.request_stop,
                         runtime.stop_event,
                     ) is False:
-                        runtime.wait()  # no pystray in minimal dev environments
+                        if getattr(sys, "frozen", False):
+                            # A packaged GUI launch must never silently degrade
+                            # into an invisible, indefinitely running service.
+                            runtime_error = "TrayUnavailable"
+                            log.error(
+                                "clipvault tray failed err=%s",
+                                runtime_error,
+                            )
+                            runtime.request_stop()
+                        else:
+                            # Preserve the historical source/development
+                            # fallback when optional tray packages are absent.
+                            runtime.wait()
             except RuntimeStopRequested:
                 pass
             except Exception as exc:

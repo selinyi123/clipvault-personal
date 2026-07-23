@@ -10,6 +10,7 @@ Design goals for first contact:
 """
 
 import os
+import sys
 import threading
 import webbrowser
 from pathlib import Path
@@ -92,6 +93,25 @@ def open_panel(port: int) -> None:
         pass
 
 
+def third_party_notices_path() -> Path:
+    """Return the bundled notice in an executable or the repository-root copy."""
+    if getattr(sys, "frozen", False):
+        bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        return bundle_root / "THIRD_PARTY_NOTICES.md"
+    return Path(__file__).resolve().parents[2] / "THIRD_PARTY_NOTICES.md"
+
+
+def read_third_party_notices() -> str:
+    return third_party_notices_path().read_text(encoding="utf-8")
+
+
+def open_third_party_notices() -> None:
+    try:
+        os.startfile(str(third_party_notices_path()))
+    except Exception:
+        pass
+
+
 def make_icon_image(size: int = 64):
     """A simple 'CV' badge so the tray/app has a recognizable mark (Pillow)."""
     from PIL import Image, ImageDraw
@@ -108,17 +128,9 @@ def make_icon_image(size: int = 64):
     return img
 
 
-def run_tray(port: int, base_dir: Path, on_quit, stop_event=None) -> bool:
-    """Block on a system tray icon. Calls on_quit() when the user exits.
-    An optional runtime stop event also closes the icon after worker failure.
-    Returns False if the tray can't start (no pystray, or no GUI session) so the
-    caller can fall back to a plain headless run instead of crashing."""
-    if stop_event is not None and stop_event.is_set():
-        return True
-    try:
-        import pystray
-    except Exception:
-        return False
+def _make_tray_icon(port: int, base_dir: Path, on_quit):
+    """Import the real tray dependencies and construct, but do not run, an icon."""
+    import pystray
 
     def _open_panel(icon, item):
         open_panel(port)
@@ -136,10 +148,69 @@ def run_tray(port: int, base_dir: Path, on_quit, stop_event=None) -> bool:
     menu = pystray.Menu(
         pystray.MenuItem("打开面板", _open_panel, default=True),
         pystray.MenuItem("打开配置文件夹", _open_config),
+        pystray.MenuItem(
+            "第三方许可证",
+            lambda _icon, _item: open_third_party_notices(),
+        ),
         pystray.MenuItem("退出 ClipVault", _quit),
     )
+    return pystray.Icon(
+        "ClipVault",
+        make_icon_image(),
+        "ClipVault Personal",
+        menu,
+    )
+
+
+class PillowFeaturePolicyError(RuntimeError):
+    """Raised when a release-disallowed optional Pillow feature is enabled."""
+
+
+class TrayRelinkMarkerError(RuntimeError):
+    """Raised when the recipient relink exercise marker is absent or changed."""
+
+
+RELINK_EXERCISE_MARKER = "recipient-modified-pystray"
+
+
+def _enabled_disallowed_pillow_features() -> tuple[str, ...]:
+    from PIL import features
+
+    return tuple(
+        name
+        for name in ("libimagequant", "raqm")
+        if features.check_feature(name)
+    )
+
+
+def self_test_tray(*, require_relink_marker: bool = False) -> None:
+    """Validate packaged tray policy, imports, and construction without UI."""
+    enabled = _enabled_disallowed_pillow_features()
+    if enabled:
+        raise PillowFeaturePolicyError(
+            "release-disallowed optional Pillow features are enabled"
+        )
+    if require_relink_marker:
+        import pystray
+
+        if (
+            getattr(pystray, "CLIPVAULT_RELINK_EXERCISE_MARKER", None)
+            != RELINK_EXERCISE_MARKER
+        ):
+            raise TrayRelinkMarkerError(
+                "recipient pystray relink exercise marker is absent"
+            )
+    _make_tray_icon(0, Path("."), lambda: None)
+
+
+def run_tray(port: int, base_dir: Path, on_quit, stop_event=None) -> bool:
+    """Block on a system tray icon. Calls on_quit() when the user exits.
+    An optional runtime stop event also closes the icon after worker failure.
+    Returns False if the tray can't start (no pystray, or no GUI session)."""
+    if stop_event is not None and stop_event.is_set():
+        return True
     try:
-        icon = pystray.Icon("ClipVault", make_icon_image(), "ClipVault Personal", menu)
+        icon = _make_tray_icon(port, base_dir, on_quit)
         if stop_event is not None:
             def _stop_on_runtime_exit():
                 stop_event.wait()
@@ -152,5 +223,5 @@ def run_tray(port: int, base_dir: Path, on_quit, stop_event=None) -> bool:
             ).start()
         icon.run()
     except Exception:
-        return False  # e.g. no GUI session — caller falls back to a headless run
+        return False
     return True

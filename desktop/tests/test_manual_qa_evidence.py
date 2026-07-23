@@ -155,6 +155,11 @@ def test_final_draft_fixture_has_fixed_inventory_binding_and_projection():
             "ClipVault-Setup-v1.6.0.exe",
         ),
         (
+            "windows_lgpl_relink_kit",
+            "clipvault-windows-release-artifacts",
+            "ClipVault-v1.6.0-LGPL-relink-kit.zip",
+        ),
+        (
             "windows_checksums",
             "clipvault-windows-release-artifacts",
             "windows-SHA256SUMS.txt",
@@ -186,14 +191,14 @@ def test_final_draft_fixture_has_fixed_inventory_binding_and_projection():
         ),
     }
     assert artifact_report["artifact_binding_sha256"] == (
-        "49665182cc772001a65ce3cd5fa91ee2671aac082b0f78554a99ebbcc1738df8"
+        "1055fa600a019e18d3888d72c01e83df8037a9ca197af09f1849f1260258cbd1"
     )
     assert release_artifact_evidence.build_final_draft_manual_qa_binding_projection(
         artifact_report
     ) == {
         "artifact_evidence_type": "clipvault.issue36.final_draft_artifacts",
         "artifact_binding_sha256": (
-            "49665182cc772001a65ce3cd5fa91ee2671aac082b0f78554a99ebbcc1738df8"
+            "1055fa600a019e18d3888d72c01e83df8037a9ca197af09f1849f1260258cbd1"
         ),
         "target_commit": "a" * 40,
         "workflow_run": {

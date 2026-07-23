@@ -29,6 +29,7 @@ def _build_windows_release_fixture(path, *, version="1.6.0", commit="a" * 40):
     path.mkdir()
     (path / f"ClipVault-Desktop-v{version}-portable.exe").write_bytes(b"portable")
     (path / f"ClipVault-Setup-v{version}.exe").write_bytes(b"installer")
+    (path / f"ClipVault-v{version}-LGPL-relink-kit.zip").write_bytes(b"relink")
     release_candidate_manifest.build_manifest(
         path,
         kind="release",
@@ -80,6 +81,7 @@ def test_release_artifact_evidence_validates_downloaded_windows_and_android_arti
     assert report["windows_artifacts"] == [
         "ClipVault-Desktop-v1.6.0-portable.exe",
         "ClipVault-Setup-v1.6.0.exe",
+        "ClipVault-v1.6.0-LGPL-relink-kit.zip",
     ]
     assert report["android_artifacts"] == [
         "ANDROID_APKSIGNER_VERIFY.txt",

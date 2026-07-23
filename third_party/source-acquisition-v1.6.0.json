@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "release": "v1.6.0",
+  "generated_artifacts_are_tracked": false,
+  "application_source": {
+    "method": "git archive from the exact final release target commit",
+    "archive_name_template": "clipvault-personal-v1.6.0-<target-commit>.zip",
+    "sha256": "computed and bound by the final release workflow"
+  },
+  "corresponding_sources": [
+    {
+      "name": "pystray",
+      "version": "0.19.5",
+      "license": "LGPL-3.0-or-later",
+      "source_url": "https://github.com/moses-palmer/pystray/archive/1907f8681d6d421517c63d94f425f9cdd74d0034.zip",
+      "commit": "1907f8681d6d421517c63d94f425f9cdd74d0034",
+      "tag": "v0.19.5",
+      "archive_size": 68171,
+      "sha256": "4751562ba90301e054c87606079c1599301d84e7d1e4074b12af4f54a80a4768",
+      "reason": "PyPI provides no sdist; the wheel is not the complete upstream build source"
+    },
+    {
+      "name": "Pillow",
+      "version": "12.3.0",
+      "license": "MIT-CMU with separately licensed native components",
+      "filename": "pillow-12.3.0.tar.gz",
+      "source_url": "https://files.pythonhosted.org/packages/1c/3d/bb7fca845737cf9d7dbde16ed1843984665ff2e0a518f5db43e77ec540b9/pillow-12.3.0.tar.gz",
+      "sha256": "3b8182a766685eaa002637e28b4ec8d6b18819a0c71f579bf0dbaa5830297cce",
+      "status": "required when a custom minimal Pillow wheel is built"
+    },
+    {
+      "name": "PyInstaller",
+      "version": "6.21.0",
+      "license": "GPL-2.0-or-later WITH Bootloader-exception",
+      "filename": "pyinstaller-6.21.0.tar.gz",
+      "source_url": "https://files.pythonhosted.org/packages/d5/4d/ec706c3fcf39e26888c35b39615ff4d5865d184069666c47492cff1fbe50/pyinstaller-6.21.0.tar.gz",
+      "sha256": "bb9fab705983e393a2d1cac77d6972513057ad800215fd861dc15ff5272e98fd"
+    },
+    {
+      "name": "pyinstaller-hooks-contrib",
+      "version": "2026.6",
+      "license": "GPL-2.0-or-later AND Apache-2.0 by file role",
+      "filename": "pyinstaller_hooks_contrib-2026.6.tar.gz",
+      "source_url": "https://files.pythonhosted.org/packages/94/5b/c9fe0db5e83ee1c39b2258fa21d23b15e1a60786b6c5990ee5074ead8bb6/pyinstaller_hooks_contrib-2026.6.tar.gz",
+      "sha256": "bef5002c32f4f50bd55b005da12cff64eca8783e7eaf86a06a62410164bab725"
+    }
+  ],
+  "windows_wheel_lock": [
+    {
+      "filename": "pystray-0.19.5-py2.py3-none-any.whl",
+      "sha256": "a0c2229d02cf87207297c22d86ffc57c86c227517b038c0d3c59df79295ac617"
+    },
+    {
+      "filename": "pillow-12.3.0-cp311-cp311-win_amd64.whl",
+      "sha256": "8e95e1385e4998ae9694eeaa4730ba5457ff61185b3a55e2e7bea0880aef452a",
+      "status": "accepted_for_windows_release",
+      "required_frozen_self_test": {
+        "libimagequant": false,
+        "raqm": false
+      }
+    },
+    {
+      "filename": "six-1.17.0-py2.py3-none-any.whl",
+      "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"
+    },
+    {
+      "filename": "pyinstaller-6.21.0-py3-none-win_amd64.whl",
+      "sha256": "7fae06c494ce0ebfe6bd3055c0e409def884f63af2e3705d06bd431ad9237fc7"
+    },
+    {
+      "filename": "pyinstaller_hooks_contrib-2026.6-py3-none-any.whl",
+      "sha256": "fd13b8ac126b35361175edacd41a0d97080b75dd5f4b594ecefefff969509dd3"
+    },
+    {
+      "filename": "altgraph-0.17.5-py2.py3-none-any.whl",
+      "sha256": "f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597"
+    },
+    {
+      "filename": "packaging-26.2-py3-none-any.whl",
+      "sha256": "5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e"
+    },
+    {
+      "filename": "pefile-2024.8.26-py3-none-any.whl",
+      "sha256": "76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f"
+    },
+    {
+      "filename": "pywin32_ctypes-0.2.3-py3-none-any.whl",
+      "sha256": "8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8"
+    },
+    {
+      "filename": "setuptools-83.0.0-py3-none-any.whl",
+      "sha256": "29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3"
+    }
+  ],
+  "release_rule": "The generated relink kit must contain the actual exact wheelhouse and its computed SHA256SUMS; the exact Pillow wheel must preserve its LICENSE and SBOM and pass the frozen libimagequant=False and raqm=False feature self-test."
+}

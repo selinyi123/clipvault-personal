@@ -3,10 +3,17 @@ name = "clipvault-desktop"
 version = "1.6.0"
 description = "ClipVault Personal desktop node"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "Pillow==12.3.0",
+  "pystray==0.19.5",
+]
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
+release = [
+  "PyInstaller==6.21.0",
+  "pyinstaller-hooks-contrib==2026.6",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

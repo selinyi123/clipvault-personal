@@ -52,6 +52,103 @@ def test_help_renders_literal_localappdata_placeholder(capsys):
     assert "%LOCALAPPDATA%/ClipVault/config.toml" in output
 
 
+def test_tray_self_test_exits_without_loading_config(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(
+        clipvault_main.launcher,
+        "self_test_tray",
+        lambda: calls.append("self-test"),
+    )
+    monkeypatch.setattr(
+        clipvault_main.launcher,
+        "ensure_config",
+        lambda _path: pytest.fail("self-test must not touch user config"),
+    )
+
+    assert clipvault_main.main(["--self-test-tray"]) == 0
+    assert calls == ["self-test"]
+    assert capsys.readouterr().out == "tray self-test ok\n"
+
+
+def test_tray_self_test_reports_only_safe_error_class(monkeypatch, capsys):
+    def fail():
+        raise OSError(r"private path C:\Users\owner\Documents")
+
+    monkeypatch.setattr(clipvault_main.launcher, "self_test_tray", fail)
+
+    assert clipvault_main.main(["--self-test-tray"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "tray self-test failed err=OSError\n"
+    assert "private path" not in captured.err
+    assert "Documents" not in captured.err
+
+
+def test_tray_relink_self_test_verifies_frozen_module_marker(
+    monkeypatch,
+    capsys,
+):
+    calls = []
+
+    def self_test_tray(*, require_relink_marker=False):
+        calls.append(require_relink_marker)
+
+    monkeypatch.setattr(
+        clipvault_main.launcher,
+        "self_test_tray",
+        self_test_tray,
+    )
+    monkeypatch.setattr(
+        clipvault_main.launcher,
+        "ensure_config",
+        lambda _path: pytest.fail("relink self-test must not touch user config"),
+    )
+
+    assert clipvault_main.main(["--self-test-tray-relink-marker"]) == 0
+    assert calls == [True]
+    assert capsys.readouterr().out == "tray relink self-test ok\n"
+
+
+def test_third_party_notices_prints_without_loading_config(monkeypatch, capsys):
+    monkeypatch.setattr(
+        clipvault_main.launcher,
+        "read_third_party_notices",
+        lambda: "approved notices\n",
+    )
+    monkeypatch.setattr(
+        clipvault_main.launcher,
+        "ensure_config",
+        lambda _path: pytest.fail("notices must not touch user config"),
+    )
+
+    assert clipvault_main.main(["--third-party-notices"]) == 0
+    assert capsys.readouterr().out == "approved notices\n"
+
+
+def test_missing_third_party_notices_reports_only_safe_error_class(
+    monkeypatch,
+    capsys,
+):
+    def fail():
+        raise FileNotFoundError(r"C:\Users\owner\private\THIRD_PARTY_NOTICES.md")
+
+    monkeypatch.setattr(
+        clipvault_main.launcher,
+        "read_third_party_notices",
+        fail,
+    )
+
+    assert clipvault_main.main(["--third-party-notices"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert (
+        captured.err
+        == "third-party notices unavailable err=FileNotFoundError\n"
+    )
+    assert "owner" not in captured.err
+    assert "private" not in captured.err
+
+
 def test_once_writes_current_clip_even_with_older_pending_work(tmp_path, monkeypatch):
     cfg = Config(
         device_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -307,6 +404,49 @@ def test_no_open_tray_fallback_waits_and_closes(tmp_path, monkeypatch):
 
     assert clipvault_main.main(["--no-open"]) == 0
     assert calls == ["start", "tray", "wait", "close"]
+
+
+def test_packaged_tray_failure_stops_runtime_and_returns_nonzero(
+    tmp_path,
+    monkeypatch,
+):
+    cfg = _service_cfg(tmp_path)
+    calls = []
+
+    class Runtime:
+        def __init__(self, _cfg):
+            self.stop_event = threading.Event()
+
+        def start(self):
+            calls.append("start")
+
+        def wait(self):
+            pytest.fail("packaged tray failure must not wait invisibly")
+
+        def request_stop(self):
+            calls.append("stop")
+            self.stop_event.set()
+
+        def close(self):
+            calls.append("close")
+            self.stop_event.set()
+            return []
+
+        def terminal_errors(self):
+            return {}
+
+    _prepare_service_main(monkeypatch, tmp_path, cfg)
+    monkeypatch.setattr(clipvault_main, "ClipVaultRuntime", Runtime)
+    monkeypatch.setattr(
+        clipvault_main.launcher,
+        "run_tray",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(clipvault_main.launcher, "open_panel", lambda _port: None)
+    monkeypatch.setattr(clipvault_main.sys, "frozen", True, raising=False)
+
+    assert clipvault_main.main(["--no-open"]) == 1
+    assert calls == ["start", "stop", "close"]
 
 
 def test_second_instance_opens_existing_panel(tmp_path, monkeypatch):
