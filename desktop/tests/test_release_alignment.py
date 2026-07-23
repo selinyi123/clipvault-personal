@@ -357,6 +357,8 @@ def test_final_android_signer_trust_anchor_is_aligned_across_release_gates():
     )
     assert _FINAL_ANDROID_CERT_SHA256 in runbook
     assert _FINAL_ANDROID_CERT_SHA256 in signing_reset
+    assert "gh variable set ANDROID_RELEASE_CERT_SHA256" in runbook
+    assert "--env release" in runbook
     assert _SUPERSEDED_ANDROID_CERT_SHA256 not in workflow
     assert _SUPERSEDED_ANDROID_CERT_SHA256 not in runbook
 

@@ -176,6 +176,17 @@ gh secret set ANDROID_RELEASE_KEY_PASSWORD `
 if ($LASTEXITCODE -ne 0) { throw "Failed to set the key password secret" }
 ```
 
+Set the public trust-anchor variable only after independently confirming the
+fingerprint from both retained recovery copies:
+
+```powershell
+$approvedAndroidCertSha256 = "ef93502c8e5e68f1d0c8b46c36c521b84a09b11be8bc924030b5ada16d761757"
+$approvedAndroidCertSha256 | gh variable set ANDROID_RELEASE_CERT_SHA256 `
+  --repo selinyi123/clipvault-personal `
+  --env release
+if ($LASTEXITCODE -ne 0) { throw "Failed to set the release certificate trust anchor" }
+```
+
 ## 4. Run the signed no-draft preflight
 
 Do not dispatch this workflow until the new signer fingerprint has been
