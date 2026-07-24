@@ -2054,12 +2054,13 @@ def test_unpair_unknown_device_returns_404(api):
     assert api.unpair("not-a-device")[0] == 404
 
 
-def test_h2_socket_auth_end_to_end(cfg, tmp_path):
+def test_h2_socket_auth_end_to_end(cfg):
     """Real socket: unauthorized sync push is 401; management route from
     loopback still works on a fresh connection after the rejected request."""
     import clipvault.store.db as db
 
-    cfg.db_path = str(tmp_path / "socket-auth.db")
+    # File-backed startup and migration locking have dedicated tests; keep this
+    # real-socket auth gate independent of Windows filesystem/AV timing.
     stop = threading.Event()
     ready = queue.Queue(maxsize=1)
     errors = queue.Queue()
@@ -2071,6 +2072,8 @@ def test_h2_socket_auth_end_to_end(cfg, tmp_path):
         try:
             conn = db.connect(cfg.db_path)
             api_server._prepare_database(conn)
+            if stop.is_set():
+                return
             socket_api = Api(ClipVaultService(conn, cfg))
             httpd = api_server.build_server(
                 socket_api,
@@ -2151,7 +2154,11 @@ def test_h2_socket_auth_end_to_end(cfg, tmp_path):
         assert status == 401
         assert response_headers["Connection"] == "close"
         assert json.loads(payload)["error"]["code"] == "unauthorized"
-        assert request("GET", "/api/health")[0] == 200
+        health_status, _, health_payload = request("GET", "/api/health")
+        health = json.loads(health_payload)
+        assert health_status == 200
+        assert health["status"] == "ok"
+        assert health["db_ok"] is True
     finally:
         stop.set()
         server_thread.join(2)
