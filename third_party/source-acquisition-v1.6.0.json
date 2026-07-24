@@ -7,6 +7,24 @@
     "archive_name_template": "clipvault-personal-v1.6.0-<target-commit>.zip",
     "sha256": "computed and bound by the final release workflow"
   },
+  "windows_runtime_interpreter": {
+    "name": "CPython",
+    "version": "3.11.9",
+    "implementation": "cpython",
+    "architecture": "win_amd64",
+    "package_type": "official NuGet portable package",
+    "package_role": "byte-locked clean-recipient and relinking interpreter distribution; not asserted byte-identical to the actions/setup-python toolcache directory used by GitHub-hosted release jobs",
+    "release_workflow_provisioning": "actions/setup-python@v6 with exact Python 3.11.9 and x64 architecture, plus final onefile runtime inventory gates",
+    "filename": "python.3.11.9.nupkg",
+    "package_url": "https://api.nuget.org/v3-flatcontainer/python/3.11.9/python.3.11.9.nupkg",
+    "package_size": 17478009,
+    "sha256": "9283876d58c017e0e846f95b490da3bca0fc0a6ee1134b2870677cfb7eec3c67",
+    "license_path": "third_party/licenses/CPython-3.11.9-Windows-LICENSE.txt",
+    "license_source_path": "tools/LICENSE.txt",
+    "license_size": 36874,
+    "license_sha256": "e502c6b880ff58d614901495a9009c136539cd0b1e2a2abb8fc00b934c203419",
+    "license_scope": "Official Windows binary distribution bundle containing the PSF license, Windows build conditions, and incorporated-runtime notices; not a claim of an independent license audit of every ClipVault native dependency"
+  },
   "corresponding_sources": [
     {
       "name": "pystray",
@@ -92,5 +110,5 @@
       "sha256": "29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3"
     }
   ],
-  "release_rule": "The generated relink kit must contain the actual exact wheelhouse and its computed SHA256SUMS; the exact Pillow wheel must preserve its LICENSE and SBOM and pass the frozen libimagequant=False and raqm=False feature self-test."
+  "release_rule": "The generated relink kit must contain the actual exact wheelhouse and its computed SHA256SUMS; the exact Pillow wheel must preserve its LICENSE and SBOM and pass the frozen libimagequant=False and raqm=False feature self-test; the Windows build must use CPython 3.11.9 x64 and carry the exact hash-locked official Windows binary distribution license bundle."
 }

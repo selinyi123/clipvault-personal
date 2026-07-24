@@ -12,7 +12,7 @@ This directory is for release evidence templates and local Owner notes. It is no
 | Signed release artifacts | Release artifact workflow plus downloaded byte verification |
 | API 26/27 compatibility QA | Non-skipped targeted CursorWindow regression evidence on API 26 and API 27 devices or emulators |
 | API 26/27 outbox baseline QA | All `OutboxBaseSeqTest` cases pass without skips on API 26 and API 27, with distinct JUnit and APK evidence |
-| Android final APK device QA | Manual test evidence for the exact signed release APK on a physical Android device |
+| Android final APK device QA | Manual test evidence for the exact signed release APK on one declared physical device or official Android emulator; an emulator does not prove OEM/physical-hardware coverage |
 | IME privacy QA | Manual password/incognito/unknown-field privacy evidence |
 | Sync QA | Manual desktop <-> Android sync evidence |
 | Windows clipboard privacy QA | Manual Windows source-app/exclusion-format evidence |

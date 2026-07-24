@@ -2,13 +2,46 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+import shutil
+import subprocess
 import tomllib
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 DESKTOP = ROOT / "desktop"
 PRODUCTION_LOCK = DESKTOP / "packaging" / "windows-release-requirements.txt"
+CPYTHON_WINDOWS_LICENSE = (
+    ROOT / "third_party" / "licenses" / "CPython-3.11.9-Windows-LICENSE.txt"
+)
+CPYTHON_WINDOWS_LICENSE_SHA256 = (
+    "e502c6b880ff58d614901495a9009c136539cd0b1e2a2abb8fc00b934c203419"
+)
+CPYTHON_WINDOWS_RUNTIME_MEMBERS = (
+    "_bz2.pyd",
+    "_ctypes.pyd",
+    "_decimal.pyd",
+    "_elementtree.pyd",
+    "_hashlib.pyd",
+    "_lzma.pyd",
+    "_queue.pyd",
+    "_socket.pyd",
+    "_sqlite3.pyd",
+    "_ssl.pyd",
+    "_uuid.pyd",
+    "libcrypto-3.dll",
+    "libffi-8.dll",
+    "libssl-3.dll",
+    "pyexpat.pyd",
+    "python311.dll",
+    "select.pyd",
+    "sqlite3.dll",
+    r"third_party\licenses\CPython-3.11.9-Windows-LICENSE.txt",
+)
 
 
 def _read(relative: str) -> str:
@@ -84,12 +117,29 @@ def test_windows_runtime_and_build_dependencies_are_exactly_approved():
     }
 
 
+def test_exact_cpython_windows_binary_license_bundle_is_tracked():
+    payload = CPYTHON_WINDOWS_LICENSE.read_bytes()
+    text = payload.decode("utf-8")
+
+    assert len(payload) == 36_874
+    assert hashlib.sha256(payload).hexdigest() == CPYTHON_WINDOWS_LICENSE_SHA256
+    assert "PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2" in text
+    assert "Additional Conditions for this Windows binary build" in text
+    assert "Microsoft Distributable Code" in text
+    assert "bzip2/libbzip2 version 1.0.8" in text
+    assert "libffi - Copyright" in text
+    assert "Apache License" in text
+
+
 def test_windows_workflows_build_from_locked_wheels_and_gate_frozen_tray():
     for relative in (
         ".github/workflows/release.yml",
         ".github/workflows/release-candidate.yml",
     ):
         workflow = _read(relative)
+        assert 'python-version: "3.11.9"' in workflow
+        assert 'python-version: "3.11"\n' not in workflow
+        assert 'architecture: "x64"' in workflow
         assert workflow.count("pip download --require-hashes --only-binary=:all:") == 1
         assert "pip install --upgrade" not in workflow
         assert "--no-index --find-links packaging/wheelhouse --require-hashes" in workflow
@@ -112,8 +162,16 @@ def test_windows_workflows_build_from_locked_wheels_and_gate_frozen_tray():
         assert '$pillowFeatureReport[1] -cne "raqm=False"' in workflow
         assert "-PillowFeatureReport desktop/packaging/pillow-feature-report.txt" in workflow
         assert "pyi-archive_viewer.exe -r -l dist/clipvault.exe" in workflow
+        assert '$inventoryText = ($inventory -join "`n").Replace("\\\\", "\\")' in workflow
         assert 'foreach ($requiredModule in @("pystray._win32", "PIL.Image"))' in workflow
         assert '$requiredToken = "\'" + $requiredModule + "\'"' in workflow
+        assert "$requiredWindowsRuntimeMembers = @(" in workflow
+        for required_member in CPYTHON_WINDOWS_RUNTIME_MEMBERS:
+            assert f'"{required_member}"' in workflow
+        assert (
+            "Frozen onefile inventory is missing required CPython Windows runtime member"
+            in workflow
+        )
         assert 'foreach ($disallowedComponent in @("libimagequant", "raqm"))' in workflow
         assert "Frozen onefile inventory is missing required module" in workflow
         assert "Frozen onefile inventory contains disallowed component" in workflow
@@ -132,6 +190,7 @@ def test_windows_workflows_build_from_locked_wheels_and_gate_frozen_tray():
         pillow_persist = workflow.index(
             "Set-Content -LiteralPath packaging/pillow-feature-report.txt"
         )
+        cpython_runtime_gate = workflow.index("$requiredWindowsRuntimeMembers = @(")
         installer = workflow.index("Build installer")
         kit = workflow.index("Build-LgplRelinkKit.ps1")
         manifest = workflow.index("scripts/release_candidate_manifest.py", kit)
@@ -141,10 +200,36 @@ def test_windows_workflows_build_from_locked_wheels_and_gate_frozen_tray():
             < pillow_probe
             < pillow_validation
             < pillow_persist
+            < cpython_runtime_gate
             < installer
             < kit
             < manifest
         )
+
+
+def test_powershell_inventory_normalization_matches_real_pyi_path_repr():
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    script = r'''
+$inventoryText = "'third_party\\licenses\\CPython-3.11.9-Windows-LICENSE.txt'"
+$inventoryText = $inventoryText.Replace("\\", "\")
+$requiredToken = "'third_party\licenses\CPython-3.11.9-Windows-LICENSE.txt'"
+if (-not $inventoryText.Contains($requiredToken)) {
+    throw "Normalized PyInstaller inventory path did not match"
+}
+'''
+
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", "-"],
+        input=script,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_relink_kit_is_fail_closed_and_installer_carries_notices():
@@ -155,6 +240,18 @@ def test_relink_kit_is_fail_closed_and_installer_carries_notices():
     assert 'expectedOutputName = "ClipVault-v$Version-LGPL-relink-kit.zip"' in kit
     assert 'if ($Version -cne "1.6.0")' in kit
     assert "This relink kit contract supports only v1.6.0" in kit
+    assert "third_party/licenses/CPython-3.11.9-Windows-LICENSE.txt" in kit
+    assert CPYTHON_WINDOWS_LICENSE_SHA256 in kit
+    assert '$pythonVersion[0].Trim() -cne "3.11.9"' in kit
+    assert '$pythonVersion[1].Trim() -cne "AMD64"' in kit
+    assert '$pythonVersion[2].Trim() -cne "cpython"' in kit
+    assert (
+        kit.index("The CPython 3.11.9 Windows binary license bundle hash")
+        < kit.index("Invoke-WebRequest")
+    )
+    assert "$requiredWindowsRuntimeMembers = @(" in kit
+    for required_member in CPYTHON_WINDOWS_RUNTIME_MEMBERS:
+        assert f'"{required_member}"' in kit
     assert "Expected exactly 10 production wheels" in exporter
     assert "production_wheel_count = $expectedWheels.Count" in kit
     assert "4751562ba90301e054c87606079c1599301d84e7d1e4074b12af4f54a80a4768" in kit
@@ -173,6 +270,7 @@ def test_relink_kit_is_fail_closed_and_installer_carries_notices():
         "tray-self-test.txt",
         "pillow-feature-report.txt",
         "COPYING.LGPL",
+        "CPython-3.11.9-Windows-LICENSE.txt",
         "pystray-COPYING-GPL-3.0.txt",
         "pystray-COPYING-LGPL-3.0.txt",
         "pillow-12.3.0.cdx.json",
@@ -184,6 +282,7 @@ def test_relink_kit_is_fail_closed_and_installer_carries_notices():
     assert "pip_version = $pipVersion[0]" in kit
     assert "-m pip --version" not in kit
     assert "Frozen onefile inventory is empty" in kit
+    assert '$inventoryText = ($inventoryLines -join "`n").Replace("\\\\", "\\")' in kit
     assert 'foreach ($requiredModule in @("pystray._win32", "PIL.Image"))' in kit
     assert 'foreach ($disallowedComponent in @("libimagequant", "raqm"))' in kit
     assert '$pillowFeatureReportLines[0] -cne "libimagequant=False"' in kit
@@ -202,6 +301,8 @@ def test_relink_kit_is_fail_closed_and_installer_carries_notices():
         'frozen_tray_evidence = "inventory/tray-self-test.txt"'
         in kit
     )
+    assert 'path = "licenses/CPython-3.11.9-Windows-LICENSE.txt"' in kit
+    assert 'source = "official CPython 3.11.9 Windows NuGet tools/LICENSE.txt"' in kit
     assert "Relink kit ZIP inventory does not match the staged payload" in kit
     assert "Extracted relink kit inventory does not match the staged payload" in kit
     assert "Expand-Archive -LiteralPath $outputPath" in kit
@@ -209,11 +310,55 @@ def test_relink_kit_is_fail_closed_and_installer_carries_notices():
     assert 'DestDir: "{app}\\licenses"' in installer
     assert "THIRD_PARTY_NOTICES.md" in installer
     assert "RELINKING_V1_6_0.md" in installer
+    assert (
+        'Source: "..\\third_party\\licenses\\CPython-3.11.9-Windows-LICENSE.txt"; '
+        'DestDir: "{app}\\licenses"; '
+        'DestName: "CPython-3.11.9-Windows-LICENSE.txt"; Flags: ignoreversion'
+        in installer
+    )
 
     release = _read(".github/workflows/release.yml")
     assert "pystray 0.19.5" in release
     assert "LGPL-3.0-or-later" in release
     assert "`ClipVault-${RELEASE_TAG}-LGPL-relink-kit.zip`" in release
+
+
+def test_cpython_runtime_source_and_notice_metadata_are_release_bound():
+    notices = _read("THIRD_PARTY_NOTICES.md")
+    acquisition = json.loads(_read("third_party/source-acquisition-v1.6.0.json"))
+    runtime = acquisition["windows_runtime_interpreter"]
+
+    assert "CPython" in notices
+    assert "3.11.9" in notices
+    assert "PSF License Version 2" in notices
+    assert "CPython-3.11.9-Windows-LICENSE.txt" in notices
+
+    assert runtime["name"] == "CPython"
+    assert runtime["version"] == "3.11.9"
+    assert runtime["implementation"] == "cpython"
+    assert runtime["architecture"] == "win_amd64"
+    assert runtime["package_type"] == "official NuGet portable package"
+    assert "clean-recipient and relinking interpreter distribution" in (
+        runtime["package_role"]
+    )
+    assert runtime["release_workflow_provisioning"] == (
+        "actions/setup-python@v6 with exact Python 3.11.9 and x64 architecture, "
+        "plus final onefile runtime inventory gates"
+    )
+    assert runtime["filename"] == "python.3.11.9.nupkg"
+    assert runtime["package_url"] == (
+        "https://api.nuget.org/v3-flatcontainer/python/3.11.9/"
+        "python.3.11.9.nupkg"
+    )
+    assert runtime["package_size"] == 17_478_009
+    assert runtime["sha256"] == (
+        "9283876d58c017e0e846f95b490da3bca0fc0a6ee1134b2870677cfb7eec3c67"
+    )
+    assert runtime["license_path"] == (
+        "third_party/licenses/CPython-3.11.9-Windows-LICENSE.txt"
+    )
+    assert runtime["license_source_path"] == "tools/LICENSE.txt"
+    assert runtime["license_sha256"] == CPYTHON_WINDOWS_LICENSE_SHA256
 
 
 def test_readme_uses_supported_locked_windows_build_instructions():

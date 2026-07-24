@@ -26,8 +26,9 @@ one exact current-main commit:
    all four `OutboxBaseSeqTest` cases with SDK, JUnit, debug app APK, and
    instrumentation APK evidence. The schema-v4 high-water row binds distinct
    result references and SHA-256 values.
-8. Physical Android/IME/sync and Windows QA use the exact final draft assets,
-   and all seven schema-v4 signing-reset migration rows pass independently.
+8. Declared physical-device or official-emulator Android/IME/sync QA and
+   Windows QA use the exact final draft assets, and all seven schema-v4
+   signing-reset migration rows pass independently.
 9. Owner approval binds the target commit, draft URL, final digest set, and the
    SHA-256 of the validator-rendered release-ready manual-QA report.
 10. The existing draft is published without rebuilding, and the resulting
@@ -44,14 +45,14 @@ freeze one clean current-main SHA
   -> draft=true final draft asset build
   -> exact-run provenance, signer, byte, and digest verification
   -> API 26 + API 27 compatibility QA
-  -> physical signed-APK / IME / sync / Windows QA
+  -> declared physical-or-emulator signed-APK / IME / sync / Windows QA
   -> Owner publication approval
   -> publish the existing draft without rebuilding
   -> readiness review and Issue #36 closure candidate
 ```
 
 Parallel agents may collect read-only state and prepare commands, but no agent
-may infer secret values, physical-device observations, or Owner approval.
+may infer secret values, final-device observations, or Owner approval.
 
 ## 3. Generate the ignored local pack
 

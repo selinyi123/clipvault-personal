@@ -367,6 +367,11 @@ def test_template_contains_every_required_manual_qa_item():
     assert [run["sdk_int"] for run in template["android_runs"][:2]] == [26, 27]
     assert template["android_runs"][0]["test_apk_name"] == "app-debug-androidTest.apk"
     assert template["android_runs"][2]["apk_name"] == "ClipVault-Android-v1.6.0-release-signed.apk"
+    assert template["android_runs"][2]["run_id"] == "signed-release-physical"
+    assert template["android_runs"][2]["device_type"] == "REPLACE_WITH_physical_OR_emulator"
+    assert template["android_runs"][2]["model"] == (
+        "REPLACE_WITH_FINAL_QA_DEVICE_OR_EMULATOR_MODEL"
+    )
     assert "one-time pairing code" in template["sections"]["android_device_qa"]["items"]["pairing"]["notes"]
     assert "Desktop -> Android" in template["sections"]["sync_qa"]["items"]["public_clips_memory_sync"]["notes"]
     signing_reset_items = template["sections"]["android_signing_reset_qa"]["items"]
@@ -525,6 +530,119 @@ def test_strict_binding_accepts_exact_final_draft_snapshot_and_renders_identity(
     assert "Final draft report 123" in markdown
 
 
+def test_strict_binding_accepts_emulator_as_declared_final_signed_qa_device():
+    artifact_report = _final_draft_artifact_report()
+    report = _valid_report()
+    final_run = report["android_runs"][2]
+    # Keep the historical opaque run ID for schema-v4 compatibility. The
+    # authoritative target class is the explicit device_type field.
+    assert final_run["run_id"] == "signed-release-physical"
+    final_run["device_type"] = "emulator"
+    final_run["model"] = "AOSP API 27 release-QA AVD"
+    _bind_report_to_final_draft(report, artifact_report)
+
+    result = manual_qa_evidence.validate_evidence(
+        report,
+        final_draft_artifact_evidence=artifact_report,
+        require_final_draft_binding=True,
+    )
+
+    assert result.release_ready is True
+    assert result.structurally_complete is True
+    assert result.final_draft_binding_assurance == "verified_external_snapshot"
+
+
+@pytest.mark.parametrize(
+    ("tamper", "error_fragment"),
+    [
+        ("unsupported_device_type", "device_type must be one of: emulator, physical"),
+        ("source_commit", "source_commit must match target_commit"),
+        ("build_variant", "eligible final signed release run"),
+        ("apk_name", "final signed android run apk_name"),
+        ("apk_sha256", "final signed android run apk_sha256"),
+        ("artifact_evidence_ref", "final signed android run artifact_evidence_ref"),
+        ("signer", "final_draft_artifact_evidence is invalid"),
+        ("signer_count", "final_draft_artifact_evidence is invalid"),
+        ("apksigner_verified", "final_draft_artifact_evidence is invalid"),
+        ("trust_anchor", "final_draft_artifact_evidence is invalid"),
+        ("release_environment", "final_draft_artifact_evidence is invalid"),
+        ("release_environment_variable", "final_draft_artifact_evidence is invalid"),
+        ("debug_digest_reuse", "final signed APK SHA-256 must differ"),
+        ("pass_row_run_reference", "must include the declared final signed APK run"),
+    ],
+)
+def test_emulator_final_signed_run_keeps_every_strict_binding_gate(
+    tamper,
+    error_fragment,
+):
+    artifact_report = _final_draft_artifact_report()
+    report = _valid_report()
+    final_run = report["android_runs"][2]
+    final_run["device_type"] = "emulator"
+    final_run["model"] = "AOSP API 27 release-QA AVD"
+    _bind_report_to_final_draft(report, artifact_report)
+
+    if tamper == "unsupported_device_type":
+        final_run["device_type"] = "cloud-device"
+    elif tamper == "source_commit":
+        final_run["source_commit"] = "b" * 40
+    elif tamper == "build_variant":
+        final_run["build_variant"] = "debug"
+    elif tamper == "apk_name":
+        final_run["apk_name"] = "renamed.apk"
+    elif tamper == "apk_sha256":
+        final_run["apk_sha256"] = "f" * 64
+    elif tamper == "artifact_evidence_ref":
+        final_run["artifact_evidence_ref"] = "Another artifact snapshot"
+    elif tamper == "signer":
+        artifact_report["android_signer"]["observed_cert_sha256"] = "cd" * 32
+        artifact_report["artifact_binding_sha256"] = (
+            release_artifact_evidence._compute_binding_sha256(artifact_report)
+        )
+    elif tamper == "signer_count":
+        artifact_report["android_signer"]["signer_count"] = 2
+        artifact_report["artifact_binding_sha256"] = (
+            release_artifact_evidence._compute_binding_sha256(artifact_report)
+        )
+    elif tamper == "apksigner_verified":
+        artifact_report["android_signer"]["apksigner_verified"] = False
+        artifact_report["artifact_binding_sha256"] = (
+            release_artifact_evidence._compute_binding_sha256(artifact_report)
+        )
+    elif tamper == "trust_anchor":
+        artifact_report["android_signer"]["trust_anchor_source"] = "untrusted_input"
+        artifact_report["artifact_binding_sha256"] = (
+            release_artifact_evidence._compute_binding_sha256(artifact_report)
+        )
+    elif tamper == "release_environment":
+        artifact_report["android_signer"]["release_environment"] = "development"
+        artifact_report["artifact_binding_sha256"] = (
+            release_artifact_evidence._compute_binding_sha256(artifact_report)
+        )
+    elif tamper == "release_environment_variable":
+        artifact_report["android_signer"]["release_environment_variable"] = (
+            "UNTRUSTED_CERT_SHA256"
+        )
+        artifact_report["artifact_binding_sha256"] = (
+            release_artifact_evidence._compute_binding_sha256(artifact_report)
+        )
+    elif tamper == "debug_digest_reuse":
+        final_run["apk_sha256"] = report["android_runs"][0]["apk_sha256"]
+    else:
+        report["sections"]["ime_privacy_qa"]["items"]["typed_text_not_persisted"][
+            "run_ids"
+        ] = ["api26-cursorwindow"]
+
+    result = manual_qa_evidence.validate_evidence(
+        report,
+        final_draft_artifact_evidence=artifact_report,
+        require_final_draft_binding=True,
+    )
+
+    assert result.release_ready is False
+    assert any(error_fragment in error for error in result.errors)
+
+
 def test_verified_binding_assurance_survives_an_unfinished_manual_qa_row():
     artifact_report = _final_draft_artifact_report()
     report = _bind_report_to_final_draft(_valid_report(), artifact_report)
@@ -532,7 +650,7 @@ def test_verified_binding_assurance_survives_an_unfinished_manual_qa_row():
         "status": "blocked",
         "evidence": "",
         "run_ids": ["signed-release-physical"],
-        "next_step": "Complete physical pairing QA.",
+        "next_step": "Complete declared final-device pairing QA.",
     }
 
     result = manual_qa_evidence.validate_evidence(
@@ -852,7 +970,7 @@ def test_schema_v4_requires_every_android_signing_reset_row(item_key):
     assert any("expected 26 QA items" in error for error in result.errors)
 
 
-def test_android_signing_reset_rows_require_evidence_and_final_physical_run():
+def test_android_signing_reset_rows_require_evidence_and_declared_final_run():
     report = _valid_report()
     row = report["sections"]["android_signing_reset_qa"]["items"][
         "dual_backup_verified"
@@ -865,7 +983,7 @@ def test_android_signing_reset_rows_require_evidence_and_final_physical_run():
     assert result.release_ready is False
     assert any("dual_backup_verified.evidence" in error for error in result.errors)
     assert any(
-        "dual_backup_verified.run_ids must include the physical final signed APK run"
+        "dual_backup_verified.run_ids must include the declared final signed APK run"
         in error
         for error in result.errors
     )
@@ -1199,7 +1317,7 @@ def test_duplicate_runs_and_wrong_sdk_are_rejected():
     assert any("API 26 or API 27" in error for error in result.errors)
 
 
-def test_android_rows_must_reference_physical_final_signed_apk_run():
+def test_android_rows_must_reference_declared_final_signed_apk_run():
     report = _valid_report()
     row = report["sections"]["ime_privacy_qa"]["items"]["typed_text_not_persisted"]
     row["run_ids"] = ["api26-cursorwindow"]
@@ -1208,8 +1326,8 @@ def test_android_rows_must_reference_physical_final_signed_apk_run():
     result = manual_qa_evidence.validate_evidence(report)
 
     assert result.release_ready is False
-    assert any("final_signed_android_run_id must reference a physical release run" in error for error in result.errors)
-    assert any("must include the physical final signed APK run" in error for error in result.errors)
+    assert any("must reference an eligible final signed release run" in error for error in result.errors)
+    assert any("must include the declared final signed APK run" in error for error in result.errors)
 
 
 def test_final_signed_run_is_bound_to_target_commit_and_artifact_evidence():
@@ -1222,7 +1340,7 @@ def test_final_signed_run_is_bound_to_target_commit_and_artifact_evidence():
     assert result.release_ready is False
     assert any("source_commit must match target_commit" in error for error in result.errors)
     assert any("artifact_evidence_ref must reference validated release artifact evidence" in error for error in result.errors)
-    assert any("final_signed_android_run_id must reference a physical release run" in error for error in result.errors)
+    assert any("must reference an eligible final signed release run" in error for error in result.errors)
 
 
 def test_missing_runs_and_unknown_final_run_fail_closed():
@@ -1244,7 +1362,7 @@ def test_final_run_id_cannot_point_to_debug_run():
     result = manual_qa_evidence.validate_evidence(report)
 
     assert result.release_ready is False
-    assert any("final_signed_android_run_id must reference a physical release run" in error for error in result.errors)
+    assert any("must reference an eligible final signed release run" in error for error in result.errors)
 
 
 def test_rows_must_reference_declared_final_run_not_an_alternate_qualifying_run():
@@ -1258,7 +1376,7 @@ def test_rows_must_reference_declared_final_run_not_an_alternate_qualifying_run(
     result = manual_qa_evidence.validate_evidence(report)
 
     assert result.release_ready is False
-    assert any("run_ids must include the physical final signed APK run" in error for error in result.errors)
+    assert any("run_ids must include the declared final signed APK run" in error for error in result.errors)
 
 
 def test_android_row_unknown_run_reference_is_rejected():

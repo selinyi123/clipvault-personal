@@ -30,29 +30,57 @@ reported `libimagequant=False` and `raqm=False`. Its comprehensive bundled
 `LICENSE` file carries the applicable FreeType and other bundled-library
 attributions.
 
-The release still tests the exact frozen CPython 3.11 wheel rather than
-projecting a result from another interpreter wheel.
+The release still tests the exact frozen Windows wheel set rather than
+projecting a result from wheels for another interpreter or architecture.
+
+The PyInstaller executable also embeds the CPython runtime itself. The exact
+v1.6.0 Windows build uses CPython 3.11.9 x64. The official CPython 3.11.9
+NuGet package's `tools/LICENSE.txt` is the Windows binary distribution license
+bundle: it contains the PSF License Version 2, the additional Windows binary
+build conditions, and notices for incorporated runtime software. A wheel-only
+notice exporter does not account for that embedded interpreter.
 
 ## Decision
 
 ### 1. Dependency and build lock
 
-The Windows release lane must use the four approved versions above and a
-hash-locked Windows CPython 3.11 wheelhouse. The lock must include every
-resolved runtime and packaging dependency, including at least `six`,
-`altgraph`, `packaging`, `pefile`, `pywin32-ctypes`, and `setuptools` when they
-are present in the build environment.
+The Windows release lane must use the four approved versions above, exactly
+CPython 3.11.9 x64 (`cpython`, `AMD64`), and a hash-locked Windows CPython 3.11
+wheelhouse. The lock must include every resolved runtime and packaging
+dependency, including at least `six`, `altgraph`, `packaging`, `pefile`,
+`pywin32-ctypes`, and `setuptools` when they are present in the build
+environment.
 
 The final relink kit records:
 
 - exact wheel filenames and SHA-256 values;
 - the exact Python and pip versions;
+- the CPython implementation and target machine;
 - the exact repository commit;
 - the exact PyInstaller command/spec and installer input;
 - the source-acquisition records in
   `third_party/source-acquisition-v1.6.0.json`.
 
 The build must fail rather than silently resolve a different wheel.
+
+The official CPython 3.11.9 NuGet package is pinned as an auditable,
+install-free clean-recipient and relinking distribution for the Windows x64
+interpreter:
+
+```text
+url: https://api.nuget.org/v3-flatcontainer/python/3.11.9/python.3.11.9.nupkg
+sha256: 9283876d58c017e0e846f95b490da3bca0fc0a6ee1134b2870677cfb7eec3c67
+```
+
+It is extracted only into an isolated directory, without changing system
+`PATH`. The release and relink lanes reject a different Python version,
+implementation, or machine architecture.
+GitHub-hosted release jobs provision that exact version and architecture with
+`actions/setup-python@v6`; they do not claim that the resulting toolcache
+directory is byte-identical to the NuGet package. The package URL and hash bind
+the documented portable/relink path and the byte-exact license source, while
+the final onefile inventory records the runtime members actually embedded by
+the workflow.
 
 ### 2. Ninth GitHub Release asset
 
@@ -73,6 +101,7 @@ At minimum the kit contains:
 README-RELINK.md
 THIRD_PARTY_NOTICES.md
 licenses/
+  CPython-3.11.9-Windows-LICENSE.txt
   pystray-COPYING-GPL-3.0.txt
   pystray-COPYING-LGPL-3.0.txt
   ...license and notice files extracted from every locked wheel...
@@ -156,6 +185,34 @@ contradicts the self-test, the LGPL-only plan in this ADR is insufficient and
 the release stops for a new license review. Green unit tests, a valid EXE, and
 the presence of a source ZIP do not waive that gate.
 
+### 6. Embedded CPython Windows license gate
+
+Every installer, portable onefile executable, and relink kit must carry the
+verbatim `tools/LICENSE.txt` from the exact official CPython 3.11.9 NuGet
+package. Its tracked source and portable onefile member path is:
+
+```text
+third_party/licenses/CPython-3.11.9-Windows-LICENSE.txt
+```
+
+The installed copy is placed under the application's `licenses` directory,
+and the relink-kit member is
+`licenses/CPython-3.11.9-Windows-LICENSE.txt`.
+
+Its required SHA-256 is:
+
+```text
+e502c6b880ff58d614901495a9009c136539cd0b1e2a2abb8fc00b934c203419
+```
+
+The build must also prove that the frozen onefile inventory contains every
+expected CPython Windows runtime member and the exact license bundle, and
+reject the build when any required member is missing.
+Preserving the official Windows binary distribution license bundle closes the
+known CPython-runtime notice gap; it is not a claim that every native
+dependency in all ClipVault artifacts has undergone a separate, independent
+license audit.
+
 ## Consequences
 
 - The Windows tray is a supported release feature rather than an optional
@@ -164,6 +221,8 @@ the presence of a source ZIP do not waive that gate.
 - Final artifact evidence and manual QA must bind the relink kit bytes.
 - The onefile artifact remains possible, but only with corresponding source,
   exact application/build inputs, notices, and a practical rebuild path.
+- The Windows build is pinned to CPython 3.11.9 x64 and carries the exact
+  official Windows binary distribution license bundle.
 - The exact wheel feature result and final binary composition—not an SBOM row in
   isolation or package marketing metadata—decide which third-party obligations
   apply.
@@ -186,3 +245,7 @@ the presence of a source ZIP do not waive that gate.
   https://pypi.org/project/pyinstaller/6.21.0/
 - PyInstaller hooks licensing:
   https://github.com/pyinstaller/pyinstaller-hooks-contrib/tree/v2026.6
+- CPython 3.11.9 official NuGet package:
+  https://api.nuget.org/v3-flatcontainer/python/3.11.9/python.3.11.9.nupkg
+- CPython 3.11.9 source license:
+  https://github.com/python/cpython/blob/v3.11.9/LICENSE

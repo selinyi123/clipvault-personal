@@ -41,7 +41,11 @@ HTTPS_REFERENCE_RE = re.compile(
     r"^https://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+$"
 )
 VALID_STATUSES = {"pass", "fail", "blocked"}
-VALID_DEVICE_TYPES = {"emulator", "physical"}
+# General report parsing accepts both supported Android target classes.
+VALID_DEVICE_TYPES = frozenset({"emulator", "physical"})
+# Keep the final-release allowlist independent so a future schema expansion
+# cannot silently weaken the Issue #36 final signed-APK gate.
+FINAL_QA_DEVICE_TYPES = frozenset({"emulator", "physical"})
 VALID_BUILD_VARIANTS = {"debug", "release"}
 CURSORWINDOW_TEST_NAME = (
     "com.clipvault.app.capture.CaptureTransactionTest#"
@@ -447,8 +451,8 @@ def build_template(version: str = DEFAULT_VERSION) -> dict[str, object]:
                 run_id="signed-release-physical",
                 sdk_int="REPLACE_WITH_DEVICE_SDK_INT",
                 android_version="REPLACE_WITH_ANDROID_VERSION",
-                device_type="physical",
-                model="REPLACE_WITH_PHYSICAL_DEVICE_MODEL",
+                device_type="REPLACE_WITH_physical_OR_emulator",
+                model="REPLACE_WITH_FINAL_QA_DEVICE_OR_EMULATOR_MODEL",
                 build_variant="release",
                 version=version,
                 apk_name=_signed_apk_name(version),
@@ -933,7 +937,7 @@ def _is_signed_release_run(
     target_commit: str,
 ) -> bool:
     return (
-        _string(run.get("device_type")).lower() == "physical"
+        _string(run.get("device_type")).lower() in FINAL_QA_DEVICE_TYPES
         and _string(run.get("build_variant")).lower() == "release"
         and _string(run.get("apk_name")) == _signed_apk_name(expected_version)
         and bool(SHA256_RE.fullmatch(_string(run.get("apk_sha256"))))
@@ -1098,7 +1102,8 @@ def _validate_metadata(
             )
         if not _is_signed_release_run(final_run, expected_version, commit):
             errors.append(
-                "final_signed_android_run_id must reference a physical release run bound to target_commit, "
+                "final_signed_android_run_id must reference an eligible final signed release run "
+                "(device_type physical or emulator) bound to target_commit, "
                 "the exact signed APK name/SHA-256, and artifact evidence"
             )
         final_digest = _string(final_run.get("apk_sha256")).lower()
@@ -1375,9 +1380,9 @@ def _validate_item(
             else:
                 referenced_runs.append(run)
         if status == "pass" and not referenced_runs:
-            errors.append(f"{path}.run_ids must reference the physical final signed APK run")
+            errors.append(f"{path}.run_ids must reference the declared final signed APK run")
         elif status == "pass" and final_run_id not in seen_run_ids:
-            errors.append(f"{path}.run_ids must include the physical final signed APK run")
+            errors.append(f"{path}.run_ids must include the declared final signed APK run")
 
     if item.key == "re_pair_outbox_high_water":
         test_class = _string(item_data.get("instrumented_test_class"))

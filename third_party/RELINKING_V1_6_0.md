@@ -13,7 +13,8 @@ It is the ninth and final member of the exact Release inventory.
 1. A `git archive` of the exact ClipVault release target commit.
 2. The complete pystray upstream commit archive pinned in
    `source-acquisition-v1.6.0.json`. The pystray wheel is not a substitute.
-3. The exact Windows CPython 3.11 wheelhouse used to build the executable.
+3. The exact CPython 3.11.9 Windows x64 (`cpython`, `AMD64`) interpreter
+   identity and Windows wheelhouse used to build the executable.
 4. SHA-256 locks for every archive and wheel.
 5. Verbatim license, notice, and embedded SBOM files from those wheels.
 6. A machine-readable build-environment record containing Python, pip,
@@ -28,12 +29,42 @@ It is the ninth and final member of the exact Release inventory.
 10. `build/repack_pystray_wheel.py`, a standard-library-only helper that
     replaces the pure-Python `pystray` package in the locked wheel and
     regenerates its PEP 376 `RECORD` without invoking upstream setup hooks.
+11. The verbatim CPython 3.11.9 official Windows binary distribution license
+    bundle at
+    `licenses/CPython-3.11.9-Windows-LICENSE.txt`, with SHA-256
+    `e502c6b880ff58d614901495a9009c136539cd0b1e2a2abb8fc00b934c203419`.
 
 ## Executable Windows relink procedure
 
 Run these commands from the extracted kit root in a visible PowerShell window.
-Use a clean Windows x64 host with CPython 3.11, Git, and Inno Setup 6. Do not
-put credentials or private user data in this directory.
+Use a clean Windows x64 host with the exact CPython 3.11.9 x64 interpreter,
+Git, and Inno Setup 6. Do not put credentials or private user data in this
+directory.
+
+The official `python.3.11.9.nupkg` is an acceptable isolated interpreter. It
+may be downloaded from the exact `package_url` in
+`source-acquisition-v1.6.0.json`, verified against the recorded package
+SHA-256, and extracted into a disposable directory. Extraction does not
+install Python and does not require changing `PATH`. Set
+`CLIPVAULT_PYTHON_3119_X64` to the extracted `tools\python.exe` (or to an
+equivalent exact CPython 3.11.9 x64 executable), then establish and verify the
+explicit interpreter before any build command:
+
+```powershell
+$basePython = (Resolve-Path `
+  -LiteralPath $env:CLIPVAULT_PYTHON_3119_X64).Path
+$runtimeIdentity = @(
+  & $basePython -c `
+    "import platform,sys; print(f'{platform.python_version()}|{sys.implementation.name}|{platform.machine()}')"
+)
+if (
+  $LASTEXITCODE -ne 0 -or
+  $runtimeIdentity.Count -ne 1 -or
+  $runtimeIdentity[0] -cne "3.11.9|cpython|AMD64"
+) {
+  throw "CPython 3.11.9 x64 runtime identity check failed"
+}
+```
 
 First verify every supplied wheel and source archive:
 
@@ -97,7 +128,7 @@ Add-Content -LiteralPath "$($pystrayRoot[0].FullName)\lib\pystray\__init__.py" `
 
 $modifiedWheelhouse = "$work\modified-wheelhouse"
 New-Item -ItemType Directory -Path $modifiedWheelhouse | Out-Null
-python "$kit\build\repack_pystray_wheel.py" `
+& $basePython "$kit\build\repack_pystray_wheel.py" `
   --base-wheel "$kit\wheelhouse\pystray-0.19.5-py2.py3-none-any.whl" `
   --source-dir "$($pystrayRoot[0].FullName)\lib\pystray" `
   --output-wheel "$modifiedWheelhouse\pystray-0.19.5-py2.py3-none-any.whl"
@@ -119,7 +150,10 @@ function Build-ClipVaultRecipient {
   )
 
   $output = "$work\$Name"
-  python -m venv "$output\venv"
+  & $basePython -m venv "$output\venv"
+  if ($LASTEXITCODE -ne 0) {
+    throw "CPython 3.11.9 virtual environment creation failed"
+  }
   $python = "$output\venv\Scripts\python.exe"
   $otherWheels = @(
     Get-ChildItem "$kit\wheelhouse" -Filter "*.whl" |
@@ -205,7 +239,15 @@ Copy-Item "$work\modified\dist\clipvault.exe" `
   "$appRoot\desktop\dist\clipvault.exe" -Force
 Push-Location "$appRoot\installer"
 try {
-  $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+  $isccCandidate = $env:CLIPVAULT_ISCC
+  if ([string]::IsNullOrWhiteSpace($isccCandidate)) {
+    $isccCandidate = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+  }
+  $iscc = (Resolve-Path -LiteralPath $isccCandidate).Path
+  $isccVersion = (Get-Item -LiteralPath $iscc).VersionInfo.ProductVersion
+  if ($isccVersion -notmatch '^6(\.|$)') {
+    throw "Inno Setup 6 is required; found $isccVersion at the explicit path"
+  }
   & $iscc clipvault.iss
   if ($LASTEXITCODE -ne 0) {
     throw "Modified installer build failed"
@@ -250,8 +292,10 @@ Do not publish when:
   Release bytes;
 - the application archive does not match the final target commit;
 - the pystray archive is not the pinned upstream commit/hash;
+- the build interpreter is not exactly CPython 3.11.9 x64 (`AMD64`);
 - the wheelhouse can contact an index or contains an unlocked wheel;
-- notices or GPL/LGPL license texts are missing;
+- notices, GPL/LGPL license texts, or the exact CPython 3.11.9 Windows license
+  bundle are missing or do not match their recorded hashes;
 - the relink exercise cannot produce a functioning tray build;
 - the exact Pillow wheel feature report does not prove `libimagequant=False`
   and `raqm=False`, or the collected binary inventory contradicts that report.

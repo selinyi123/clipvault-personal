@@ -136,8 +136,9 @@ The generated report must include:
   rechecked against live GitHub state before publication. Use a path-free short
   evidence reference.
 - tester and timezone-qualified ISO-8601 timestamps.
-- separate Android execution rows for API 26, API 27, and the physical device
-  used with the final signed release APK. Each row records the SDK, build
+- separate Android execution rows for API 26, API 27, and the declared final-QA
+  target used with the final signed release APK. The final target may be one
+  physical device or one official Android emulator. Each row records the SDK, build
   variant, source commit, app APK name/SHA-256, and (for compatibility runs)
   instrumentation APK name/SHA-256 without recording a device serial. The final
   signed run additionally requires the independently validated
@@ -152,7 +153,7 @@ The generated report must include:
   report target commit.
 - Manual Android device QA rows.
 - Seven distinct Android signing-reset migration rows. Each row requires its
-  own path-free evidence and must reference the final physical signed run.
+  own path-free evidence and must reference the declared final signed run.
 - Manual IME privacy QA rows.
 - Manual sync QA rows.
 - Manual Windows clipboard privacy QA rows.
@@ -162,7 +163,7 @@ artifact evidence, signed Android APK evidence, release environment/secrets
 evidence, or Owner-approved `v1.6.0` GitHub Release publication.
 Its strict-mode `PASS (OWNER-ATTESTED)` result means the required structure and reported
 values are complete; the helper does not fetch or independently parse the
-referenced SDK/JUnit files and cannot prove that physical observations occurred.
+referenced SDK/JUnit files and cannot prove that the reported device observations occurred.
 Legacy schema-v2 and schema-v3 compatibility modes may be structurally valid
 (`ok=true`) but always remain `BLOCKED`, even when all rows for those frozen
 formats pass and a binding object is present. Regenerate schema v4 and execute
@@ -175,7 +176,7 @@ as Issue #36 release eligibility.
 
 This is a compatibility-test lane, not final signed-APK manual QA. An API 26 or
 API 27 emulator is acceptable for this targeted regression; the final signed
-APK still requires the separate physical-device lane below. Use one connected
+APK still requires the separate final-device lane below. Use one connected
 target at a time. First require a clean checkout whose HEAD equals the exact
 target commit recorded in the evidence file:
 
@@ -310,14 +311,19 @@ reference/digest must identify different evidence; do not copy one digest into
 multiple semantic rows.
 
 The debug instrumentation APK and its results cannot substitute for the final
-signed APK evidence or the physical-device manual checks.
+signed APK evidence or the final-device manual checks.
 
 ## Manual Android device QA
 
-Run on a real Android device with
-`ClipVault-Android-v1.6.0-release-signed.apk` installed. Verify its SHA-256
+Run on exactly one dedicated Android target: either a physical device or an
+official Android emulator. For an emulator, use an official Android SDK
+system image, record `device_type=emulator`, SDK/Android version and AVD model,
+start from a clean application-data state, and do not claim OEM or physical
+hardware coverage. Install
+`ClipVault-Android-v1.6.0-release-signed.apk` downloaded from the final Draft
+Release. Verify its SHA-256
 matches the independently validated release artifact report, then reference
-the corresponding `physical` / `release` `android_runs` entry from every
+the corresponding declared `physical|emulator` / `release` `android_runs` entry from every
 passing Android, IME, and sync row:
 
 1. Pair the fresh final signed Android installation using a one-time Desktop
@@ -350,7 +356,10 @@ sync QA. Record each gate as its own item under
 `sections.android_signing_reset_qa.items`; do not combine several observations
 into the pairing or sync rows. Every passing item needs non-placeholder,
 path-free evidence and `run_ids` containing the exact
-`final_signed_android_run_id` for the physical final signed APK run.
+`final_signed_android_run_id` for the declared final signed APK run. The
+historical template run ID `signed-release-physical` remains an opaque
+schema-v4 compatibility identifier; `android_runs[].device_type` is the
+authoritative physical-versus-emulator declaration.
 
 1. `dual_backup_verified`: independently restore or open both encrypted
    new-key backups and confirm they identify the Owner-approved replacement

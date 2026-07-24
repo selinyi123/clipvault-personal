@@ -197,7 +197,7 @@ Issue: {issue_url}
 
 This ignored local folder coordinates Issue #36 evidence collection. It does not
 perform or prove Owner-controlled signing, artifact provenance, API 26/27 or
-physical-device QA, publication approval, Release publication, or Issue closure.
+declared final-device QA, publication approval, Release publication, or Issue closure.
 
 The release workflow rejects a missing, malformed, multi-signer, or mismatched
 APK certificate. The Android gate nevertheless remains **BLOCKED** until the
@@ -668,7 +668,8 @@ Fill `manual-qa-v1.6.0.template.json`. Follow
   second hashes to exactly match the first; otherwise discard both results;
 - before each invocation, move any connected-test result directory aside;
   abort on a nonzero Gradle exit or if no fresh result directory is created;
-- physical-device Android, IME privacy, and sync QA using the exact signed APK
+- declared final-device Android, IME privacy, and sync QA on one physical
+  device or official Android emulator using the exact signed APK
   `ClipVault-Android-{version}-release-signed.apk` from the draft=true run;
 - the schema-v4 `re_pair_outbox_high_water` row, covering both an empty
   acknowledged high-water mark and a pending-row re-pair without clip content;
@@ -1645,7 +1646,7 @@ Issue #36 remains open if any of these is missing:
 - Owner-confirmed Android signer certificate identity enforced by the workflow;
 - downloaded final draft asset bytes, provenance, manifests, and digests verified;
 - non-skipped API 26 and API 27 compatibility evidence;
-- physical-device QA bound to the exact final signed APK digest;
+- declared physical-or-emulator final-device QA bound to the exact final signed APK digest;
 - IME privacy, sync, and Windows clipboard privacy evidence;
 - signing-reset migration evidence covering dual-key backups, quarantine decision,
   old-client drain, zero-peer reseed, fresh-client ACK, update rejection, and
@@ -1676,7 +1677,7 @@ frozen main SHA
   -> exact-run provenance and byte verification
   -> API 26 + API 27 compatibility QA
   -> signing-reset migration + fresh-client reseed ACK
-  -> physical signed-APK and Windows QA
+  -> declared final-device signed-APK and Windows QA
   -> Owner publication approval
   -> publish the existing draft without rebuilding
   -> readiness review and Issue #36 closure candidate
@@ -1710,9 +1711,9 @@ change statuses. Replace it with validator-rendered evidence and exact GitHub UR
 | API 26 compatibility | BLOCKED | non-skipped named test, SDK/JUnit/APK evidence |
 | API 27 compatibility | BLOCKED | non-skipped named test, SDK/JUnit/APK evidence |
 | Android signing-reset migration | BLOCKED | dual backups, quarantine decision, old drain, zero-peer reseed, fresh ACK, update rejection |
-| Physical final signed APK QA | BLOCKED | exact draft APK SHA-256 |
-| IME privacy QA | BLOCKED | exact physical signed run |
-| Sync QA | BLOCKED | exact physical signed run |
+| Declared final signed APK QA | BLOCKED | exact draft APK SHA-256 on physical or official emulator target |
+| IME privacy QA | BLOCKED | exact declared final signed run |
+| Sync QA | BLOCKED | exact declared final signed run |
 | Windows clipboard privacy QA | BLOCKED | exact draft Windows assets |
 | Owner publication approval | BLOCKED | exact target, draft URL, digest set, manual-QA report SHA-256 |
 | Published GitHub Release `{version}` | BLOCKED | non-draft, non-prerelease, exact target/assets |

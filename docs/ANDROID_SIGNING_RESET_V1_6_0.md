@@ -38,7 +38,7 @@ longer available to the Owner. Consequently:
   from, or continuity with the old signer.
 
 Owner approval permits this reset but does not by itself satisfy signed-artifact
-verification, physical-device QA, publication approval, or Issue #36 closure.
+verification, declared final-device QA, publication approval, or Issue #36 closure.
 
 An initial replacement candidate was generated on 2026-07-22 with certificate
 SHA-256
@@ -251,7 +251,7 @@ public data only by pairing the fresh installation and pulling the prepared
 one-shot Desktop reseed. Quarantined v1.5.10 rows cannot be restored through
 this path.
 
-## 5. Reconfigure and rerun physical-device QA
+## 5. Reconfigure and rerun final-device QA
 
 The fresh installation has no valid old pairing or Android component setup.
 Complete and record all of the following using the final signed APK:
@@ -291,7 +291,10 @@ Complete and record all of the following using the final signed APK:
    including after re-pair and reconnect.
 
 Also execute the full re-pair/outbox high-water scenario and the remaining
-physical Android rows in [MANUAL_QA_V1_6_0.md](MANUAL_QA_V1_6_0.md). Screenshots
+declared final Android rows in [MANUAL_QA_V1_6_0.md](MANUAL_QA_V1_6_0.md).
+The target may be a physical device or an official Android emulator; record
+the actual `device_type`, and do not present emulator evidence as OEM or
+physical-hardware coverage. Screenshots
 must be reviewed for notifications, account identifiers, clipboard content,
 pairing codes, paths, and other private information before they are referenced
 from Issue #36.
