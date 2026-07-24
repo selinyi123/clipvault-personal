@@ -35,6 +35,7 @@ Name: "cn"; MessagesFile: "compiler:Default.isl"
 Source: "..\desktop\dist\clipvault.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\third_party\RELINKING_V1_6_0.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\third_party\licenses\CPython-3.11.9-Windows-LICENSE.txt"; DestDir: "{app}\licenses"; DestName: "CPython-3.11.9-Windows-LICENSE.txt"; Flags: ignoreversion
 Source: "..\desktop\packaging\runtime-notices\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Tasks]

@@ -499,6 +499,23 @@ def test_generated_absolute_path_helper_runs_on_windows_powershell_5_1():
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
+def test_owner_pack_keeps_declared_final_device_policy_emulator_eligible():
+    guide = owner_pack.owner_action_pack(
+        owner_pack.VERSION,
+        owner_pack.ISSUE_URL,
+        generated_at="2026-07-13T00:00:00Z",
+    )
+    issue_draft = owner_pack.issue_comment_draft(
+        owner_pack.VERSION,
+        owner_pack.ISSUE_URL,
+    )
+
+    assert "physical or official emulator target" in issue_draft
+    assert "physical\n  device or official Android emulator" in guide
+    assert "declared physical-or-emulator final-device QA" in guide
+    assert "physical-device-only final QA" not in guide.lower()
+
+
 def test_generated_signing_reset_body_validator_runs_fail_closed_on_windows_powershell_5_1():
     powershell = shutil.which("powershell.exe")
     if powershell is None:

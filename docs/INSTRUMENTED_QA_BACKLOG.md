@@ -97,7 +97,7 @@ is executed against the exact recorded commit.
 
 Do not claim that `connectedDebugAndroidTest`, rapid-tab/focus transitions,
 cross-app stale-button rejection, editor-action callbacks, TalkBack, large-font
-rendering, or the final signed-APK physical-device lane has passed unless that
+rendering, or the final signed-APK declared-device lane has passed unless that
 specific run is recorded. The five residual methods remain `@Ignore`-d until
 they contain real assertions; a compiled scaffold is not Issue #36 manual QA
 evidence.
@@ -158,5 +158,8 @@ cd android
   point at the now-live instrumented tests instead of this backlog.
 - The current IME sprint acceptance checklist is executed against the exact
   recorded commit, with no clip contents or device serials included in evidence.
-- Issue #36 still requires the final signed APK physical-device lane; an
-  emulator or unsigned debug APK result does not close the release gate.
+- Issue #36 still requires the final signed APK declared-device lane. An
+  official emulator is eligible only when the exact signed release APK and all
+  strict Draft/commit/digest/signer bindings are recorded; an unsigned debug
+  APK result does not close the release gate, and emulator evidence does not
+  claim OEM or physical-hardware coverage.

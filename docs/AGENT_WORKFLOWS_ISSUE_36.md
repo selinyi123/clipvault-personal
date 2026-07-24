@@ -1,6 +1,6 @@
 # Agent Workflow — Issue #36 v1.6.0 Release Gate
 
-> Purpose: coordinate multiple agents without letting any agent falsely claim a release-gate item that requires Owner-controlled secrets, signed artifacts, physical-device QA, or final publication.
+> Purpose: coordinate multiple agents without letting any agent falsely claim a release-gate item that requires Owner-controlled secrets, signed artifacts, declared final-device QA, or final publication.
 
 ## 1. Operating rules
 
@@ -105,6 +105,10 @@ Return structured evidence only.
 ```text
 You are the Android QA Agent for ClipVault Personal Issue #36.
 Use the signed release APK.
+Use exactly one declared final-QA target: a physical device or an official
+Android emulator. Record the target's `device_type`, SDK/Android version and
+model; emulator evidence must not be described as OEM or physical-hardware
+coverage.
 Record:
 - install/update result
 - pairing to desktop

@@ -1,2 +1,6 @@
 # Byte-exact assets (golden files, vectors) must never be eol-rewritten.
 * -text
+# Preserve the official mixed-EOL license bundle verbatim. Its approved
+# byte-level SHA-256 is the integrity gate, so upstream trailing whitespace is
+# not normalized or reported as a repository formatting defect.
+third_party/licenses/CPython-3.11.9-Windows-LICENSE.txt -text whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof

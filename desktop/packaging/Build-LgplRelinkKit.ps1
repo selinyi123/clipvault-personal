@@ -54,6 +54,7 @@ $trackedInputs = @(
     "THIRD_PARTY_NOTICES.md",
     "docs/ADR/0012-windows-tray-dependencies-and-lgpl-delivery.md",
     "third_party/RELINKING_V1_6_0.md",
+    "third_party/licenses/CPython-3.11.9-Windows-LICENSE.txt",
     "third_party/source-acquisition-v1.6.0.json",
     "desktop/pyproject.toml",
     "desktop/packaging/Build-LgplRelinkKit.ps1",
@@ -85,6 +86,31 @@ $pythonPath = (Resolve-Path -LiteralPath $PythonExecutable).Path
 $pillowFeatureProbePath = (
     Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "pillow_feature_probe.py")
 ).Path
+$cpythonLicenseRelativePath = "third_party\licenses\CPython-3.11.9-Windows-LICENSE.txt"
+$cpythonLicensePath = Join-Path $repoRoot $cpythonLicenseRelativePath
+$cpythonLicenseExpectedHash = "e502c6b880ff58d614901495a9009c136539cd0b1e2a2abb8fc00b934c203419"
+if (-not (Test-Path -LiteralPath $cpythonLicensePath -PathType Leaf)) {
+    throw "The exact CPython 3.11.9 Windows binary license bundle is missing"
+}
+$cpythonLicenseActualHash = (
+    Get-FileHash -LiteralPath $cpythonLicensePath -Algorithm SHA256
+).Hash.ToLowerInvariant()
+if ($cpythonLicenseActualHash -cne $cpythonLicenseExpectedHash) {
+    throw "The CPython 3.11.9 Windows binary license bundle hash does not match the approved file"
+}
+
+$pythonVersion = @(
+    & $pythonPath -c "import platform,sys; print(platform.python_version()); print(platform.machine()); print(sys.implementation.name)"
+)
+if (
+    $LASTEXITCODE -ne 0 -or
+    $pythonVersion.Count -ne 3 -or
+    $pythonVersion[0].Trim() -cne "3.11.9" -or
+    $pythonVersion[1].Trim() -cne "AMD64" -or
+    $pythonVersion[2].Trim() -cne "cpython"
+) {
+    throw "The relink kit requires the exact CPython 3.11.9 x64 build interpreter"
+}
 $requiredNoticeMembers = @(
     "pystray-0.19.5-py2.py3-none-any\pystray-0.19.5.dist-info\COPYING",
     "pystray-0.19.5-py2.py3-none-any\pystray-0.19.5.dist-info\COPYING.LGPL",
@@ -101,11 +127,40 @@ $inventoryLines = @(Get-Content -LiteralPath $inventoryPath)
 if ($inventoryLines.Count -eq 0) {
     throw "Frozen onefile inventory is empty"
 }
-$inventoryText = $inventoryLines -join "`n"
+# pyi-archive_viewer renders embedded Windows path separators as doubled
+# backslashes inside its Python-style string representation.
+$inventoryText = ($inventoryLines -join "`n").Replace("\\", "\")
 foreach ($requiredModule in @("pystray._win32", "PIL.Image")) {
     $requiredToken = "'" + $requiredModule + "'"
     if (-not $inventoryText.Contains($requiredToken)) {
         throw "Frozen onefile inventory is missing required module: $requiredModule"
+    }
+}
+$requiredWindowsRuntimeMembers = @(
+    "_bz2.pyd",
+    "_ctypes.pyd",
+    "_decimal.pyd",
+    "_elementtree.pyd",
+    "_hashlib.pyd",
+    "_lzma.pyd",
+    "_queue.pyd",
+    "_socket.pyd",
+    "_sqlite3.pyd",
+    "_ssl.pyd",
+    "_uuid.pyd",
+    "libcrypto-3.dll",
+    "libffi-8.dll",
+    "libssl-3.dll",
+    "pyexpat.pyd",
+    "python311.dll",
+    "select.pyd",
+    "sqlite3.dll",
+    "third_party\licenses\CPython-3.11.9-Windows-LICENSE.txt"
+)
+foreach ($requiredMember in $requiredWindowsRuntimeMembers) {
+    $requiredToken = "'" + $requiredMember + "'"
+    if (-not $inventoryText.Contains($requiredToken)) {
+        throw "Frozen onefile inventory is missing required CPython Windows runtime member: $requiredMember"
     }
 }
 foreach ($disallowedComponent in @("libimagequant", "raqm")) {
@@ -205,6 +260,9 @@ Copy-Item -LiteralPath (Join-Path $repoRoot "installer\clipvault.iss") -Destinat
 Copy-Item -LiteralPath (Join-Path $repoRoot ".github\workflows\release.yml") -Destination (Join-Path $stage "build")
 Copy-Item -LiteralPath $runtimeNoticesPath -Destination (Join-Path $stage "licenses") -Recurse
 Copy-Item `
+    -LiteralPath $cpythonLicensePath `
+    -Destination (Join-Path $stage "licenses\CPython-3.11.9-Windows-LICENSE.txt")
+Copy-Item `
     -LiteralPath (Join-Path $runtimeNoticesPath "pystray-0.19.5-py2.py3-none-any\pystray-0.19.5.dist-info\COPYING") `
     -Destination (Join-Path $stage "licenses\pystray-COPYING-GPL-3.0.txt")
 Copy-Item `
@@ -257,10 +315,6 @@ foreach ($source in $sourceArchives) {
 }
 $sourceSums | Set-Content -LiteralPath (Join-Path $stage "locks\source-SHA256SUMS.txt") -Encoding ASCII
 
-$pythonVersion = (& $pythonPath -c "import platform,sys; print(platform.python_version()); print(platform.machine()); print(sys.implementation.name)")
-if ($LASTEXITCODE -ne 0 -or $pythonVersion.Count -ne 3) {
-    throw "Unable to record Python build environment"
-}
 $pipVersion = @(
     & $pythonPath -c "import importlib.metadata; print(importlib.metadata.version('pip'))"
 )
@@ -281,12 +335,17 @@ if (
     schema_version = 1
     release = "v$Version"
     commit = $Commit
-    python_version = $pythonVersion[0]
-    machine = $pythonVersion[1]
-    implementation = $pythonVersion[2]
+    python_version = $pythonVersion[0].Trim()
+    machine = $pythonVersion[1].Trim()
+    implementation = $pythonVersion[2].Trim()
     pip_version = $pipVersion[0].Trim()
     pyinstaller = $pyInstallerVersion[0].Trim()
     production_wheel_count = $expectedWheels.Count
+    windows_runtime_license = [ordered]@{
+        path = "licenses/CPython-3.11.9-Windows-LICENSE.txt"
+        sha256 = $cpythonLicenseActualHash
+        source = "official CPython 3.11.9 Windows NuGet tools/LICENSE.txt"
+    }
     pillow_feature_gate = [ordered]@{
         result = "passed"
         disallowed_features = @("libimagequant", "raqm")

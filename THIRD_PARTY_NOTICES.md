@@ -8,9 +8,25 @@ relicense ClipVault as a whole.
 
 | Component | Version | Role | License |
 |---|---:|---|---|
+| CPython | 3.11.9 (Windows x64) | embedded interpreter and Windows runtime | PSF License Version 2, plus the incorporated-software notices in the official Windows binary distribution license bundle |
 | pystray | 0.19.5 | Windows notification-area integration | LGPL-3.0-or-later |
 | Pillow | 12.3.0 | image object used by the tray icon | MIT-CMU, plus the licenses of native components actually present in the selected wheel/build |
 | six | 1.17.0 | pystray compatibility helper | MIT |
+
+The executable embeds the CPython 3.11.9 Windows x64 runtime. The exact
+license bundle from `tools/LICENSE.txt` in the official CPython 3.11.9 NuGet
+package is tracked verbatim at:
+
+```text
+third_party/licenses/CPython-3.11.9-Windows-LICENSE.txt
+```
+
+That official Windows binary distribution file contains the PSF License
+Version 2, the additional conditions for the Windows binary build, and notices
+for incorporated software such as bzip2, libffi, and OpenSSL. Preserving this
+distribution-provided bundle does not by itself claim that every native
+dependency in the complete ClipVault application has undergone a separate,
+independent license audit.
 
 pystray copyright notice: Copyright (C) 2016-2022 Moses Palmér.
 

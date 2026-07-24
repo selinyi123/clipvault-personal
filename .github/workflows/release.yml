@@ -58,7 +58,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.11.9"
+          architecture: "x64"
           cache: pip
           cache-dependency-path: desktop/packaging/windows-release-requirements.txt
 
@@ -144,11 +145,40 @@ jobs:
           if ($inventoryExit -ne 0 -or $inventory.Count -eq 0) {
             throw "Unable to inspect the frozen onefile executable"
           }
-          $inventoryText = $inventory -join "`n"
+          # pyi-archive_viewer renders embedded Windows path separators as
+          # doubled backslashes inside its Python-style string representation.
+          $inventoryText = ($inventory -join "`n").Replace("\\", "\")
           foreach ($requiredModule in @("pystray._win32", "PIL.Image")) {
             $requiredToken = "'" + $requiredModule + "'"
             if (-not $inventoryText.Contains($requiredToken)) {
               throw "Frozen onefile inventory is missing required module: $requiredModule"
+            }
+          }
+          $requiredWindowsRuntimeMembers = @(
+            "_bz2.pyd",
+            "_ctypes.pyd",
+            "_decimal.pyd",
+            "_elementtree.pyd",
+            "_hashlib.pyd",
+            "_lzma.pyd",
+            "_queue.pyd",
+            "_socket.pyd",
+            "_sqlite3.pyd",
+            "_ssl.pyd",
+            "_uuid.pyd",
+            "libcrypto-3.dll",
+            "libffi-8.dll",
+            "libssl-3.dll",
+            "pyexpat.pyd",
+            "python311.dll",
+            "select.pyd",
+            "sqlite3.dll",
+            "third_party\licenses\CPython-3.11.9-Windows-LICENSE.txt"
+          )
+          foreach ($requiredMember in $requiredWindowsRuntimeMembers) {
+            $requiredToken = "'" + $requiredMember + "'"
+            if (-not $inventoryText.Contains($requiredToken)) {
+              throw "Frozen onefile inventory is missing required CPython Windows runtime member: $requiredMember"
             }
           }
           foreach ($disallowedComponent in @("libimagequant", "raqm")) {

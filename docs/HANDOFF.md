@@ -256,7 +256,7 @@
 - Issue #36 manual evidence now emits schema v4 with 26 required items. It adds
   seven independent Android signing-reset migration gates; its re-pair row
   binds four executed `OutboxBaseSeqTest` cases on both API 26 and API 27 plus
-  the physical signed-APK observation. Frozen schema v3 (19 items) and schema
+  the declared physical-or-emulator final signed-APK observation. Frozen schema v3 (19 items) and schema
   v2 (18 items) remain readable but can never be release-ready.
 - A pre-existing fail-closed follow-up remains: the Desktop pairing code is
   consumed before the peer-row commit. A database/commit failure must roll back
@@ -719,8 +719,8 @@
   can target the missing rows directly without treating a count as completion.
 - `tools/manual_qa_evidence.py` is a local Issue #36 manual-QA evidence helper.
   Its fail-closed schema v4 separately records non-skipped API 26/27
-  CursorWindow and Android outbox-baseline regression runs plus a physical
-  final-signed-APK run, binds them
+  CursorWindow and Android outbox-baseline regression runs plus a declared
+  physical-device or official-emulator final-signed-APK run, binds them
   to the target commit and artifact hashes/evidence, validates Android device
   QA, IME privacy QA, sync QA, and Windows clipboard privacy QA rows, and
   renders a Markdown issue comment draft. Its explicit strict mode also loads a

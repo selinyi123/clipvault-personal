@@ -309,11 +309,11 @@ from the draft Release directory, not bytes from the `draft=false` preflight.
 
 ## 6. Record manual QA evidence on Issue #36
 
-After running the real Android device, IME privacy, sync, and Windows clipboard
+After running the declared final Android target, IME privacy, sync, and Windows clipboard
 privacy checks from `docs/MANUAL_QA_V1_6_0.md`, the local helper may be used for
 a drafting preview. The commands below are not the final eligible render:
 
-The physical Android lane must also follow the ordered signing-reset migration
+The final Android lane must also follow the ordered signing-reset migration
 in [ANDROID_SIGNING_RESET_V1_6_0.md](ANDROID_SIGNING_RESET_V1_6_0.md). In
 particular, retain redacted evidence that public clips drained before uninstall,
 Desktop-authoritative Memory was included in the zero-peer reseed, the old
@@ -359,7 +359,7 @@ Owner-approved GitHub Release publication.
 
 Strict-mode `PASS (OWNER-ATTESTED)` means the JSON is structurally complete; the helper does
 not fetch or independently parse referenced SDK/JUnit evidence and does not
-prove that the reported physical observations occurred.
+prove that the reported device observations occurred.
 Legacy schema-v2 compatibility mode can return `ok=true`, but it remains
 `BLOCKED` even if a binding object is supplied: it lacks the required re-pair
 outbox high-water row. Its historical success exit status means structural
@@ -476,10 +476,16 @@ also use different references and digests.
 
 Separately install the copy of
 `ClipVault-Android-v1.6.0-release-signed.apk` downloaded from the draft Release
-directory on a physical device. Verify its SHA-256 against the saved draft
-digest set and bind that run to the exact target commit, draft URL, draft=true
-run, and artifact-evidence reference. Use that physical release run ID for
-every passing Android, IME, and sync row.
+directory on exactly one declared final-QA target: either a physical device or
+an official Android emulator. For an emulator, use an official Android SDK
+system image, record `device_type=emulator`, SDK/Android version and AVD model,
+start from a clean application-data state, and do not claim OEM or physical
+hardware coverage. Verify its SHA-256 against the saved draft digest set and
+bind that run to the exact target commit, draft URL, draft=true run, and
+artifact-evidence reference. Use that declared release run ID for every passing
+Android, signing-reset, IME, and sync row. The legacy
+`signed-release-physical` run ID is an opaque schema-v4 compatibility value;
+the `device_type` field is authoritative.
 Debug instrumentation evidence never substitutes for signed-release manual QA.
 Run the Windows installer/portable and clipboard privacy cases with the EXEs
 downloaded from that same draft Release. The schema-v4 manual helper does not
