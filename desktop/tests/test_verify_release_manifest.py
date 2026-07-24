@@ -312,9 +312,28 @@ def test_parse_current_v2_apksigner_output():
         ),
         (
             "Number of signers: 1\n"
+            "Number  of signers: 2\n"
+            f"V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+        ),
+        (
+            "Number of signers: 1\n"
             f" V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
         ),
         "Number of signers: 1\nV2 Signer: certificate SHA-256 digest: abc123\n",
+        (
+            "Number of signers: 1\n"
+            f"V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+            f"V3.1 Signer: certificate SHA-256 digest: {OTHER_CERT_SHA256}\n"
+        ),
+        (
+            "Number of signers: 1\n"
+            f"V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+            f"V2 Signer : certificate SHA-256 digest: {OTHER_CERT_SHA256}\n"
+        ),
+        (
+            "Number of signers: 01\n"
+            f"V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+        ),
         (
             "Number of signers: 2\n"
             f"Signer #1 certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"

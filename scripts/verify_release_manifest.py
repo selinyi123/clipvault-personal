@@ -31,7 +31,7 @@ ANDROID_V2_SIGNER_CERT_LINE_RE = re.compile(
     r"(?P<digest>[0-9A-Fa-f]{64})"
 )
 ANDROID_SIGNER_COUNT_LINE_RE = re.compile(
-    r"Number of signers: (?P<count>[0-9]+)"
+    r"Number of signers: (?P<count>[1-9][0-9]*)"
 )
 KINDS = {"release-candidate-dry-run", "release"}
 PLATFORMS = {"windows", "android"}
@@ -85,13 +85,19 @@ def parse_android_signer_cert_sha256(text: str) -> str:
         looks_like_target = (
             (
                 "signer #" in lower_line
-                or re.search(r"\bv[0-9]+ signer:", lower_line) is not None
+                or re.search(
+                    r"\bv[0-9]+(?:\.[0-9]+)*\s*signer\b",
+                    lower_line,
+                )
+                is not None
             )
             and "certificate" in lower_line
             and "sha-256" in lower_line
             and "digest" in lower_line
         )
-        looks_like_signer_count = "number of signers" in lower_line
+        looks_like_signer_count = (
+            re.search(r"\bnumber\s+of\s+signers\b", lower_line) is not None
+        )
         if looks_like_target or looks_like_signer_count:
             raise ValueError(
                 f"{ANDROID_APKSIGNER_EVIDENCE} contains malformed signer evidence"
