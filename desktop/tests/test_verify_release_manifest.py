@@ -289,6 +289,11 @@ def test_parse_current_v2_apksigner_output():
             "Number of signers: 2\n"
             f"V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
         ),
+        (
+            "Number of signers: 2\n"
+            f"V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+            f"V2 Signer: certificate SHA-256 digest: {OTHER_CERT_SHA256}\n"
+        ),
         f"V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n",
         (
             "Number of signers: 1\n"
@@ -329,6 +334,11 @@ def test_parse_current_v2_apksigner_output():
             "Number of signers: 1\n"
             f"V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
             f"V2 Signer : certificate SHA-256 digest: {OTHER_CERT_SHA256}\n"
+        ),
+        (
+            "Number of signers: 1\n"
+            f"Signer #1 certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+            f"V2 Signer certificate SHA-256 digest: {OTHER_CERT_SHA256}\n"
         ),
         (
             "Number of signers: 01\n"
@@ -409,8 +419,15 @@ def test_verify_android_release_requires_owner_certificate_even_without_cli_flag
         )
 
 
-def test_verify_signed_android_manifest_rejects_wrong_owner_certificate(tmp_path):
-    _build_signed_android_fixture(tmp_path)
+@pytest.mark.parametrize(
+    "evidence_body",
+    [VALID_APKSIGNER_EVIDENCE, VALID_V2_APKSIGNER_EVIDENCE],
+)
+def test_verify_signed_android_manifest_rejects_wrong_owner_certificate(
+    tmp_path,
+    evidence_body,
+):
+    _build_signed_android_fixture(tmp_path, evidence_body=evidence_body)
 
     with pytest.raises(ValueError, match="Owner trust anchor"):
         verify_release_manifest.verify_manifest(
