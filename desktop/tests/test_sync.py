@@ -2154,7 +2154,11 @@ def test_h2_socket_auth_end_to_end(cfg):
         assert status == 401
         assert response_headers["Connection"] == "close"
         assert json.loads(payload)["error"]["code"] == "unauthorized"
-        assert request("GET", "/api/health")[0] == 200
+        health_status, _, health_payload = request("GET", "/api/health")
+        health = json.loads(health_payload)
+        assert health_status == 200
+        assert health["status"] == "ok"
+        assert health["db_ok"] is True
     finally:
         stop.set()
         server_thread.join(2)
