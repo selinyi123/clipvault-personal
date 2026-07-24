@@ -649,6 +649,7 @@ def test_apksigner_jar_requires_explicit_real_java(tmp_path):
 @pytest.mark.parametrize(
     ("key", "value", "message"),
     [
+        ("name", "Release artifact build", "name mismatch"),
         ("name", "Release artifacts v1.6.0 from main draft=false", "name mismatch"),
         ("path", ".github/workflows/other.yml", "path mismatch"),
         ("event", "push", "event mismatch"),
