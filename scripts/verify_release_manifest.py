@@ -22,9 +22,16 @@ EXCLUDED_NAMES = {"SHA256SUMS.txt", "RELEASE_MANIFEST.json"}
 ANDROID_APKSIGNER_EVIDENCE = "ANDROID_APKSIGNER_VERIFY.txt"
 MAX_ANDROID_APKSIGNER_EVIDENCE_BYTES = 64 * 1024
 ANDROID_CERT_SHA256_RE = re.compile(r"[0-9A-Fa-f]{64}")
-ANDROID_SIGNER_CERT_LINE_RE = re.compile(
+ANDROID_LEGACY_SIGNER_CERT_LINE_RE = re.compile(
     r"Signer #(?P<index>[1-9][0-9]*) certificate SHA-256 digest: "
     r"(?P<digest>[0-9A-Fa-f]{64})"
+)
+ANDROID_V2_SIGNER_CERT_LINE_RE = re.compile(
+    r"V2 Signer: certificate SHA-256 digest: "
+    r"(?P<digest>[0-9A-Fa-f]{64})"
+)
+ANDROID_SIGNER_COUNT_LINE_RE = re.compile(
+    r"Number of signers: (?P<count>[1-9][0-9]*)"
 )
 KINDS = {"release-candidate-dry-run", "release"}
 PLATFORMS = {"windows", "android"}
@@ -41,7 +48,7 @@ def normalize_android_cert_sha256(value: str) -> str:
 
 
 def parse_android_signer_cert_sha256(text: str) -> str:
-    """Return the sole Signer #1 certificate SHA-256 digest from apksigner."""
+    """Return the sole supported signer certificate SHA-256 from apksigner."""
 
     if len(text.encode("utf-8")) > MAX_ANDROID_APKSIGNER_EVIDENCE_BYTES:
         raise ValueError(
@@ -49,31 +56,71 @@ def parse_android_signer_cert_sha256(text: str) -> str:
             f"{MAX_ANDROID_APKSIGNER_EVIDENCE_BYTES} bytes"
         )
 
-    digests: list[str] = []
+    legacy_digests: list[str] = []
+    v2_digests: list[str] = []
+    signer_counts: list[int] = []
     for line in text.splitlines():
-        match = ANDROID_SIGNER_CERT_LINE_RE.fullmatch(line)
-        looks_like_target = (
-            "signer #" in line.lower()
-            and "certificate" in line.lower()
-            and "sha-256" in line.lower()
-            and "digest" in line.lower()
-        )
-        if match is None:
-            if looks_like_target:
+        legacy_match = ANDROID_LEGACY_SIGNER_CERT_LINE_RE.fullmatch(line)
+        v2_match = ANDROID_V2_SIGNER_CERT_LINE_RE.fullmatch(line)
+        signer_count_match = ANDROID_SIGNER_COUNT_LINE_RE.fullmatch(line)
+        if legacy_match is not None:
+            if legacy_match.group("index") != "1":
                 raise ValueError(
-                    f"{ANDROID_APKSIGNER_EVIDENCE} contains a malformed signer certificate SHA-256 line"
+                    f"{ANDROID_APKSIGNER_EVIDENCE} must describe exactly one signer"
                 )
-            continue
-        if match.group("index") != "1":
-            raise ValueError(
-                f"{ANDROID_APKSIGNER_EVIDENCE} must contain exactly one Signer #1 certificate"
+            legacy_digests.append(
+                normalize_android_cert_sha256(legacy_match.group("digest"))
             )
-        digests.append(normalize_android_cert_sha256(match.group("digest")))
+            continue
+        if v2_match is not None:
+            v2_digests.append(
+                normalize_android_cert_sha256(v2_match.group("digest"))
+            )
+            continue
+        if signer_count_match is not None:
+            signer_counts.append(int(signer_count_match.group("count")))
+            continue
 
+        lower_line = line.lower()
+        looks_like_target = (
+            (
+                "signer #" in lower_line
+                or re.search(
+                    r"\bv[0-9]+(?:\.[0-9]+)*\s*signer\b",
+                    lower_line,
+                )
+                is not None
+            )
+            and "certificate" in lower_line
+            and "sha-256" in lower_line
+            and "digest" in lower_line
+        )
+        looks_like_signer_count = (
+            re.search(r"\bnumber\s+of\s+signers\b", lower_line) is not None
+        )
+        if looks_like_target or looks_like_signer_count:
+            raise ValueError(
+                f"{ANDROID_APKSIGNER_EVIDENCE} contains malformed signer evidence"
+            )
+
+    if legacy_digests and v2_digests:
+        raise ValueError(
+            f"{ANDROID_APKSIGNER_EVIDENCE} must not mix legacy and V2 signer evidence"
+        )
+    if len(signer_counts) > 1 or (signer_counts and signer_counts[0] != 1):
+        raise ValueError(
+            f"{ANDROID_APKSIGNER_EVIDENCE} must describe exactly one signer"
+        )
+    if v2_digests and signer_counts != [1]:
+        raise ValueError(
+            f"{ANDROID_APKSIGNER_EVIDENCE} V2 evidence must describe exactly one signer"
+        )
+
+    digests = legacy_digests or v2_digests
     if len(digests) != 1:
         raise ValueError(
             f"{ANDROID_APKSIGNER_EVIDENCE} must contain exactly one "
-            "Signer #1 certificate SHA-256 digest"
+            "Signer #1 or V2 Signer certificate SHA-256 digest"
         )
     return digests[0]
 
