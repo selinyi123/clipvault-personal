@@ -77,7 +77,7 @@ def test_release_workflow_and_owner_pack_share_exact_canonical_release_body():
         encoding="utf-8"
     )
     match = re.search(
-        r"(?ms)^\s*cat > release-notes\.md <<EOF\r?\n(?P<body>.*?)^\s*EOF\r?$",
+        r"(?ms)^\s*cat > release-notes\.md <<'EOF'\r?\n(?P<body>.*?)^\s*EOF\r?$",
         workflow,
     )
     assert match is not None
@@ -96,6 +96,9 @@ def test_release_workflow_and_owner_pack_share_exact_canonical_release_body():
     )
 
     assert workflow_body == owner_pack.SIGNING_RESET_RELEASE_BODY
+    assert "`ClipVault-v1.6.0-LGPL-relink-kit.zip`." in workflow_body
+    assert "release notes contain an unresolved placeholder" in workflow
+    assert "release notes do not name the exact LGPL relink-kit asset" in workflow
     expected_items = 1 + sum(
         len(section.items) for section in owner_pack.manual_qa_evidence.REQUIRED_SECTIONS
     )

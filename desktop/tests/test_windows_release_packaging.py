@@ -103,6 +103,14 @@ def test_windows_workflows_build_from_locked_wheels_and_gate_frozen_tray():
         assert "--hidden-import pystray._win32" in workflow
         assert "--self-test-tray" in workflow
         assert '"tray self-test ok"' in workflow
+        assert (
+            r".\.venv-build\Scripts\python.exe packaging/pillow_feature_probe.py"
+            in workflow
+        )
+        assert "packaging/pillow-feature-report.txt" in workflow
+        assert '$pillowFeatureReport[0] -cne "libimagequant=False"' in workflow
+        assert '$pillowFeatureReport[1] -cne "raqm=False"' in workflow
+        assert "-PillowFeatureReport desktop/packaging/pillow-feature-report.txt" in workflow
         assert "pyi-archive_viewer.exe -r -l dist/clipvault.exe" in workflow
         assert 'foreach ($requiredModule in @("pystray._win32", "PIL.Image"))' in workflow
         assert '$requiredToken = "\'" + $requiredModule + "\'"' in workflow
@@ -112,11 +120,31 @@ def test_windows_workflows_build_from_locked_wheels_and_gate_frozen_tray():
         assert "Build-LgplRelinkKit.ps1" in workflow
 
         build = workflow.index("Build portable executable")
-        tray_gate = workflow.index("Verify frozen tray and record onefile inventory")
+        tray_gate = workflow.index(
+            "Verify frozen tray and Pillow features, then record onefile inventory"
+        )
+        pillow_probe = workflow.index(
+            r".\.venv-build\Scripts\python.exe packaging/pillow_feature_probe.py"
+        )
+        pillow_validation = workflow.index(
+            '$pillowFeatureReport[1] -cne "raqm=False"'
+        )
+        pillow_persist = workflow.index(
+            "Set-Content -LiteralPath packaging/pillow-feature-report.txt"
+        )
         installer = workflow.index("Build installer")
         kit = workflow.index("Build-LgplRelinkKit.ps1")
         manifest = workflow.index("scripts/release_candidate_manifest.py", kit)
-        assert build < tray_gate < installer < kit < manifest
+        assert (
+            build
+            < tray_gate
+            < pillow_probe
+            < pillow_validation
+            < pillow_persist
+            < installer
+            < kit
+            < manifest
+        )
 
 
 def test_relink_kit_is_fail_closed_and_installer_carries_notices():
@@ -143,10 +171,12 @@ def test_relink_kit_is_fail_closed_and_installer_carries_notices():
         "relink-kit-inventory.json",
         "clipvault-onefile-inventory.txt",
         "tray-self-test.txt",
+        "pillow-feature-report.txt",
         "COPYING.LGPL",
         "pystray-COPYING-GPL-3.0.txt",
         "pystray-COPYING-LGPL-3.0.txt",
         "pillow-12.3.0.cdx.json",
+        "pillow_feature_probe.py",
         "repack_pystray_wheel.py",
     ):
         assert required in kit
@@ -156,6 +186,22 @@ def test_relink_kit_is_fail_closed_and_installer_carries_notices():
     assert "Frozen onefile inventory is empty" in kit
     assert 'foreach ($requiredModule in @("pystray._win32", "PIL.Image"))' in kit
     assert 'foreach ($disallowedComponent in @("libimagequant", "raqm"))' in kit
+    assert '$pillowFeatureReportLines[0] -cne "libimagequant=False"' in kit
+    assert '$pillowFeatureReportLines[1] -cne "raqm=False"' in kit
+    assert "& $pythonPath $pillowFeatureProbePath 2>&1" in kit
+    assert (
+        '$observedPillowFeatureLines[0] -cne $pillowFeatureReportLines[0]'
+        in kit
+    )
+    assert (
+        '$observedPillowFeatureLines[1] -cne $pillowFeatureReportLines[1]'
+        in kit
+    )
+    assert 'evidence = "inventory/pillow-feature-report.txt"' in kit
+    assert (
+        'frozen_tray_evidence = "inventory/tray-self-test.txt"'
+        in kit
+    )
     assert "Relink kit ZIP inventory does not match the staged payload" in kit
     assert "Extracted relink kit inventory does not match the staged payload" in kit
     assert "Expand-Archive -LiteralPath $outputPath" in kit
@@ -181,6 +227,14 @@ def test_readme_uses_supported_locked_windows_build_instructions():
     assert "--self-test-tray" in readme
     assert "ClipVault-v1.6.0-LGPL-relink-kit.zip" in readme
     assert "pip install pyinstaller" not in readme.lower()
+
+
+def test_pillow_feature_probe_has_exact_release_scope():
+    probe = _read("desktop/packaging/pillow_feature_probe.py")
+
+    assert 'for feature_name in ("libimagequant", "raqm"):' in probe
+    assert 'print(f"{feature_name}={features.check_feature(feature_name)}")' in probe
+    assert probe.count("print(") == 1
 
 
 def test_relink_guide_proves_recipient_marker_in_frozen_executable():
