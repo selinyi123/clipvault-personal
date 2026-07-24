@@ -568,17 +568,21 @@ def _validate_run_record(
     commit: str,
 ) -> dict[str, Any]:
     data = _require_dict(record, label="workflow run response")
+    # With a top-level `run-name`, the Actions run API reports the rendered
+    # run title in both `name` and `display_title`. The static workflow
+    # identity remains bound independently by the exact workflow path.
+    expected_run_title = f"Release artifacts {version} from main draft=true"
     expected = {
         "id": run_id,
         "html_url": run_url,
-        "name": WORKFLOW_NAME,
+        "name": expected_run_title,
         "path": WORKFLOW_PATH,
         "event": "workflow_dispatch",
         "status": "completed",
         "conclusion": "success",
         "head_branch": BRANCH,
         "head_sha": commit,
-        "display_title": f"Release artifacts {version} from main draft=true",
+        "display_title": expected_run_title,
     }
     for key, value in expected.items():
         if data.get(key) != value:

@@ -228,7 +228,7 @@ class FakeRunner:
         record = {
             "id": RUN_ID,
             "html_url": RUN_URL,
-            "name": "Release artifact build",
+            "name": "Release artifacts v1.6.0 from main draft=true",
             "path": ".github/workflows/release.yml",
             "event": "workflow_dispatch",
             "status": "completed",
@@ -464,6 +464,12 @@ def test_live_evidence_binds_exact_run_draft_bytes_attestations_and_signer(tmp_p
     assert report["target_commit"] == COMMIT
     assert report["workflow_run"]["id"] == RUN_ID
     assert report["workflow_run"]["attempt"] == 1
+    assert report["workflow_run"]["workflow"] == "Release artifact build"
+    assert report["workflow_run"]["path"] == ".github/workflows/release.yml"
+    assert (
+        report["workflow_run"]["display_title"]
+        == "Release artifacts v1.6.0 from main draft=true"
+    )
     assert report["draft_release"]["is_draft"] is True
     assert report["release_tag"] == {
         "ref": "refs/tags/v1.6.0",
@@ -643,6 +649,8 @@ def test_apksigner_jar_requires_explicit_real_java(tmp_path):
 @pytest.mark.parametrize(
     ("key", "value", "message"),
     [
+        ("name", "Release artifact build", "name mismatch"),
+        ("name", "Release artifacts v1.6.0 from main draft=false", "name mismatch"),
         ("path", ".github/workflows/other.yml", "path mismatch"),
         ("event", "push", "event mismatch"),
         ("head_branch", "feature", "head_branch mismatch"),
