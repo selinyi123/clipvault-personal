@@ -21,6 +21,9 @@ param(
     [string] $TraySelfTestReport,
 
     [Parameter(Mandatory = $true)]
+    [string] $PillowFeatureReport,
+
+    [Parameter(Mandatory = $true)]
     [string] $PythonExecutable,
 
     [Parameter(Mandatory = $true)]
@@ -55,6 +58,7 @@ $trackedInputs = @(
     "desktop/pyproject.toml",
     "desktop/packaging/Build-LgplRelinkKit.ps1",
     "desktop/packaging/Export-WheelNotices.ps1",
+    "desktop/packaging/pillow_feature_probe.py",
     "desktop/packaging/repack_pystray_wheel.py",
     "desktop/packaging/run_clipvault.py",
     "desktop/packaging/windows-release-requirements.txt",
@@ -76,7 +80,11 @@ $wheelhousePath = (Resolve-Path -LiteralPath $Wheelhouse).Path
 $runtimeNoticesPath = (Resolve-Path -LiteralPath $RuntimeNotices).Path
 $inventoryPath = (Resolve-Path -LiteralPath $Inventory).Path
 $traySelfTestPath = (Resolve-Path -LiteralPath $TraySelfTestReport).Path
+$pillowFeatureReportPath = (Resolve-Path -LiteralPath $PillowFeatureReport).Path
 $pythonPath = (Resolve-Path -LiteralPath $PythonExecutable).Path
+$pillowFeatureProbePath = (
+    Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "pillow_feature_probe.py")
+).Path
 $requiredNoticeMembers = @(
     "pystray-0.19.5-py2.py3-none-any\pystray-0.19.5.dist-info\COPYING",
     "pystray-0.19.5-py2.py3-none-any\pystray-0.19.5.dist-info\COPYING.LGPL",
@@ -117,6 +125,32 @@ $trayReportLines = @(
 )
 if ($trayReportLines -cnotcontains "tray self-test ok") {
     throw "Frozen tray report does not contain the exact success marker"
+}
+$pillowFeatureReportLines = @(Get-Content -LiteralPath $pillowFeatureReportPath)
+if (
+    $pillowFeatureReportLines.Count -ne 2 -or
+    $pillowFeatureReportLines[0] -cne "libimagequant=False" -or
+    $pillowFeatureReportLines[1] -cne "raqm=False"
+) {
+    throw "Pillow feature report must contain only the two approved disabled-feature lines"
+}
+$observedPillowFeatureLines = @(
+    & $pythonPath $pillowFeatureProbePath 2>&1
+)
+$pillowFeatureProbeExit = $LASTEXITCODE
+if (
+    $pillowFeatureProbeExit -ne 0 -or
+    $observedPillowFeatureLines.Count -ne 2 -or
+    $observedPillowFeatureLines[0] -cne "libimagequant=False" -or
+    $observedPillowFeatureLines[1] -cne "raqm=False"
+) {
+    throw "Pillow feature probe failed for the supplied build interpreter"
+}
+if (
+    $observedPillowFeatureLines[0] -cne $pillowFeatureReportLines[0] -or
+    $observedPillowFeatureLines[1] -cne $pillowFeatureReportLines[1]
+) {
+    throw "Pillow feature report does not match the supplied build interpreter"
 }
 
 $expectedWheels = [ordered]@{
@@ -165,6 +199,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "windows-release-requirements.tx
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "run_clipvault.py") -Destination (Join-Path $stage "build")
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Export-WheelNotices.ps1") -Destination (Join-Path $stage "build")
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Build-LgplRelinkKit.ps1") -Destination (Join-Path $stage "build")
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "pillow_feature_probe.py") -Destination (Join-Path $stage "build")
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "repack_pystray_wheel.py") -Destination (Join-Path $stage "build")
 Copy-Item -LiteralPath (Join-Path $repoRoot "installer\clipvault.iss") -Destination (Join-Path $stage "build")
 Copy-Item -LiteralPath (Join-Path $repoRoot ".github\workflows\release.yml") -Destination (Join-Path $stage "build")
@@ -177,6 +212,7 @@ Copy-Item `
     -Destination (Join-Path $stage "licenses\pystray-COPYING-LGPL-3.0.txt")
 Copy-Item -LiteralPath $inventoryPath -Destination (Join-Path $stage "inventory\clipvault-onefile-inventory.txt")
 Copy-Item -LiteralPath $traySelfTestPath -Destination (Join-Path $stage "inventory\tray-self-test.txt")
+Copy-Item -LiteralPath $pillowFeatureReportPath -Destination (Join-Path $stage "inventory\pillow-feature-report.txt")
 Copy-Item -Path (Join-Path $wheelhousePath "*.whl") -Destination (Join-Path $stage "wheelhouse")
 
 $wheelSums = foreach ($wheelName in ($expectedWheels.Keys | Sort-Object)) {
@@ -254,8 +290,18 @@ if (
     pillow_feature_gate = [ordered]@{
         result = "passed"
         disallowed_features = @("libimagequant", "raqm")
-        evidence = "inventory/tray-self-test.txt"
-        evidence_sha256 = (Get-FileHash -LiteralPath $traySelfTestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        evidence = "inventory/pillow-feature-report.txt"
+        evidence_sha256 = (
+            Get-FileHash `
+                -LiteralPath (Join-Path $stage "inventory\pillow-feature-report.txt") `
+                -Algorithm SHA256
+        ).Hash.ToLowerInvariant()
+        frozen_tray_evidence = "inventory/tray-self-test.txt"
+        frozen_tray_evidence_sha256 = (
+            Get-FileHash `
+                -LiteralPath (Join-Path $stage "inventory\tray-self-test.txt") `
+                -Algorithm SHA256
+        ).Hash.ToLowerInvariant()
     }
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage "locks\build-environment.json") -Encoding UTF8
 

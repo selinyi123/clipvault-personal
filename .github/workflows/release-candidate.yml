@@ -86,7 +86,7 @@ jobs:
           --add-data "$PWD/packaging/runtime-notices;third_party/licenses"
           packaging/run_clipvault.py
 
-      - name: Verify frozen tray and record onefile inventory
+      - name: Verify frozen tray and Pillow features, then record onefile inventory
         working-directory: desktop
         shell: pwsh
         run: |
@@ -97,6 +97,21 @@ jobs:
           if ($trayExit -ne 0 -or $trayReport -notcontains "tray self-test ok") {
             throw "Frozen tray self-test failed with exit code $trayExit"
           }
+          $pillowFeatureReport = @(
+            & .\.venv-build\Scripts\python.exe packaging/pillow_feature_probe.py 2>&1
+          )
+          $pillowFeatureExit = $LASTEXITCODE
+          $pillowFeatureReport | ForEach-Object { Write-Host $_ }
+          if (
+            $pillowFeatureExit -ne 0 -or
+            $pillowFeatureReport.Count -ne 2 -or
+            $pillowFeatureReport[0] -cne "libimagequant=False" -or
+            $pillowFeatureReport[1] -cne "raqm=False"
+          ) {
+            throw "Locked .venv-build Pillow feature probe failed"
+          }
+          $pillowFeatureReport |
+            Set-Content -LiteralPath packaging/pillow-feature-report.txt -Encoding ASCII
           $inventory = @(
             & .\.venv-build\Scripts\pyi-archive_viewer.exe -r -l dist/clipvault.exe 2>&1
           )
@@ -152,6 +167,7 @@ jobs:
             -RuntimeNotices desktop/packaging/runtime-notices `
             -Inventory desktop/packaging/clipvault-onefile-inventory.txt `
             -TraySelfTestReport desktop/packaging/tray-self-test.txt `
+            -PillowFeatureReport desktop/packaging/pillow-feature-report.txt `
             -PythonExecutable desktop/.venv-build/Scripts/python.exe `
             -Output "release-candidate/ClipVault-v$version-LGPL-relink-kit.zip"
           python scripts/release_candidate_manifest.py --artifact-dir release-candidate --platform windows --version $version --commit "${{ github.sha }}"
