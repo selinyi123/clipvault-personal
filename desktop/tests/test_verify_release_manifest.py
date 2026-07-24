@@ -24,6 +24,20 @@ OTHER_CERT_SHA256 = "cd" * 32
 VALID_APKSIGNER_EVIDENCE = (
     f"Signer #1 certificate SHA-256 digest: {OWNER_CERT_SHA256}\n".encode("ascii")
 )
+VALID_V2_APKSIGNER_EVIDENCE = (
+    "Verifies\n"
+    "Verified using v1 scheme (JAR signing): false\n"
+    "Verified using v2 scheme (APK Signature Scheme v2): true\n"
+    "Verified using v3 scheme (APK Signature Scheme v3): false\n"
+    "Number of signers: 1\n"
+    "V2 Signer: certificate DN: CN=ClipVault Owner\n"
+    f"V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256.upper()}\n"
+    f"V2 Signer: certificate SHA-1 digest: {'1' * 40}\n"
+    f"V2 Signer: certificate MD5 digest: {'2' * 32}\n"
+    "V2 Signer: key algorithm: RSA\n"
+    "V2 Signer: key size (bits): 4096\n"
+    f"V2 Signer: public key SHA-256 digest: {OTHER_CERT_SHA256}\n"
+).encode("ascii")
 
 
 def _build_fixture(tmp_path):
@@ -259,6 +273,59 @@ def test_parse_realistic_multiline_apksigner_output_with_crlf():
     )
 
 
+def test_parse_current_v2_apksigner_output():
+    output = VALID_V2_APKSIGNER_EVIDENCE.decode("ascii")
+
+    assert (
+        verify_release_manifest.parse_android_signer_cert_sha256(output)
+        == OWNER_CERT_SHA256
+    )
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        (
+            "Number of signers: 2\n"
+            f"V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+        ),
+        f"V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n",
+        (
+            "Number of signers: 1\n"
+            f"V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+            f"V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+        ),
+        (
+            "Number of signers: 1\n"
+            f"Signer #1 certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+            f"V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+        ),
+        (
+            "Number of signers: 1\n"
+            f"Signer #1 certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+            f"V2 Signer: certificate SHA-256 digest: {OTHER_CERT_SHA256}\n"
+        ),
+        (
+            "Number of signers: 1\n"
+            "Number of signers: 1\n"
+            f"V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+        ),
+        (
+            "Number of signers: 1\n"
+            f" V2 Signer: certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+        ),
+        "Number of signers: 1\nV2 Signer: certificate SHA-256 digest: abc123\n",
+        (
+            "Number of signers: 2\n"
+            f"Signer #1 certificate SHA-256 digest: {OWNER_CERT_SHA256}\n"
+        ),
+    ],
+)
+def test_parse_rejects_ambiguous_or_incomplete_v2_signer_evidence(output):
+    with pytest.raises(ValueError):
+        verify_release_manifest.parse_android_signer_cert_sha256(output)
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -286,6 +353,24 @@ def test_verify_signed_android_manifest_matches_owner_certificate(tmp_path):
         commit="123release",
         require_signed=True,
         expected_android_cert_sha256=OWNER_CERT_SHA256.upper(),
+    )
+
+    assert manifest["signed"] is True
+
+
+def test_verify_signed_android_manifest_accepts_current_v2_evidence(tmp_path):
+    _build_signed_android_fixture(
+        tmp_path,
+        evidence_body=VALID_V2_APKSIGNER_EVIDENCE,
+    )
+
+    manifest = verify_release_manifest.verify_manifest(
+        tmp_path,
+        platform="android",
+        version="1.6.0",
+        commit="123release",
+        require_signed=True,
+        expected_android_cert_sha256=OWNER_CERT_SHA256,
     )
 
     assert manifest["signed"] is True
