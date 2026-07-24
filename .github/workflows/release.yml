@@ -447,7 +447,7 @@ jobs:
             echo "::error::Draft Release certificate does not match the approved v1.6.0 signing-reset certificate"
             exit 1
           fi
-          cat > release-notes.md <<EOF
+          cat > release-notes.md <<'EOF'
           # ClipVault Personal ${RELEASE_TAG}
 
           > [!WARNING]
@@ -481,6 +481,36 @@ jobs:
           Do not publish this draft until Issue #36 has signed APK evidence and
           manual Android IME/privacy/sync and Windows clipboard privacy evidence.
           EOF
+          OLD_ANDROID_CERT_SHA256="${old_android_cert_sha256}" python - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path("release-notes.md")
+          body = path.read_text(encoding="utf-8")
+          replacements = {
+              "${RELEASE_TAG}": os.environ["RELEASE_TAG"],
+              "${old_android_cert_sha256}": os.environ["OLD_ANDROID_CERT_SHA256"],
+              "${ANDROID_RELEASE_CERT_SHA256}": os.environ[
+                  "ANDROID_RELEASE_CERT_SHA256"
+              ],
+          }
+          for placeholder, value in replacements.items():
+              if placeholder not in body:
+                  raise SystemExit(
+                      f"release notes are missing required placeholder {placeholder}"
+                  )
+              body = body.replace(placeholder, value)
+          if "${" in body:
+              raise SystemExit("release notes contain an unresolved placeholder")
+          expected_relink_asset = (
+              f"`ClipVault-{os.environ['RELEASE_TAG']}-LGPL-relink-kit.zip`."
+          )
+          if expected_relink_asset not in body:
+              raise SystemExit(
+                  "release notes do not name the exact LGPL relink-kit asset"
+              )
+          path.write_text(body, encoding="utf-8", newline="\n")
+          PY
           files=()
           while IFS= read -r -d '' file; do
             files+=("${file}")
