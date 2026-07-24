@@ -13,6 +13,7 @@ import logging
 import socket
 import threading
 from email.message import Message
+from types import SimpleNamespace
 
 import pytest
 
@@ -311,8 +312,9 @@ def test_runtime_stop_releases_blocked_response_before_watchdog_finishes(
     assert not watchdogs[0]._thread.is_alive()
 
 
-def test_unauthorized_small_push_sends_401_before_bounded_body_drain():
+def test_unauthorized_small_push_sends_401_before_bounded_body_drain(monkeypatch):
     events: list[str] = []
+    clock = _FakeClock()
 
     class UnauthorizedApi:
         @staticmethod
@@ -335,12 +337,13 @@ def test_unauthorized_small_push_sends_401_before_bounded_body_drain():
         def flush() -> None:
             events.append("flush")
 
+    monkeypatch.setattr(api_server, "time", SimpleNamespace(monotonic=clock))
     connection = _FakeSocket()
     deadline = api_server._RequestDeadline(
         connection,
         10.0,
         None,
-        monotonic=_FakeClock(),
+        monotonic=clock,
     )
     reader = Reader()
     handler, sent = _bare_handler(UnauthorizedApi(), deadline, reader)
@@ -370,7 +373,11 @@ def test_unauthorized_small_push_sends_401_before_bounded_body_drain():
     assert handler.close_connection is True
 
 
-def test_unauthorized_partial_small_push_keeps_401_and_restores_timeout():
+def test_unauthorized_partial_small_push_keeps_401_and_restores_timeout(
+    monkeypatch,
+):
+    clock = _FakeClock()
+
     class UnauthorizedApi:
         @staticmethod
         def auth_ok(_token):
@@ -388,12 +395,13 @@ def test_unauthorized_partial_small_push_keeps_401_and_restores_timeout():
         def flush() -> None:
             pass
 
+    monkeypatch.setattr(api_server, "time", SimpleNamespace(monotonic=clock))
     connection = _FakeSocket()
     deadline = api_server._RequestDeadline(
         connection,
         10.0,
         None,
-        monotonic=_FakeClock(),
+        monotonic=clock,
     )
     handler, sent = _bare_handler(
         UnauthorizedApi(),
@@ -442,7 +450,7 @@ def test_unauthorized_reject_drain_has_one_absolute_time_budget(monkeypatch):
         def flush() -> None:
             pass
 
-    monkeypatch.setattr(api_server.time, "monotonic", clock)
+    monkeypatch.setattr(api_server, "time", SimpleNamespace(monotonic=clock))
     connection = _FakeSocket()
     deadline = api_server._RequestDeadline(
         connection,
