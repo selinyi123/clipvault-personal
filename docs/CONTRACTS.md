@@ -606,4 +606,6 @@ dir = "logs"
 retention_days = 14
 ```
 
-缺失文件 → 生成默认并提示填 vault_path；非法值 → 启动失败并给出具体字段错误（fail fast，不带病运行）。
+缺失文件 → 生成可用默认配置（`vault_path` 默认为用户“文档”目录下的
+`ClipVault Vault`）并继续启动；非法值 → 启动失败并给出具体字段错误
+（fail fast，不带病运行）。

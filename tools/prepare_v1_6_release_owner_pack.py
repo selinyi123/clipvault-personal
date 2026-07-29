@@ -52,6 +52,13 @@ SIGNING_RESET_RELEASE_BODY = f"""# ClipVault Personal {VERSION}
 > New certificate SHA-256: {NEW_ANDROID_CERT_SHA256}
 > There is no cryptographic signing continuity between these certificates.
 
+## Windows compatibility and privacy defaults
+
+The Windows installer and portable executable require Windows 10/11
+capable of running x64 applications. A fresh installer run leaves both
+login autostart and the finish-page launch option unselected. ClipVault
+starts monitoring the clipboard only after the user explicitly launches it.
+
 ## Windows tray dependency and relinking materials
 
 The Windows artifacts include pystray 0.19.5 under

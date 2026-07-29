@@ -392,3 +392,74 @@ def test_relink_guide_proves_recipient_marker_in_frozen_executable():
     assert "--self-test-tray-relink-marker" in main
     assert "CLIPVAULT_RELINK_EXERCISE_MARKER" in launcher
     assert "TrayRelinkMarkerError" in launcher
+
+
+def test_windows_installer_rejects_x86_and_keeps_startup_opt_in():
+    installer = _read("installer/clipvault.iss")
+    install_guide = _read("docs/INSTALL.md")
+    contracts = _read("docs/CONTRACTS.md")
+    release_workflow = _read(".github/workflows/release.yml")
+
+    assert installer.count("MinVersion=10.0") == 1
+    assert installer.count("ArchitecturesAllowed=x64compatible") == 1
+    assert installer.count("ArchitecturesInstallIn64BitMode=x64compatible") == 1
+    startup_tasks = [
+        line for line in installer.splitlines() if line.startswith('Name: "startup"')
+    ]
+    assert len(startup_tasks) == 1
+    assert "Flags: unchecked" in startup_tasks[0]
+    assert (
+        'Name: "{userstartup}\\ClipVault Personal"; '
+        'Filename: "{app}\\{#AppExe}"; Parameters: "--no-open"; Tasks: startup'
+        in installer
+    )
+    postinstall_runs = [
+        line for line in installer.splitlines() if "postinstall" in line
+    ]
+    assert len(postinstall_runs) == 1
+    assert "unchecked" in postinstall_runs[0].split("Flags:", 1)[1].split()
+    assert "开始监听剪贴板" in postinstall_runs[0]
+    assert "安装器和便携包要求系统可运行 x64 应用" in install_guide
+    assert "全新安装不会默认启用登录自启动" in install_guide
+    assert "升级安装会保留用户此前的登录自启动选择" in install_guide
+    assert '"Pillow==12.3.0" "pystray==0.19.5"' in install_guide
+    assert "生成可用默认配置" in contracts
+    assert "生成默认并提示填 vault_path" not in contracts
+    assert "capable of running x64 applications" in release_workflow
+    assert "login autostart and the finish-page launch option unselected" in (
+        release_workflow
+    )
+
+
+def test_relink_guide_uses_clean_windows_compatible_extraction():
+    guide = _read("third_party/RELINKING_V1_6_0.md")
+
+    assert "Compare-Object -CaseSensitive" in guide
+    assert "Unlocked or missing file in $($inventory.directory) inventory" in guide
+    assert guide.index("Compare-Object -CaseSensitive") < guide.index("$otherWheels")
+    assert "if (Test-Path -LiteralPath $work)" in guide
+    assert "relink-work already exists; use a fresh kit extraction" in guide
+    assert "Add-Type -AssemblyName System.IO.Compression.FileSystem" in guide
+    assert guide.count("[IO.Compression.ZipFile]::ExtractToDirectory(") == 2
+    assert "Expand-Archive -LiteralPath $appArchives[0].FullName" not in guide
+    assert "Expand-Archive -LiteralPath $pystrayArchives[0].FullName" not in guide
+
+
+def test_relink_guide_verifies_the_compiler_engine_not_pe_metadata():
+    guide = _read("third_party/RELINKING_V1_6_0.md")
+
+    assert "Compiler engine version: Inno Setup 6" in guide
+    assert "$isccExitCode -ne 0" in guide
+    assert "Inno Setup 6 compiler engine evidence is missing or ambiguous" in guide
+    assert ".VersionInfo.ProductVersion" not in guide
+
+
+def test_relink_guide_handles_powershell_51_native_stderr():
+    guide = _read("third_party/RELINKING_V1_6_0.md")
+
+    assert "Windows PowerShell 5.1 promotes native stderr" in guide
+    assert "$pyinstallerReport = @(" in guide
+    assert "packaging/run_clipvault.py 2>&1 |" in guide
+    assert "$pyinstallerExitCode = $LASTEXITCODE" in guide
+    assert "$pyinstallerExitCode -ne 0" in guide
+    assert guide.count('$ErrorActionPreference = "Continue"') == 2

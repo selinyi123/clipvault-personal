@@ -23,6 +23,8 @@ UninstallDisplayIcon={app}\{#AppExe}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+MinVersion=10.0
+ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 AppMutex=Local\ClipVaultPersonal
 CloseApplications=no
@@ -40,7 +42,9 @@ Source: "..\desktop\packaging\runtime-notices\*"; DestDir: "{app}\licenses"; Fla
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式:"
-Name: "startup"; Description: "开机自动启动 ClipVault（后台托盘运行）"; GroupDescription: "启动选项:"
+; Fresh installs keep clipboard monitoring opt-in. Inno preserves prior task
+; selections during an upgrade through its default UsePreviousTasks behavior.
+Name: "startup"; Description: "开机自动启动 ClipVault（后台托盘运行）"; GroupDescription: "启动选项:"; Flags: unchecked
 
 [Icons]
 Name: "{group}\ClipVault Personal"; Filename: "{app}\{#AppExe}"
@@ -49,7 +53,8 @@ Name: "{userdesktop}\ClipVault Personal"; Filename: "{app}\{#AppExe}"; Tasks: de
 Name: "{userstartup}\ClipVault Personal"; Filename: "{app}\{#AppExe}"; Parameters: "--no-open"; Tasks: startup
 
 [Run]
-Filename: "{app}\{#AppExe}"; Description: "立即启动 ClipVault"; Flags: nowait postinstall skipifsilent
+; Starting the watcher from the finish page also requires an explicit choice.
+Filename: "{app}\{#AppExe}"; Description: "启动 ClipVault（开始监听剪贴板）"; Flags: nowait postinstall skipifsilent unchecked
 
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/C exit /B 0"; Flags: runhidden; RunOnceId: "killcv"

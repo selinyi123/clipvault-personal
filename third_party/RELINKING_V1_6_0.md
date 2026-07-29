@@ -73,16 +73,19 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $kit = (Get-Location).Path
 
+$lockedPathsBySumFile = @{}
 foreach ($sumFile in @(
   "locks\wheelhouse-SHA256SUMS.txt",
   "locks\source-SHA256SUMS.txt"
 )) {
+  $lockedPaths = @()
   foreach ($line in Get-Content -LiteralPath (Join-Path $kit $sumFile)) {
     if ($line -cnotmatch '^([0-9a-f]{64})  (.+)$') {
       throw "Invalid checksum line in $sumFile"
     }
     $expected = $Matches[1]
-    $relative = $Matches[2].Replace(
+    $lockedRelative = $Matches[2]
+    $relative = $lockedRelative.Replace(
       "/",
       [IO.Path]::DirectorySeparatorChar
     )
@@ -92,6 +95,33 @@ foreach ($sumFile in @(
     if ($actual -cne $expected) {
       throw "Checksum mismatch: $relative"
     }
+    $lockedPaths += $lockedRelative
+  }
+  $lockedPathsBySumFile[$sumFile] = @($lockedPaths | Sort-Object)
+}
+
+foreach ($inventory in @(
+  @{
+    directory = "wheelhouse"
+    sum_file = "locks\wheelhouse-SHA256SUMS.txt"
+  },
+  @{
+    directory = "sources"
+    sum_file = "locks\source-SHA256SUMS.txt"
+  }
+)) {
+  $actualPaths = @(
+    Get-ChildItem -LiteralPath (Join-Path $kit $inventory.directory) -File |
+      ForEach-Object { "$($inventory.directory)/$($_.Name)" } |
+      Sort-Object
+  )
+  $inventoryDifference = @(
+    Compare-Object -CaseSensitive `
+      -ReferenceObject $lockedPathsBySumFile[$inventory.sum_file] `
+      -DifferenceObject $actualPaths
+  )
+  if ($inventoryDifference.Count -ne 0) {
+    throw "Unlocked or missing file in $($inventory.directory) inventory"
   }
 }
 ```
@@ -102,7 +132,10 @@ not change the public tray API:
 
 ```powershell
 $work = Join-Path $kit "relink-work"
-New-Item -ItemType Directory -Force -Path $work | Out-Null
+if (Test-Path -LiteralPath $work) {
+  throw "relink-work already exists; use a fresh kit extraction or remove only that disposable directory after review"
+}
+New-Item -ItemType Directory -Path $work | Out-Null
 
 $appArchives = @(Get-ChildItem "$kit\sources" -Filter `
   "clipvault-personal-v1.6.0-*.zip")
@@ -112,12 +145,21 @@ if ($appArchives.Count -ne 1 -or $pystrayArchives.Count -ne 1) {
   throw "Expected exactly one application and one pystray source archive"
 }
 
-Expand-Archive -LiteralPath $appArchives[0].FullName `
-  -DestinationPath "$work\application"
-Expand-Archive -LiteralPath $pystrayArchives[0].FullName `
-  -DestinationPath "$work\pystray"
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$applicationRoot = "$work\application"
+$pystrayExtractRoot = "$work\pystray"
+New-Item -ItemType Directory -Path $applicationRoot | Out-Null
+New-Item -ItemType Directory -Path $pystrayExtractRoot | Out-Null
+[IO.Compression.ZipFile]::ExtractToDirectory(
+  $appArchives[0].FullName,
+  $applicationRoot
+)
+[IO.Compression.ZipFile]::ExtractToDirectory(
+  $pystrayArchives[0].FullName,
+  $pystrayExtractRoot
+)
 $pystrayRoot = @(
-  Get-ChildItem "$work\pystray" -Directory
+  Get-ChildItem $pystrayExtractRoot -Directory
 )
 if ($pystrayRoot.Count -ne 1) {
   throw "Unexpected pystray source archive layout"
@@ -172,21 +214,35 @@ function Build-ClipVaultRecipient {
 
   Push-Location "$appRoot\desktop"
   try {
-    & $python -m PyInstaller `
-      --clean --noconfirm --onefile --name clipvault `
-      --hide-console hide-early `
-      --icon "$PWD/packaging/clipvault.ico" `
-      --hidden-import pystray._win32 `
-      --distpath "$output\dist" `
-      --workpath "$output\build-pyi" `
-      --specpath "$output\spec" `
-      --add-data "$PWD\clipvault\store\migrations;clipvault/store/migrations" `
-      --add-data "$PWD\clipvault\api\webui;clipvault/api/webui" `
-      --add-data "$appRoot\THIRD_PARTY_NOTICES.md;." `
-      --add-data "$appRoot\third_party;third_party" `
-      --add-data "$PWD\packaging\runtime-notices;third_party/licenses" `
-      packaging/run_clipvault.py
-    if ($LASTEXITCODE -ne 0) {
+    # Windows PowerShell 5.1 promotes native stderr to ErrorRecord objects when
+    # ErrorActionPreference is Stop. PyInstaller emits ordinary progress there,
+    # so capture the report under Continue and trust the native exit code.
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+      $pyinstallerReport = @(
+        & $python -m PyInstaller `
+          --clean --noconfirm --onefile --name clipvault `
+          --hide-console hide-early `
+          --icon "$PWD/packaging/clipvault.ico" `
+          --hidden-import pystray._win32 `
+          --distpath "$output\dist" `
+          --workpath "$output\build-pyi" `
+          --specpath "$output\spec" `
+          --add-data "$PWD\clipvault\store\migrations;clipvault/store/migrations" `
+          --add-data "$PWD\clipvault\api\webui;clipvault/api/webui" `
+          --add-data "$appRoot\THIRD_PARTY_NOTICES.md;." `
+          --add-data "$appRoot\third_party;third_party" `
+          --add-data "$PWD\packaging\runtime-notices;third_party/licenses" `
+          packaging/run_clipvault.py 2>&1 |
+          ForEach-Object { "$_" }
+      )
+      $pyinstallerExitCode = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $previousErrorActionPreference
+    }
+    $pyinstallerReport | ForEach-Object { Write-Host $_ }
+    if ($pyinstallerExitCode -ne 0) {
       throw "PyInstaller build failed"
     }
   } finally {
@@ -244,13 +300,32 @@ try {
     $isccCandidate = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
   }
   $iscc = (Resolve-Path -LiteralPath $isccCandidate).Path
-  $isccVersion = (Get-Item -LiteralPath $iscc).VersionInfo.ProductVersion
-  if ($isccVersion -notmatch '^6(\.|$)') {
-    throw "Inno Setup 6 is required; found $isccVersion at the explicit path"
+
+  # The official Inno Setup 6.7.3 ISCC.exe has PE ProductVersion 0.0.0.0.
+  # Verify the compiler engine banner emitted by the executable instead.
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $isccReport = @(
+      & $iscc clipvault.iss 2>&1 | ForEach-Object { "$_" }
+    )
+    $isccExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
   }
-  & $iscc clipvault.iss
-  if ($LASTEXITCODE -ne 0) {
+
+  $isccReport | ForEach-Object { Write-Host $_ }
+  if ($isccExitCode -ne 0) {
     throw "Modified installer build failed"
+  }
+  $engineEvidence = @(
+    $isccReport |
+      Where-Object {
+        $_ -match '^Compiler engine version: Inno Setup 6(?:\.|$)'
+      }
+  )
+  if ($engineEvidence.Count -ne 1) {
+    throw "Inno Setup 6 compiler engine evidence is missing or ambiguous"
   }
 } finally {
   Pop-Location
