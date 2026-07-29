@@ -1294,3 +1294,38 @@ workstream until the v1.6 release gate is resolved or the Owner explicitly
 re-prioritizes it.
 
 Typed text learning, behavioral profiling, cloud keyboard intelligence, and analytics remain out of scope unless a separate privacy design is approved first.
+
+## v1.6.0 Windows Sandbox release-gate diagnostic (2026-07-29)
+
+The release-artifact workflow run `30111865611` targeted main commit
+`73ac8d1f72eda344ca5f5b15c7bbdc19fd32f4a7` and produced Draft Release
+`359441214`. Its exact x64 installer completed a clean Windows Sandbox install
+and tray self-test; the sanitized QA report SHA-256 is
+`8a98ac344f42ae823ada721adaaccee65c93af8de93eec1e310f93349c27403f`.
+This is diagnostic evidence only, not final release evidence: the Draft is
+blocked and must not be published.
+
+The clean-recipient exercise verified the official Inno Setup 6.7.3 installer
+asset and attestation (SHA-256
+`9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732`).
+It also found that the official `ISCC.exe` reports PE ProductVersion
+`0.0.0.0`, so relink validation must use the compiler-engine banner instead of
+that PE field.
+
+The same exercise exposed four release blockers that the current Windows
+release-gate hotfix is intended to address, pending CI and rebuilt-artifact QA:
+
+- the installer did not reject unsupported Windows versions or systems unable
+  to run the x64 CPython payload;
+- login autostart and the finish-page launch path were selected by default;
+- clean Windows Sandbox did not provide the expected `Expand-Archive` command;
+- Windows PowerShell 5.1 promoted ordinary PyInstaller native stderr into a
+  terminating error while the guide used `ErrorActionPreference=Stop`.
+
+The guide was also hardened to reject any wheelhouse or source file not named
+by the supplied SHA-256 lock inventories.
+
+After the hotfix merges, rebuild the Draft from the new main and repeat exact
+installer, unmodified/modified relink, modified-installer install, and privacy
+default verification. Do not create a tag, publish v1.6.0, or close Issue #36
+from this diagnostic record.

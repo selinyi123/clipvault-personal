@@ -97,6 +97,10 @@ def test_release_workflow_and_owner_pack_share_exact_canonical_release_body():
 
     assert workflow_body == owner_pack.SIGNING_RESET_RELEASE_BODY
     assert "`ClipVault-v1.6.0-LGPL-relink-kit.zip`." in workflow_body
+    assert "capable of running x64 applications" in workflow_body
+    assert "login autostart and the finish-page launch option unselected" in (
+        workflow_body
+    )
     assert "release notes contain an unresolved placeholder" in workflow
     assert "release notes do not name the exact LGPL relink-kit asset" in workflow
     expected_items = 1 + sum(

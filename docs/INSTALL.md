@@ -1,24 +1,32 @@
 # ClipVault Personal — 安装与运行（桌面端 v1）
 
-桌面端是主节点。纯 Python，**零运行时依赖**（标准库 + ctypes）。
+桌面端是主节点。核心逻辑以标准库 + ctypes 为主；系统托盘需要固定的
+`Pillow==12.3.0` 与 `pystray==0.19.5`。安装器和便携包已自包含这些依赖。
 
 ## 1. 环境要求
 
-- Windows 10/11
+- Windows 10/11（v1.6.0 安装器和便携包要求系统可运行 x64 应用；源码运行取决于 Python 环境）
 - Python 3.11+（`python --version`）
 - Git（`git --version`，用于 GitHub 备份）
 - 测试需要 pytest（仅开发）
+
+> 隐私默认：全新安装不会默认启用登录自启动，也不会在完成页默认启动
+> ClipVault；升级安装会保留用户此前的登录自启动选择。完成页只有在用户
+> 主动勾选后才会启动应用并开始监听剪贴板。
 
 ## 2. 获取与运行
 
 ```powershell
 cd "D:\AI\CLAUDE CODE\Work Program\ClipVault\desktop"
 python -m venv .venv
-# 首次运行会生成 config.toml 模板并退出（提示填 vault_path）
+.\.venv\Scripts\python -m pip install "Pillow==12.3.0" "pystray==0.19.5"
+# 首次运行会生成可用配置和默认 Vault，然后开始监听剪贴板
 .\.venv\Scripts\python -m clipvault.main --config config.toml
 ```
 
-编辑生成的 `config.toml`，至少填写 `obsidian.vault_path`，再次运行即开始监听剪切板。
+首次运行会生成可用的 `config.toml`，并在“文档”目录下创建默认的
+`ClipVault Vault`。如果要改用现有 Obsidian Vault，请先停止 ClipVault，
+修改 `obsidian.vault_path`，再重新启动。
 浏览器打开 **http://127.0.0.1:8787/** 管理历史、搜索、隔离区、词库、配对。
 
 手动采集当前剪切板一次（不常驻）：
