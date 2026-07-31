@@ -1,0 +1,38 @@
+{
+  "format_version": 1,
+  "privacy": {
+    "source": "project-authored synthetic fixtures",
+    "contains_personal_data": false,
+    "typed_text_persistence_allowed": false
+  },
+  "activation": {
+    "status": "READY_FOR_LOCAL_BUILD_ONLY",
+    "required_schema_sha256": "ec39c3c59da62f7c8e6d6b81a6043a8534a0586b5e070fb65a3cb4e7139416f0",
+    "required_dictionary_sha256": "e7147b4d96d271fe358a634149fbc61c319fb7541ca7bea4433f7f7c5951141d"
+  },
+  "vectors": [
+    {
+      "id": "RIME-PINYIN-001",
+      "keys": ["n", "i", "h", "a", "o"],
+      "expected_composing": "nihao",
+      "expected_candidate_contains": "你好",
+      "select_candidate_text": "你好",
+      "expected_commit": "你好"
+    },
+    {
+      "id": "RIME-PINYIN-002",
+      "keys": ["z", "h", "o", "n", "g", "g", "u", "o"],
+      "expected_composing": "zhongguo",
+      "expected_candidate_contains": "中国",
+      "select_candidate_text": "中国",
+      "expected_commit": "中国"
+    },
+    {
+      "id": "RIME-RESET-001",
+      "keys": ["n", "i"],
+      "action": "reset",
+      "expected_composing": "",
+      "expected_candidates": []
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "format_version": 1,
+  "captured_at_utc": "2026-07-31T09:04:47Z",
+  "clipvault": {
+    "repository": "selinyi123/clipvault-personal",
+    "base_ref": "main",
+    "base_sha": "531d177b4485a5f32f97229a8d571969f6edf536",
+    "production_integration_allowed": false,
+    "binary_artifact_upload_allowed": false
+  },
+  "toolchain": {
+    "jdk": "17",
+    "gradle": "8.10.2",
+    "android_gradle_plugin": "8.5.2",
+    "android_build_tools": "35.0.0",
+    "cmake": "3.22.1",
+    "android_ndk": "28.0.13004108",
+    "abis": [
+      "arm64-v8a",
+      "x86_64"
+    ],
+    "emulator_system_image": "system-images;android-35;google_apis_ps16k;x86_64",
+    "required_page_size_bytes": 16384,
+    "github_runner": "ubuntu-24.04"
+  },
+  "tracks": {
+    "A_custom_librime_jni": {
+      "role": "preferred single-APK engine path",
+      "latest_stable": {
+        "repository": "rime/librime",
+        "tag": "1.16.1",
+        "sha": "de4700e9f6b75b109910613df907965e3cbe0567",
+        "license": "BSD-3-Clause"
+      },
+      "previous_stable": {
+        "repository": "rime/librime",
+        "tag": "1.16.0",
+        "sha": "a251145d3aafa33871824a40bbec04c966bd8b56",
+        "license": "BSD-3-Clause"
+      }
+    },
+    "B_fcitx5_external_addon": {
+      "role": "fallback external-framework path",
+      "latest_stable": {
+        "repository": "fcitx5-android/fcitx5-android",
+        "tag": "0.1.3",
+        "sha": "048f581c652367567b8ee5c28c5163b805288895",
+        "license": "LGPL-2.1-only"
+      },
+      "previous_stable": {
+        "repository": "fcitx5-android/fcitx5-android",
+        "tag": "0.1.2",
+        "sha": "5a4870c05785a8c9de390586e966ca4de70ed8e1",
+        "license": "LGPL-2.1-only"
+      }
+    },
+    "reference_trime": {
+      "role": "architecture reference only; no code copying",
+      "stable": {
+        "repository": "osfans/trime",
+        "tag": "v3.3.10",
+        "sha": "11440ffceb618b68deeddf4bdf7497b082cb87ae",
+        "license": "GPL-3.0-or-later"
+      }
+    }
+  },
+  "data_inputs": {
+    "schema": {
+      "path": "data/clipvault_poc.schema.yaml",
+      "content_sha256": "ec39c3c59da62f7c8e6d6b81a6043a8534a0586b5e070fb65a3cb4e7139416f0",
+      "license": "LicenseRef-ClipVault-Owner-Approval-Pending",
+      "status": "PINNED_PROJECT_OWNED_LICENSE_REVIEW_PENDING"
+    },
+    "dictionary": {
+      "path": "data/clipvault_poc.dict.yaml",
+      "content_sha256": "e7147b4d96d271fe358a634149fbc61c319fb7541ca7bea4433f7f7c5951141d",
+      "license": "LicenseRef-ClipVault-Owner-Approval-Pending",
+      "status": "PINNED_PROJECT_OWNED_LICENSE_REVIEW_PENDING"
+    },
+    "default_config": {
+      "path": "data/default.yaml",
+      "content_sha256": "edcc5cf7ba1e384d5b4ffa83459c1ed423fd1c0b5aa643cdf60e6a4d5c81fed4",
+      "license": "LicenseRef-ClipVault-Owner-Approval-Pending",
+      "status": "PINNED_PROJECT_OWNED_LICENSE_REVIEW_PENDING"
+    }
+  },
+  "license_gate": {
+    "review_status": "NOT_APPROVED",
+    "unresolved_items": [
+      "A track transitive native dependencies",
+      "B track plugin/addon transitive dependencies",
+      "project-owned PoC data license approval",
+      "NOTICE/source/relink delivery obligations"
+    ]
+  }
+}

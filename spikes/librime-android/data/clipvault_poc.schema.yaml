@@ -1,0 +1,42 @@
+# Rime schema
+# encoding: utf-8
+
+schema:
+  schema_id: clipvault_poc
+  name: ClipVault PoC
+  version: "1.0"
+  author:
+    - ClipVault
+  description: |
+    Project-authored deterministic table schema for the isolated engine PoC.
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [ 中文, 西文 ]
+
+engine:
+  processors:
+    - ascii_composer
+    - speller
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - abc_segmentor
+    - fallback_segmentor
+  translators:
+    - table_translator
+  filters:
+    - uniquifier
+
+speller:
+  alphabet: abcdefghijklmnopqrstuvwxyz
+  delimiter: " '"
+
+translator:
+  dictionary: clipvault_poc
+  enable_user_dict: false
+  enable_sentence: false
+  enable_completion: false
