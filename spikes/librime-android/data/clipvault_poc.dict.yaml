@@ -1,0 +1,17 @@
+# Rime dictionary
+# encoding: utf-8
+#
+# Project-authored synthetic data for ClipVault's isolated build PoC.
+# It is not a production Chinese dictionary.
+
+---
+name: clipvault_poc
+version: "1.0"
+sort: by_weight
+use_preset_vocabulary: false
+...
+
+你好	nihao	1000
+中国	zhongguo	1000
+输入法	shurufa	900
+剪贴板	jiantieban	900
