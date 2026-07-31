@@ -66,18 +66,22 @@
   },
   "data_inputs": {
     "schema": {
-      "repository": null,
-      "tag_or_commit": null,
-      "sha": null,
-      "license": null,
-      "status": "BLOCKED_UNTIL_PINNED_AND_LICENSE_APPROVED"
+      "path": "data/clipvault_poc.schema.yaml",
+      "content_sha256": "ec39c3c59da62f7c8e6d6b81a6043a8534a0586b5e070fb65a3cb4e7139416f0",
+      "license": "LicenseRef-ClipVault-Owner-Approval-Pending",
+      "status": "PINNED_PROJECT_OWNED_LICENSE_REVIEW_PENDING"
     },
     "dictionary": {
-      "repository": null,
-      "tag_or_commit": null,
-      "sha": null,
-      "license": null,
-      "status": "BLOCKED_UNTIL_PINNED_AND_LICENSE_APPROVED"
+      "path": "data/clipvault_poc.dict.yaml",
+      "content_sha256": "e7147b4d96d271fe358a634149fbc61c319fb7541ca7bea4433f7f7c5951141d",
+      "license": "LicenseRef-ClipVault-Owner-Approval-Pending",
+      "status": "PINNED_PROJECT_OWNED_LICENSE_REVIEW_PENDING"
+    },
+    "default_config": {
+      "path": "data/default.yaml",
+      "content_sha256": "edcc5cf7ba1e384d5b4ffa83459c1ed423fd1c0b5aa643cdf60e6a4d5c81fed4",
+      "license": "LicenseRef-ClipVault-Owner-Approval-Pending",
+      "status": "PINNED_PROJECT_OWNED_LICENSE_REVIEW_PENDING"
     }
   },
   "license_gate": {
@@ -85,8 +89,7 @@
     "unresolved_items": [
       "A track transitive native dependencies",
       "B track plugin/addon transitive dependencies",
-      "Rime schema",
-      "Rime dictionary",
+      "project-owned PoC data license approval",
       "NOTICE/source/relink delivery obligations"
     ]
   }
