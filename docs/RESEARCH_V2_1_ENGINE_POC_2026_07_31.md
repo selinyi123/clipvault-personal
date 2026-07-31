@@ -8,7 +8,7 @@
   CandidateMixer、UI 与隐私边界全控的目标，仍是优先路线。
 - B：ClipVault 作为 fcitx5-android 的外部 addon。它是工程失败时的回退，不是未经验证的
   自动替代；必须证明 addon 确实能够注入候选并接收点击回传。
-- Trime：只用于核对 Android 上 librime 的构建和会话模型。其相关构建/JNI代码为
+- Trime：只用于核对 Android 上 librime 的构建和会话模型。其相关构建/JNI 代码为
   GPL-3.0-or-later，不复制到 ClipVault。
 
 这次没有把中文引擎直接接入 production IME。仓库目前仍受 v1.6 发布门和 v2.0 双 IME
@@ -37,23 +37,29 @@
 | HeliBoard/AOSP LatinIME | 键盘手感、布局、词典管理参考 | GPL/AOSP 架构不替代 librime |
 | Espanso/CopyQ | 文本扩展与剪贴板动作模型参考 | 不参与 Android 中文候选生成 |
 
-## 已落地的 P0
+## 已落地的 PoC bootstrap
 
-`spikes/librime-android/` 新增：
+`spikes/librime-android/` 已新增：
 
 - 机器可读的 `POC_LOCK.json`，锁定工具链、ABI、16 KB 模拟器和 A/B 上游版本；
-- `THIRD_PARTY_NATIVE.md`，在 schema、dictionary 与传递依赖不完整时禁止二进制上传；
-- 项目自写的合成拼音/重置向量；
-- fail-closed 静态校验器；
+- 项目自写的最小 table schema、四词合成字典和 default 配置，全部按 SHA-256 锁定；
+- 与上述数据哈希绑定的合成候选/重置向量；
+- `THIRD_PARTY_NATIVE.md`，在传递依赖和数据再分发许可未批准时禁止二进制上传；
+- fail-closed 静态校验器，会核对 Git SHA、数据内容哈希、路径边界和隐私声明；
 - 遍历所有 `.so` 的 16 KB ELF LOAD alignment 检查器；
 - 仅运行静态检查、不会构建或上传原生产物的 GitHub Actions gate。
 
+这里采用项目自写的极小 table schema，而不是先打包 Luna Pinyin 等完整词库。原因是当前任务是
+验证 librime 的 Android 构建、JNI 会话和候选通路，不是评价生产词库质量。这样可以先隔离
+词库版权、体积和来源问题，同时仍能固定验证 `nihao → 你好`、`zhongguo → 中国` 和 reset。
+
 ## 下一实施片
 
-### P1：数据与许可锁
+### P1：A 路线原生依赖锁
 
-选择一个最小简体拼音 schema/dictionary 组合，逐项记录仓库、SHA、SPDX、NOTICE、是否修改及
-分发义务。未完成前，向量保持 inactive，CI 不上传 APK/`.so`。
+解析 librime 1.16.1 的全部 submodule/transitive native 依赖，逐项填写 SPDX、源码、补丁和
+分发义务；由 Owner 决定项目自写 PoC 数据的再分发许可证。许可未批准前可以编译并生成纯文本
+报告，但 CI 不上传 APK/`.so`。
 
 ### P2-A：最小 librime JNI
 
@@ -62,7 +68,7 @@
 
 ### P2-B：外部 addon
 
-固定安装 fcitx5-android、Rime plugin/data 与 ClipVault addon。先证明 `nihao` 能产生 Rime
+固定安装 fcitx5-android、Rime plugin 与 ClipVault addon。先证明同一锁定数据能产生 Rime
 候选，再注入一个唯一合成候选并验证点击 payload；记录 Kotlin/C++/IPC 真实边界。
 
 ### P3：硬证据
