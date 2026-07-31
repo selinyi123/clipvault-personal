@@ -1,0 +1,38 @@
+{
+  "format_version": 1,
+  "privacy": {
+    "source": "project-authored synthetic fixtures",
+    "contains_personal_data": false,
+    "typed_text_persistence_allowed": false
+  },
+  "activation": {
+    "status": "BLOCKED_UNTIL_SCHEMA_AND_DICTIONARY_ARE_PINNED",
+    "required_schema_sha": null,
+    "required_dictionary_sha": null
+  },
+  "vectors": [
+    {
+      "id": "RIME-PINYIN-001",
+      "keys": ["n", "i", "h", "a", "o"],
+      "expected_composing": "nihao",
+      "expected_candidate_contains": "你好",
+      "select_candidate_text": "你好",
+      "expected_commit": "你好"
+    },
+    {
+      "id": "RIME-PINYIN-002",
+      "keys": ["z", "h", "o", "n", "g", "g", "u", "o"],
+      "expected_composing": "zhongguo",
+      "expected_candidate_contains": "中国",
+      "select_candidate_text": "中国",
+      "expected_commit": "中国"
+    },
+    {
+      "id": "RIME-RESET-001",
+      "keys": ["n", "i"],
+      "action": "reset",
+      "expected_composing": "",
+      "expected_candidates": []
+    }
+  ]
+}
