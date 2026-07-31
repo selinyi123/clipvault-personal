@@ -6,9 +6,9 @@
     "typed_text_persistence_allowed": false
   },
   "activation": {
-    "status": "BLOCKED_UNTIL_SCHEMA_AND_DICTIONARY_ARE_PINNED",
-    "required_schema_sha": null,
-    "required_dictionary_sha": null
+    "status": "READY_FOR_LOCAL_BUILD_ONLY",
+    "required_schema_sha256": "ec39c3c59da62f7c8e6d6b81a6043a8534a0586b5e070fb65a3cb4e7139416f0",
+    "required_dictionary_sha256": "e7147b4d96d271fe358a634149fbc61c319fb7541ca7bea4433f7f7c5951141d"
   },
   "vectors": [
     {
