@@ -19,7 +19,8 @@
       "select_candidate"
     ],
     "unhandled_key_is_error": false,
-    "reset_requires_empty_composition_and_candidates": true
+    "failed_initialize_calls_shutdown": true,
+    "reset_requires_empty_state": true
   },
   "files": [
     {
@@ -32,11 +33,11 @@
     },
     {
       "path": "bridge/src/rime_bridge.cpp",
-      "content_sha256": "4609baa69ebebeeed8acf604cfe1926d685d7320a762b7dda9ca3aa9378e0fa1"
+      "content_sha256": "b59094ee2f1e65674f4e3f98cfedcb327892cd56322d815b003eb6cd5bca2296"
     },
     {
       "path": "bridge/tests/rime_bridge_test.cpp",
-      "content_sha256": "6f9d3de35d9084f85a95d7bb059ac618c3e3cf39cf0cc0424e4f818ff5289bd4"
+      "content_sha256": "e9bcd2bc865ce69f4205d2cfcc1933f3d0bd33ca1484005b5db60ba029ceaebc"
     }
   ]
 }
