@@ -20,7 +20,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Validate locks, data, vectors and bridge digests
+      - name: Validate locks, data, vectors, patches and bridge digests
         run: python spikes/librime-android/tools/validate_poc.py
       - name: Configure project-owned bridge contract
         run: >-
@@ -32,3 +32,40 @@ jobs:
         run: cmake --build build/librime-bridge
       - name: Test bridge contract
         run: ctest --test-dir build/librime-bridge --output-on-failure
+      - name: Fetch locked OpenCC source
+        run: |
+          git init build/opencc-src
+          git -C build/opencc-src remote add origin https://github.com/BYVoid/OpenCC.git
+          git -C build/opencc-src fetch --depth=1 origin 556ed22496d650bd0b13b6c163be9814637970ae
+          git -C build/opencc-src checkout --detach FETCH_HEAD
+          test "$(git -C build/opencc-src rev-parse HEAD)" = "556ed22496d650bd0b13b6c163be9814637970ae"
+      - name: Apply locked OpenCC library-only patch
+        run: |
+          git -C build/opencc-src apply --check \
+            "$GITHUB_WORKSPACE/spikes/librime-android/patches/opencc-library-only.patch"
+          git -C build/opencc-src apply \
+            "$GITHUB_WORKSPACE/spikes/librime-android/patches/opencc-library-only.patch"
+      - name: Configure OpenCC library-only host proof
+        run: >-
+          cmake -S build/opencc-src
+          -B build/opencc-host
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_SHARED_LIBS=OFF
+          -DBUILD_DOCUMENTATION=OFF
+          -DBUILD_TOOLS=OFF
+          -DBUILD_DATA=OFF
+          -DENABLE_GTEST=OFF
+          -DENABLE_BENCHMARK=OFF
+          -DENABLE_DARTS=OFF
+          -DBUILD_PYTHON=OFF
+          -DUSE_SYSTEM_MARISA=OFF
+      - name: Build only libopencc and reject excluded targets
+        run: |
+          cmake --build build/opencc-host --target libopencc
+          cmake --build build/opencc-host --target help > build/opencc-targets.txt
+          if grep -E '(^|[/[:space:]])(opencc|opencc_dict|opencc_phrase_extract|Dictionaries)(:|$)' \
+            build/opencc-targets.txt; then
+            echo "Excluded OpenCC tool or data target is still present" >&2
+            exit 1
+          fi
