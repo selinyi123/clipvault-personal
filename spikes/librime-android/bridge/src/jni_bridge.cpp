@@ -9,6 +9,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "clipvault/librime_backend.h"
 #include "clipvault/rime_bridge.h"
@@ -61,14 +62,21 @@ class JavaString final {
     if (chars_ == nullptr) {
       throw std::runtime_error(std::string("cannot read ") + field_name);
     }
-    std::u16string utf16;
-    utf16.reserve(static_cast<std::size_t>(length_));
-    for (jsize index = 0; index < length_; ++index) {
-      utf16.push_back(static_cast<char16_t>(chars_[index]));
-    }
-    utf8_ = utf16_to_utf8(utf16);
-    if (utf8_.find('\0') != std::string::npos) {
-      throw std::invalid_argument(std::string(field_name) + " must not contain U+0000");
+    try {
+      std::u16string utf16;
+      utf16.reserve(static_cast<std::size_t>(length_));
+      for (jsize index = 0; index < length_; ++index) {
+        utf16.push_back(static_cast<char16_t>(chars_[index]));
+      }
+      utf8_ = utf16_to_utf8(utf16);
+      if (utf8_.find('\0') != std::string::npos) {
+        throw std::invalid_argument(std::string(field_name) +
+                                    " must not contain U+0000");
+      }
+    } catch (...) {
+      env_->ReleaseStringChars(value_, chars_);
+      chars_ = nullptr;
+      throw;
     }
   }
 
@@ -108,8 +116,12 @@ jstring new_string(JNIEnv* env, const std::string& value) {
   if (utf16.size() > static_cast<std::size_t>(std::numeric_limits<jsize>::max())) {
     throw std::overflow_error("string is too large for JNI");
   }
-  return env->NewString(reinterpret_cast<const jchar*>(utf16.data()),
-                        static_cast<jsize>(utf16.size()));
+  std::vector<jchar> units;
+  units.reserve(utf16.size());
+  for (const auto unit : utf16) {
+    units.push_back(static_cast<jchar>(unit));
+  }
+  return env->NewString(units.data(), static_cast<jsize>(units.size()));
 }
 
 jobjectArray encode_snapshot(JNIEnv* env,
@@ -203,6 +215,12 @@ Java_org_clipvault_rime_poc_NativeRimeBridge_nativeCreate(
     JavaString user(env, user_data_dir, "user_data_dir");
     JavaString schema(env, schema_id, "schema_id");
 
+    std::scoped_lock lock(registry_mutex());
+    if (!registry().empty()) {
+      throw std::logic_error(
+          "the PoC permits only one active native Rime session");
+    }
+
     auto bridge = std::make_unique<Bridge>(std::make_unique<LibrimeBackend>());
     bridge->initialize(
         InitOptions{shared.utf8(), user.utf8(), schema.utf8()});
@@ -212,7 +230,6 @@ Java_org_clipvault_rime_poc_NativeRimeBridge_nativeCreate(
     if (handle <= 0) {
       throw std::overflow_error("native session handle space exhausted");
     }
-    std::scoped_lock lock(registry_mutex());
     const auto inserted = registry().emplace(handle, std::move(session));
     if (!inserted.second) {
       throw std::logic_error("native session handle collision");
@@ -271,16 +288,13 @@ Java_org_clipvault_rime_poc_NativeRimeBridge_nativeDestroy(
     if (handle <= 0) {
       return false;
     }
-    std::shared_ptr<Session> session;
-    {
-      std::scoped_lock lock(registry_mutex());
-      const auto found = registry().find(handle);
-      if (found == registry().end()) {
-        return false;
-      }
-      session = std::move(found->second);
-      registry().erase(found);
+    std::scoped_lock lock(registry_mutex());
+    const auto found = registry().find(handle);
+    if (found == registry().end()) {
+      return false;
     }
+    auto session = std::move(found->second);
+    registry().erase(found);
     session->bridge->shutdown();
     return true;
   });
