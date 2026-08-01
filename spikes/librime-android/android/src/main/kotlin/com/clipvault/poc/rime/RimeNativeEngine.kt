@@ -95,9 +95,21 @@ class RimeNativeEngine private constructor(
             val shared = sharedDataDir.canonicalFile
             val user = userDataDir.canonicalFile
             require(shared != user) { "data_directories_must_differ" }
+            require(!isNested(shared, user) && !isNested(user, shared)) {
+                "data_directories_must_not_overlap"
+            }
+            require(shared.isDirectory) { "shared_data_directory_missing" }
+            require(user.isDirectory || user.mkdirs()) {
+                "user_data_directory_unavailable"
+            }
             val handle = nativeOpen(shared.path, user.path)
             check(handle != 0L) { "native_open_returned_zero" }
             return RimeNativeEngine(handle, Thread.currentThread().id)
+        }
+
+        private fun isNested(child: File, parent: File): Boolean {
+            val prefix = parent.path.trimEnd(File.separatorChar) + File.separator
+            return child.path.startsWith(prefix)
         }
 
         @JvmStatic
