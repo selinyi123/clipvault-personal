@@ -1,7 +1,7 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "captured_at_utc": "2026-08-01T09:11:37Z",
-  "status": "HOST_CONTRACT_AND_PUBLIC_API_BACKEND_SOURCE",
+  "status": "HOST_CONTRACT_PUBLIC_API_BACKEND_AND_JNI_SOURCE",
   "native_librime_linked": false,
   "production_integration_allowed": false,
   "language_standard": "c++17",
@@ -12,6 +12,19 @@
     "git_blob_sha": "2fccde0fb83ead04d0a12ef834c3770d64dff211",
     "syntax_check_required": true,
     "linked_runtime_proven": false
+  },
+  "jni_contract": {
+    "java_class": "org.clipvault.rime.poc.NativeRimeBridge",
+    "native_library": "clipvault_rime_jni",
+    "syntax_check_required": true,
+    "java_compile_required": true,
+    "linked_runtime_proven": false,
+    "snapshot_wire_format": [
+      "handled_0_or_1",
+      "composition_utf8",
+      "commit_utf8",
+      "candidate_text_comment_pairs"
+    ]
   },
   "contract": {
     "lifecycle": [
@@ -30,12 +43,16 @@
     "failed_initialize_calls_shutdown": true,
     "reset_requires_empty_state": true,
     "backend_uses_public_c_api_only": true,
-    "reset_drains_unread_commit": true
+    "reset_drains_unread_commit": true,
+    "jni_uses_opaque_handles": true,
+    "jni_destroy_is_idempotent": true,
+    "jni_unicode_conversion_is_strict": true,
+    "jni_rejects_embedded_nul_input": true
   },
   "files": [
     {
       "path": "bridge/CMakeLists.txt",
-      "content_sha256": "933895bcc308488ef33fb44a21d06108e01b9a8a6f87bd1f974866ad6bb3a364"
+      "content_sha256": "05697707fe461fd61a29c0f1c98a20566fedbc2ab60c1bbc99e2a4392b37c4a5"
     },
     {
       "path": "bridge/include/clipvault/rime_bridge.h",
@@ -46,6 +63,10 @@
       "content_sha256": "909d7b911f756d07e973d65dd77c24d46e0bc271bfc79bccd5647361c4de7de8"
     },
     {
+      "path": "bridge/include/clipvault/utf8.h",
+      "content_sha256": "b3c0bb806c15b67e8f053823856194c7fa4628f8318d9ba025c0684b55f4cb0c"
+    },
+    {
       "path": "bridge/src/rime_bridge.cpp",
       "content_sha256": "b59094ee2f1e65674f4e3f98cfedcb327892cd56322d815b003eb6cd5bca2296"
     },
@@ -54,8 +75,24 @@
       "content_sha256": "b1c4b6458ba1daa5349064cef6069ad133cf4f2c3a8080a84f683bc7abe486c1"
     },
     {
+      "path": "bridge/src/utf8.cpp",
+      "content_sha256": "8d580e8abe45c4a74c90e1cae7641d6bb311db8adebb9573eef125678958b50d"
+    },
+    {
+      "path": "bridge/src/jni_bridge.cpp",
+      "content_sha256": "f90e3e7b423fdfebe0bf266d93980ecf2553c3bbcd94c9dcb6c3449d077c5bdf"
+    },
+    {
       "path": "bridge/tests/rime_bridge_test.cpp",
       "content_sha256": "e9bcd2bc865ce69f4205d2cfcc1933f3d0bd33ca1484005b5db60ba029ceaebc"
+    },
+    {
+      "path": "bridge/tests/utf8_test.cpp",
+      "content_sha256": "4434dc9b67f7f08207c6a34c2247447b30a0872ac13a2507cb1bcdc41e66ea90"
+    },
+    {
+      "path": "bridge/java/org/clipvault/rime/poc/NativeRimeBridge.java",
+      "content_sha256": "82246c478ca2ff7c8c89e04a8b9200a58fa46e74fe32f8fda035fd7ba87c03f2"
     }
   ]
 }
