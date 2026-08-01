@@ -1,10 +1,18 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "captured_at_utc": "2026-08-01T09:11:37Z",
-  "status": "HOST_CONTRACT_ONLY",
+  "status": "HOST_CONTRACT_AND_PUBLIC_API_BACKEND_SOURCE",
   "native_librime_linked": false,
   "production_integration_allowed": false,
   "language_standard": "c++17",
+  "librime_api_source": {
+    "repository": "rime/librime",
+    "ref": "33e78140250125871856cdc5b42ddc6a5fcd3cd4",
+    "path": "src/rime_api.h",
+    "git_blob_sha": "2fccde0fb83ead04d0a12ef834c3770d64dff211",
+    "syntax_check_required": true,
+    "linked_runtime_proven": false
+  },
   "contract": {
     "lifecycle": [
       "initialize",
@@ -20,7 +28,9 @@
     ],
     "unhandled_key_is_error": false,
     "failed_initialize_calls_shutdown": true,
-    "reset_requires_empty_state": true
+    "reset_requires_empty_state": true,
+    "backend_uses_public_c_api_only": true,
+    "reset_drains_unread_commit": true
   },
   "files": [
     {
@@ -32,8 +42,16 @@
       "content_sha256": "a0c4946ce4489896d8a5ebce4582a078e35a2f24322bef9a93c932cc0929a5ff"
     },
     {
+      "path": "bridge/include/clipvault/librime_backend.h",
+      "content_sha256": "909d7b911f756d07e973d65dd77c24d46e0bc271bfc79bccd5647361c4de7de8"
+    },
+    {
       "path": "bridge/src/rime_bridge.cpp",
       "content_sha256": "b59094ee2f1e65674f4e3f98cfedcb327892cd56322d815b003eb6cd5bca2296"
+    },
+    {
+      "path": "bridge/src/librime_backend.cpp",
+      "content_sha256": "b1c4b6458ba1daa5349064cef6069ad133cf4f2c3a8080a84f683bc7abe486c1"
     },
     {
       "path": "bridge/tests/rime_bridge_test.cpp",
