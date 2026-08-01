@@ -1,7 +1,6 @@
 #include "clipvault_rime_engine.h"
 
 #include <cstring>
-#include <filesystem>
 #include <mutex>
 #include <utility>
 
@@ -49,20 +48,6 @@ class RimeEngine::Impl final {
     if (paths_.shared_data_dir.empty() || paths_.user_data_dir.empty() ||
         paths_.shared_data_dir == paths_.user_data_dir) {
       SetError(error, "invalid_data_directories");
-      return false;
-    }
-
-    std::error_code filesystem_error;
-    std::filesystem::create_directories(paths_.shared_data_dir,
-                                        filesystem_error);
-    if (filesystem_error) {
-      SetError(error, "create_shared_data_directory_failed");
-      return false;
-    }
-    std::filesystem::create_directories(paths_.user_data_dir,
-                                        filesystem_error);
-    if (filesystem_error) {
-      SetError(error, "create_user_data_directory_failed");
       return false;
     }
 
