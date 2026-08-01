@@ -45,11 +45,13 @@ PoC 不直接接入 production IME。仓库仍受 v1.6 发布门和 v2.0 双 IME
 
 - `POC_LOCK.json`：工具链、ABI、16 KB 模拟器和 A/B 上游版本；
 - `A_ROUTE_SOURCE_LOCK.json`：librime 1.17.0、Boost 1.89.0、librime submodule 以及 OpenCC
-  内嵌依赖的精确来源、许可状态和最小构建策略；
+  内嵌依赖的精确来源、许可状态、补丁哈希和最小构建策略；
+- `patches/opencc-library-only.patch`：在保留 OpenCC 上游默认行为的同时增加可关闭工具与数据
+  构建的开关；补丁字节已锁定，但尚未在 CI 中证明可干净应用；
 - 项目自写的最小 table schema、四词合成字典和 default 配置，全部按 SHA-256 锁定；
 - 与数据哈希绑定的合成候选/重置向量；
 - `THIRD_PARTY_NATIVE.md`：许可未批准时禁止二进制上传；
-- fail-closed 静态校验器：核对 Git SHA、数据/桥接源码哈希、路径边界、隐私声明和最小依赖策略；
+- fail-closed 静态校验器：核对 Git SHA、数据/补丁/桥接源码哈希、路径边界、隐私声明和最小依赖策略；
 - 项目自写 C++17 bridge contract：规范 lifecycle、失败初始化清理、未处理按键、候选选择、commit
   和 reset 语义；
 - host fake-backend 测试：验证 `nihao → 你好 → 选择提交 → reset`，但不声称已链接 librime；
@@ -68,9 +70,10 @@ upstream tests、timestamp、Darts、benchmark、Python binding 和意外 Snappy
 marisa，降低 ABI 数量、许可面和复现漂移。
 
 补充核验发现，OpenCC 1.1.9 的库代码会使用其内嵌 RapidJSON 1.1.0 头文件；同时 OpenCC 的
-CMake 默认无条件进入 `src/tools`，导致 TCLAP 对命令行工具构建可见。Darts 也是可选内嵌依赖。
-因此 A 路线必须增加一个小型、可重放的 OpenCC library-only patch，并显式关闭 Darts；在对象图
-证明 TCLAP、Darts 和工具目标未进入 Android 产物之前，不能宣称传递依赖闭包已经通过许可门。
+CMake 默认无条件进入 `src/tools` 和字典数据构建，导致 TCLAP、宿主工具与 Python 出现在构建图中。
+Darts 也是可选内嵌依赖。当前已锁定一个小型、可重放的 OpenCC library-only patch，并计划显式关闭
+Darts、tools 和 data；在 CI 证明补丁可干净应用、且对象图证明 TCLAP、Darts 和工具目标未进入
+Android 产物之前，不能宣称传递依赖闭包已经通过许可门。
 
 项目自写 `Bridge` 只管理边界与不变量；下一步 `LibrimeBackend` 只调用 librime 公共 C API：
 `setup/initialize/start_maintenance/create_session/process_key/get_context/get_commit/select_candidate/
@@ -84,8 +87,8 @@ clear_composition/destroy_session/finalize`。不得复制 Trime JNI。
 
 ## 下一实施片
 
-1. 创建 OpenCC library-only patch，关闭 Darts/工具目标，并完成 RapidJSON、TCLAP、darts-clone
-   的对象闭包与许可分类验证。
+1. 在 CI 中检出精确 OpenCC SHA、应用已锁定 patch，并检查 CMake target/object graph，确认
+   RapidJSON 是预期运行时头文件依赖，TCLAP、darts-clone、tools 和 data 目标均未进入闭包。
 2. 编写 `LibrimeBackend` 与最小 JNI 封装，保持 host contract 不变。
 3. 建立隔离 Gradle/NDK 壳，构建 arm64-v8a 和 x86_64；任何必要补丁进入仓库且可重放。
 4. 每个向量使用全新 user-data，断网运行，禁用学习和同步，不读 Room、剪贴板或输入框正文。
