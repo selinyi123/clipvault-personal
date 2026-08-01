@@ -31,9 +31,11 @@ The version lock was corrected on 2026-08-01 after fresh upstream verification:
 `A_ROUTE_SOURCE_LOCK.json` records the currently identified A-route source
 closure and the minimal build policy. The closure includes OpenCC's vendored
 RapidJSON headers and explicitly tracks TCLAP and darts-clone as intended
-exclusions. Because OpenCC currently adds command-line tools to its build graph,
-an auditable, replayable library-only patch is required before Android native
-build evidence can be accepted.
+exclusions. Because OpenCC currently adds command-line tools and conversion data
+to its build graph, the PoC now includes a repository-owned library-only patch
+at `patches/opencc-library-only.patch`. Its bytes are locked and statically
+validated; clean application to the exact OpenCC SHA and target-graph exclusion
+are still pending evidence.
 
 `bridge/` contains a project-authored, host-tested C++17 contract. It does not
 include or link librime; it creates a reviewable boundary before JNI/native
@@ -71,9 +73,9 @@ adb shell getconf PAGE_SIZE  # must print 16384 on the locked emulator
 
 ## Next execution order
 
-1. Add the repository-owned OpenCC library-only patch, validate that TCLAP,
-   darts-clone, tools and other excluded targets do not enter the native graph,
-   and finish their license classification.
+1. Prove the locked OpenCC patch applies to the exact source SHA, inspect the
+   resulting CMake target graph, and verify TCLAP, darts-clone, tools and data
+   targets are absent from the Android closure.
 2. Implement an original `LibrimeBackend` using only librime's public C API and
    the exact source closure in `A_ROUTE_SOURCE_LOCK.json`.
 3. Add a standalone Gradle/NDK test shell, build arm64-v8a and x86_64, then run
