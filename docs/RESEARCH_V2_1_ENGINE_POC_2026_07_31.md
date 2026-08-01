@@ -44,13 +44,14 @@ PoC 不直接接入 production IME。仓库仍受 v1.6 发布门和 v2.0 双 IME
 `spikes/librime-android/` 当前包含：
 
 - `POC_LOCK.json`：工具链、ABI、16 KB 模拟器和 A/B 上游版本；
-- `A_ROUTE_SOURCE_LOCK.json`：librime 1.17.0、Boost 1.89.0 及 librime submodule 的精确 SHA、
-  许可和最小构建策略；
+- `A_ROUTE_SOURCE_LOCK.json`：librime 1.17.0、Boost 1.89.0、librime submodule 以及 OpenCC
+  内嵌依赖的精确来源、许可状态和最小构建策略；
 - 项目自写的最小 table schema、四词合成字典和 default 配置，全部按 SHA-256 锁定；
 - 与数据哈希绑定的合成候选/重置向量；
 - `THIRD_PARTY_NATIVE.md`：许可未批准时禁止二进制上传；
 - fail-closed 静态校验器：核对 Git SHA、数据/桥接源码哈希、路径边界、隐私声明和最小依赖策略；
-- 项目自写 C++17 bridge contract：规范 lifecycle、未处理按键、候选选择、commit 和 reset 语义；
+- 项目自写 C++17 bridge contract：规范 lifecycle、失败初始化清理、未处理按键、候选选择、commit
+  和 reset 语义；
 - host fake-backend 测试：验证 `nihao → 你好 → 选择提交 → reset`，但不声称已链接 librime；
 - 遍历全部 `.so` 的 16 KB ELF LOAD alignment 检查器；
 - GitHub Actions 静态与 bridge host build/test gate，不上传二进制产物。
@@ -63,7 +64,13 @@ PoC 不直接接入 production IME。仓库仍受 v1.6 发布门和 v2.0 双 IME
 ### A：单 APK / 原生 librime（优先）
 
 生产目标是一个 ClipVault JNI `.so`，内部静态链接 librime 的最小传递闭包。PoC 关闭 glog、
-upstream tests、timestamp 和意外 Snappy 发现，并复用同一 marisa，降低 ABI 数量、许可面和复现漂移。
+upstream tests、timestamp、Darts、benchmark、Python binding 和意外 Snappy 发现，并复用同一
+marisa，降低 ABI 数量、许可面和复现漂移。
+
+补充核验发现，OpenCC 1.1.9 的库代码会使用其内嵌 RapidJSON 1.1.0 头文件；同时 OpenCC 的
+CMake 默认无条件进入 `src/tools`，导致 TCLAP 对命令行工具构建可见。Darts 也是可选内嵌依赖。
+因此 A 路线必须增加一个小型、可重放的 OpenCC library-only patch，并显式关闭 Darts；在对象图
+证明 TCLAP、Darts 和工具目标未进入 Android 产物之前，不能宣称传递依赖闭包已经通过许可门。
 
 项目自写 `Bridge` 只管理边界与不变量；下一步 `LibrimeBackend` 只调用 librime 公共 C API：
 `setup/initialize/start_maintenance/create_session/process_key/get_context/get_commit/select_candidate/
@@ -77,9 +84,11 @@ clear_composition/destroy_session/finalize`。不得复制 Trime JNI。
 
 ## 下一实施片
 
-1. 编写 `LibrimeBackend` 与最小 JNI 封装，保持 host contract 不变。
-2. 建立隔离 Gradle/NDK 壳，构建 arm64-v8a 和 x86_64；任何必要补丁进入仓库且可重放。
-3. 每个向量使用全新 user-data，断网运行，禁用学习和同步，不读 Room、剪贴板或输入框正文。
-4. 生成实际 `.so` 闭包、许可证/NOTICE/source delivery 路径；审批前仍不上传 APK/`.so`。
-5. 通过所有 ELF LOAD alignment、`zipalign -P 16` 和 16 KB emulator 冷启动门。
-6. 再完成 B 路线外部 addon 证据；两路线都有完整通过或失败结果后，按 V2-S004 固定算法终裁。
+1. 创建 OpenCC library-only patch，关闭 Darts/工具目标，并完成 RapidJSON、TCLAP、darts-clone
+   的对象闭包与许可分类验证。
+2. 编写 `LibrimeBackend` 与最小 JNI 封装，保持 host contract 不变。
+3. 建立隔离 Gradle/NDK 壳，构建 arm64-v8a 和 x86_64；任何必要补丁进入仓库且可重放。
+4. 每个向量使用全新 user-data，断网运行，禁用学习和同步，不读 Room、剪贴板或输入框正文。
+5. 生成实际 `.so` 闭包、许可证/NOTICE/source delivery 路径；审批前仍不上传 APK/`.so`。
+6. 通过所有 ELF LOAD alignment、`zipalign -P 16` 和 16 KB emulator 冷启动门。
+7. 再完成 B 路线外部 addon 证据；两路线都有完整通过或失败结果后，按 V2-S004 固定算法终裁。
