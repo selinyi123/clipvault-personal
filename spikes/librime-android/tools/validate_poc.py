@@ -221,7 +221,9 @@ def validate_bridge_contract(lock: dict[str, Any]) -> None:
         raise ValidationError("bridge contract description is missing")
     if contract.get("unhandled_key_is_error") is not False:
         raise ValidationError("an unhandled Rime key must not be modeled as an engine error")
-    if contract.get("reset_requires_empty_composition_and_candidates") is not True:
+    if contract.get("failed_initialize_calls_shutdown") is not True:
+        raise ValidationError("failed initialization cleanup invariant is missing")
+    if contract.get("reset_requires_empty_state") is not True:
         raise ValidationError("reset invariant is missing")
 
     files = bridge.get("files")
