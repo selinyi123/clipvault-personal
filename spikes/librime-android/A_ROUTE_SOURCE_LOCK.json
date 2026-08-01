@@ -1,0 +1,95 @@
+{
+  "format_version": 1,
+  "captured_at_utc": "2026-08-01T09:11:37Z",
+  "route": "A_custom_librime_jni",
+  "status": "SOURCE_CLOSURE_IDENTIFIED_BUILD_NOT_PROVEN",
+  "librime": {
+    "repository": "rime/librime",
+    "tag": "1.17.0",
+    "sha": "33e78140250125871856cdc5b42ddc6a5fcd3cd4",
+    "license": "BSD-3-Clause"
+  },
+  "dependencies": [
+    {
+      "name": "Boost",
+      "repository": "boostorg/boost",
+      "tag": "boost-1.89.0",
+      "sha": "ef7fea34711a189472893b88205b1dd3c275677b",
+      "license": "BSL-1.0",
+      "role": "Boost.Regex and headers",
+      "runtime_included": true
+    },
+    {
+      "name": "glog",
+      "repository": "google/glog",
+      "sha": "7b134a5c82c0c0b5698bb6bf7a835b230c5638e4",
+      "license": "BSD-3-Clause",
+      "role": "optional logging",
+      "runtime_included": false,
+      "exclusion": "ENABLE_LOGGING=OFF"
+    },
+    {
+      "name": "LevelDB",
+      "repository": "google/leveldb",
+      "sha": "99b3c03b3284f5886f9ef9a4ef703d57373e61be",
+      "license": "BSD-3-Clause",
+      "role": "user dictionary storage",
+      "runtime_included": true
+    },
+    {
+      "name": "yaml-cpp",
+      "repository": "jbeder/yaml-cpp",
+      "sha": "2f86d13775d119edbb69af52e5f566fd65c6953b",
+      "license": "MIT",
+      "role": "Rime configuration parser",
+      "runtime_included": true
+    },
+    {
+      "name": "googletest",
+      "repository": "google/googletest",
+      "sha": "f8d7d77c06936315286eb55f8de22cd23c188571",
+      "license": "BSD-3-Clause",
+      "role": "upstream tests",
+      "runtime_included": false,
+      "exclusion": "BUILD_TEST=OFF"
+    },
+    {
+      "name": "marisa-trie",
+      "repository": "s-yata/marisa-trie",
+      "sha": "0d4e8ab58eec355facf8f65ff11ef811b330e373",
+      "license": "BSD-2-Clause OR LGPL-2.1-or-later",
+      "selected_license": "BSD-2-Clause",
+      "role": "static trie",
+      "runtime_included": true
+    },
+    {
+      "name": "OpenCC",
+      "repository": "BYVoid/OpenCC",
+      "sha": "556ed22496d650bd0b13b6c163be9814637970ae",
+      "license": "Apache-2.0",
+      "role": "script conversion",
+      "runtime_included": true
+    }
+  ],
+  "planned_build_policy": {
+    "BUILD_SHARED_LIBS": "OFF",
+    "BUILD_STATIC": "ON",
+    "BUILD_TEST": "OFF",
+    "BUILD_DATA": "OFF",
+    "BUILD_SEPARATE_LIBS": "OFF",
+    "ENABLE_LOGGING": "OFF",
+    "ENABLE_TIMESTAMP": "OFF",
+    "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
+    "CMAKE_DISABLE_FIND_PACKAGE_Snappy": "TRUE",
+    "OpenCC_USE_SYSTEM_MARISA": "ON"
+  },
+  "planned_binary_shape": "one ClipVault JNI shared library linked against static librime dependency closure",
+  "unresolved_items": [
+    "Android NDK build recipe and any reproducible patches",
+    "exact source checkout verification in CI for every locked SHA",
+    "license text and NOTICE delivery paths in the spike package",
+    "Owner or designated license-reviewer approval",
+    "arm64-v8a and x86_64 build evidence",
+    "16 KB ELF and emulator runtime evidence"
+  ]
+}
