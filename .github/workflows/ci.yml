@@ -95,3 +95,8 @@ jobs:
 
       - name: Assemble debug APK
         run: ./gradlew :ime-app:assembleDebug :app:assembleDebug --no-daemon
+
+  v2-daily-candidate:
+    name: V2 daily-use candidate bootstrap
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/v2-daily-integration' }}
+    uses: ./.github/workflows/v2-daily-candidate.yml

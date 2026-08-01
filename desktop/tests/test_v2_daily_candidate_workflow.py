@@ -3,6 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CANDIDATE = ROOT / ".github" / "workflows" / "v2-daily-candidate.yml"
+CI = ROOT / ".github" / "workflows" / "ci.yml"
 ANDROID = ROOT / ".github" / "workflows" / "v2-ime-production.yml"
 WINDOWS = ROOT / ".github" / "workflows" / "windows-ime-native-slice.yml"
 
@@ -27,6 +28,16 @@ def test_candidate_composes_only_existing_locked_production_entries():
     assert "Build-NativeSlice.ps1" in windows_build
     assert "Package-ClipVaultIme.ps1" in windows_build
     assert "-SkipTests" not in windows_build
+
+
+def test_candidate_can_bootstrap_from_the_registered_ci_workflow():
+    candidate = _text(CANDIDATE)
+    ci = _text(CI)
+
+    assert "workflow_call:" in candidate
+    assert "uses: ./.github/workflows/v2-daily-candidate.yml" in ci
+    assert "github.event_name == 'workflow_dispatch'" in ci
+    assert "github.ref == 'refs/heads/codex/v2-daily-integration'" in ci
 
 
 def test_candidate_is_read_only_and_only_uploads_unsigned_internal_artifacts():

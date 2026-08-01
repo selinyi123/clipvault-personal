@@ -1,6 +1,7 @@
 name: V2 daily-use automated candidate
 
 on:
+  workflow_call:
   workflow_dispatch:
 
 permissions:
