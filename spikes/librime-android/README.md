@@ -1,17 +1,17 @@
 # ClipVault librime Android PoC
 
-This directory starts the **isolated v2.1 build PoC** defined by
+This directory implements the isolated **v2.1 Chinese-engine PoC** defined by
 `docs/SLICES/V2-S004-librime-build-poc.md`.
 
 It does not alter `android/settings.gradle.kts`, either production
 `InputMethodService`, Room, sync/outbox, or the production APK dependency graph.
-The current bootstrap freezes inputs and installs fail-closed validation
-scaffolding before native integration begins.
+The work is evidence-gated: a host contract, source lock or static check must not
+be described as a successful Android/native integration.
 
 ## Tracks
 
 - **A — custom librime JNI:** preferred single-APK route. Build a minimal
-  `initialize / reset / key input / candidates / select / commit` boundary.
+  `initialize / reset / process key / candidates / select / commit` boundary.
 - **B — fcitx5-android external addon:** fallback route. Prove a separately
   installed addon can inject one synthetic candidate into the same candidate
   flow and receive its click callback.
@@ -20,28 +20,39 @@ scaffolding before native integration begins.
 
 ## Current state
 
-`POC_LOCK.json` pins current and previous stable releases for A and B, the Trime
-reference revision, the toolchain, ABIs, and 16 KB emulator. The repository also
-contains a project-authored table schema and four-entry synthetic dictionary,
-locked by SHA-256.
+The version lock was corrected on 2026-08-01 after fresh upstream verification:
 
-The data is ready for local/CI compilation only. Its redistribution license and
-all transitive native obligations remain unapproved. Therefore:
+- librime latest stable: `1.17.0` at
+  `33e78140250125871856cdc5b42ddc6a5fcd3cd4`;
+- librime previous stable: `1.16.1` at
+  `de4700e9f6b75b109910613df907965e3cbe0567`;
+- fcitx5-android latest/previous remain `0.1.3` and `0.1.2`.
+
+`A_ROUTE_SOURCE_LOCK.json` records the currently identified A-route source
+closure and the minimal build policy. `bridge/` now contains a project-authored,
+host-tested C++17 contract. It does not include or link librime; it creates a
+reviewable boundary before JNI/native implementation begins.
+
+The project-authored table schema and four-entry synthetic dictionary remain
+locked by SHA-256. They are local/CI test inputs only. Their redistribution
+license and all native distribution obligations remain unapproved. Therefore:
 
 - no production integration is allowed;
-- no APK, AAB, `.so`, or addon artifact may be uploaded;
-- no user dictionary, clipboard item, typed text, Room row, or network input may
+- no APK, AAB, `.so`, addon or binary PoC artifact may be uploaded;
+- no user dictionary, clipboard item, typed text, Room row or network input may
   enter the PoC;
-- passing the static check is not evidence that either native route builds.
+- passing the static/host bridge checks is not evidence that either native route
+  builds.
 
-Run the local static guard:
+## Local checks
 
 ```bash
 python spikes/librime-android/tools/validate_poc.py
+cmake -S spikes/librime-android/bridge \
+  -B build/librime-bridge -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/librime-bridge
+ctest --test-dir build/librime-bridge --output-on-failure
 ```
-
-It checks exact upstream Git SHAs, rejects floating tags, verifies every pinned
-data file byte-for-byte, and binds the synthetic vectors to those data hashes.
 
 After native libraries exist, inspect every transitive `.so`:
 
@@ -54,17 +65,19 @@ adb shell getconf PAGE_SIZE  # must print 16384 on the locked emulator
 
 ## Next execution order
 
-1. Complete the A-route transitive dependency inventory and approve the
-   project-owned PoC data license for binary redistribution.
-2. Build A in a standalone Gradle/NDK project and execute the synthetic vectors
-   with fresh user-data for every case.
-3. Resolve the exact fcitx5 Rime plugin/addon boundary and complete B's
-   dependency/license inventory.
-4. Build B as an external addon without adding fcitx5 code to the ClipVault
-   production APK.
-5. Run arm64-v8a and x86_64 builds, 16 KB runtime checks, two clean reproducible
-   builds, size/time/patch/bootstrap measurements, and the fixed upgrade drill.
-6. Update ADR-0010 only after both routes have complete pass-or-fail evidence.
+1. Implement an original `LibrimeBackend` using only librime's public C API and
+   the exact source closure in `A_ROUTE_SOURCE_LOCK.json`.
+2. Add a standalone Gradle/NDK test shell, build arm64-v8a and x86_64, then run
+   the locked synthetic vectors with fresh user-data for every case.
+3. Complete license/NOTICE/source delivery paths and obtain explicit approval;
+   keep all binary upload disabled until then.
+4. Resolve the exact fcitx5 Rime plugin/addon boundary and complete B's source,
+   dependency and license inventory.
+5. Build B externally without adding fcitx5 code to the ClipVault production
+   APK.
+6. Run 16 KB runtime checks, two clean reproducible builds, size/time/patch/
+   bootstrap measurements and the fixed upgrade drill.
+7. Update ADR-0010 only after both routes have complete pass-or-fail evidence.
 
-The final decision algorithm remains: choose A if A passes; choose B only if A
-fails and B passes; otherwise remain blocked.
+The decision algorithm remains: choose A if A passes; choose B only if A fails
+and B passes; otherwise remain blocked.
