@@ -25,12 +25,17 @@ class FakeBackend final : public Backend {
   void initialize(const InitOptions& options) override {
     initialized = true;
     last_options = options;
+    if (throw_on_initialize) {
+      throw std::runtime_error("synthetic initialization failure");
+    }
   }
 
   void reset() override {
     composition.clear();
     candidates.clear();
-    commit.clear();
+    if (!leave_commit_on_reset) {
+      commit.clear();
+    }
   }
 
   bool process_key(int keycode, int) override {
@@ -56,9 +61,15 @@ class FakeBackend final : public Backend {
     return value;
   }
 
-  void shutdown() noexcept override { initialized = false; }
+  void shutdown() noexcept override {
+    initialized = false;
+    ++shutdown_calls;
+  }
 
   bool initialized = false;
+  bool throw_on_initialize = false;
+  bool leave_commit_on_reset = false;
+  int shutdown_calls = 0;
   InitOptions last_options;
   std::string composition;
   std::vector<Candidate> candidates;
@@ -113,6 +124,29 @@ void lifecycle_and_candidate_flow() {
   require(!raw->initialized, "backend must be shut down");
 }
 
+void initialization_failure_is_cleaned_up() {
+  auto backend = std::make_unique<FakeBackend>();
+  auto* raw = backend.get();
+  raw->throw_on_initialize = true;
+  Bridge bridge(std::move(backend));
+
+  expect_error<std::runtime_error>(
+      [&] { bridge.initialize({"/tmp/shared", "/tmp/user", "clipvault_poc"}); });
+  require(!bridge.initialized(), "failed initialization must not publish initialized state");
+  require(!raw->initialized, "failed initialization must shut down the backend");
+  require(raw->shutdown_calls == 1, "failed initialization must clean up exactly once");
+}
+
+void reset_rejects_stale_commit() {
+  auto backend = std::make_unique<FakeBackend>();
+  auto* raw = backend.get();
+  Bridge bridge(std::move(backend));
+  bridge.initialize({"/tmp/shared", "/tmp/user", "clipvault_poc"});
+  raw->leave_commit_on_reset = true;
+  raw->commit = "stale";
+  expect_error<std::runtime_error>([&] { bridge.reset(); });
+}
+
 void fail_closed_contracts() {
   expect_error<std::invalid_argument>([] { Bridge bridge(nullptr); });
 
@@ -137,6 +171,8 @@ void fail_closed_contracts() {
 
 int main() {
   lifecycle_and_candidate_flow();
+  initialization_failure_is_cleaned_up();
+  reset_rejects_stale_commit();
   fail_closed_contracts();
   return 0;
 }
