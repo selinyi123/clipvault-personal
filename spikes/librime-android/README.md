@@ -5,7 +5,7 @@ This directory implements the isolated **v2.1 Chinese-engine PoC** defined by
 
 It does not alter `android/settings.gradle.kts`, either production
 `InputMethodService`, Room, sync/outbox, or the production APK dependency graph.
-The work is evidence-gated: a host contract, source lock or static check must not
+The work is evidence-gated: a host contract, source lock or syntax check must not
 be described as a successful Android/native integration.
 
 ## Tracks
@@ -29,17 +29,22 @@ The version lock was corrected on 2026-08-01 after fresh upstream verification:
 - fcitx5-android latest/previous remain `0.1.3` and `0.1.2`.
 
 `A_ROUTE_SOURCE_LOCK.json` records the currently identified A-route source
-closure and the minimal build policy. The closure includes OpenCC's vendored
+closure and minimal build policy. The closure includes OpenCC's vendored
 RapidJSON headers and explicitly tracks TCLAP and darts-clone as intended
 exclusions. Because OpenCC currently adds command-line tools and conversion data
-to its build graph, the PoC now includes a repository-owned library-only patch
-at `patches/opencc-library-only.patch`. Its bytes are locked and statically
-validated; clean application to the exact OpenCC SHA and target-graph exclusion
-are still pending evidence.
+to its build graph, the PoC includes a repository-owned library-only patch at
+`patches/opencc-library-only.patch`. Its bytes are locked; CI is responsible for
+proving clean application and exclusion of unwanted targets.
 
-`bridge/` contains a project-authored, host-tested C++17 contract. It does not
-include or link librime; it creates a reviewable boundary before JNI/native
-implementation begins.
+`bridge/` now contains two project-authored layers:
+
+- a host-tested C++17 `Bridge` contract for lifecycle, input, candidates, commit
+  and reset semantics;
+- `LibrimeBackend`, an original PImpl implementation that calls only librime's
+  public C API. CI fetches the exact locked `rime_api.h`, verifies its Git blob
+  and syntax-checks this source against it.
+
+Neither layer is linked to a native librime build yet.
 
 The project-authored table schema and four-entry synthetic dictionary remain
 locked by SHA-256. They are local/CI test inputs only. Their redistribution
@@ -49,8 +54,8 @@ license and all native distribution obligations remain unapproved. Therefore:
 - no APK, AAB, `.so`, addon or binary PoC artifact may be uploaded;
 - no user dictionary, clipboard item, typed text, Room row or network input may
   enter the PoC;
-- passing the static/host bridge checks is not evidence that either native route
-  builds.
+- passing static, host-contract and syntax checks is not evidence that either
+  native route builds or runs.
 
 ## Local checks
 
@@ -73,13 +78,12 @@ adb shell getconf PAGE_SIZE  # must print 16384 on the locked emulator
 
 ## Next execution order
 
-1. Prove the locked OpenCC patch applies to the exact source SHA, inspect the
-   resulting CMake target graph, and verify TCLAP, darts-clone, tools and data
-   targets are absent from the Android closure.
-2. Implement an original `LibrimeBackend` using only librime's public C API and
-   the exact source closure in `A_ROUTE_SOURCE_LOCK.json`.
-3. Add a standalone Gradle/NDK test shell, build arm64-v8a and x86_64, then run
-   the locked synthetic vectors with fresh user-data for every case.
+1. Complete the CI proof that the locked OpenCC patch applies to the exact
+   source SHA and that TCLAP, darts-clone, tools and data targets are absent.
+2. Add an isolated native CMake/Gradle shell that compiles the existing
+   `LibrimeBackend` and links it with the locked static librime closure.
+3. Build arm64-v8a and x86_64, deploy the locked schema, then run the synthetic
+   candidate vectors with fresh user-data for every case.
 4. Complete license/NOTICE/source delivery paths and obtain explicit approval;
    keep all binary upload disabled until then.
 5. Resolve the exact fcitx5 Rime plugin/addon boundary and complete B's source,
