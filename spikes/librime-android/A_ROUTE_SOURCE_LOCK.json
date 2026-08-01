@@ -130,9 +130,14 @@
     "OpenCC_BUILD_DATA": "OFF",
     "OpenCC_LIBRARY_ONLY_PATCH": "LOCKED_REPLAY_REQUIRED"
   },
+  "host_proof": {
+    "opencc_patch_applies_to_locked_sha": true,
+    "opencc_library_target_builds": true,
+    "opencc_tools_and_data_targets_absent": true,
+    "android_ndk_closure_proven": false
+  },
   "planned_binary_shape": "one ClipVault JNI shared library linked against static librime dependency closure",
   "unresolved_items": [
-    "prove the OpenCC patch applies cleanly to the locked SHA in CI",
     "Android NDK build recipe and any additional reproducible patches",
     "vendored TCLAP/darts license classification even though excluded",
     "exact source checkout verification in CI for every locked SHA",
