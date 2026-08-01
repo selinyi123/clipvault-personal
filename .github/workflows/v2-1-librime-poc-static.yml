@@ -32,6 +32,23 @@ jobs:
         run: cmake --build build/librime-bridge
       - name: Test bridge contract
         run: ctest --test-dir build/librime-bridge --output-on-failure
+      - name: Fetch locked librime public API
+        run: |
+          git init build/librime-src
+          git -C build/librime-src remote add origin https://github.com/rime/librime.git
+          git -C build/librime-src fetch --depth=1 origin 33e78140250125871856cdc5b42ddc6a5fcd3cd4
+          git -C build/librime-src checkout --detach FETCH_HEAD
+          test "$(git -C build/librime-src rev-parse HEAD)" = "33e78140250125871856cdc5b42ddc6a5fcd3cd4"
+          test "$(git hash-object build/librime-src/src/rime_api.h)" = "2fccde0fb83ead04d0a12ef834c3770d64dff211"
+      - name: Syntax-check LibrimeBackend against exact public header
+        run: >-
+          c++ -std=c++17
+          -Wall -Wextra -Wpedantic -Werror
+          -Wno-missing-field-initializers
+          -Ispikes/librime-android/bridge/include
+          -Ibuild/librime-src/src
+          -fsyntax-only
+          spikes/librime-android/bridge/src/librime_backend.cpp
       - name: Fetch locked OpenCC source
         run: |
           git init build/opencc-src
