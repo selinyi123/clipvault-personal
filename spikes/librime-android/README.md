@@ -29,9 +29,15 @@ The version lock was corrected on 2026-08-01 after fresh upstream verification:
 - fcitx5-android latest/previous remain `0.1.3` and `0.1.2`.
 
 `A_ROUTE_SOURCE_LOCK.json` records the currently identified A-route source
-closure and the minimal build policy. `bridge/` now contains a project-authored,
-host-tested C++17 contract. It does not include or link librime; it creates a
-reviewable boundary before JNI/native implementation begins.
+closure and the minimal build policy. The closure includes OpenCC's vendored
+RapidJSON headers and explicitly tracks TCLAP and darts-clone as intended
+exclusions. Because OpenCC currently adds command-line tools to its build graph,
+an auditable, replayable library-only patch is required before Android native
+build evidence can be accepted.
+
+`bridge/` contains a project-authored, host-tested C++17 contract. It does not
+include or link librime; it creates a reviewable boundary before JNI/native
+implementation begins.
 
 The project-authored table schema and four-entry synthetic dictionary remain
 locked by SHA-256. They are local/CI test inputs only. Their redistribution
@@ -65,19 +71,22 @@ adb shell getconf PAGE_SIZE  # must print 16384 on the locked emulator
 
 ## Next execution order
 
-1. Implement an original `LibrimeBackend` using only librime's public C API and
+1. Add the repository-owned OpenCC library-only patch, validate that TCLAP,
+   darts-clone, tools and other excluded targets do not enter the native graph,
+   and finish their license classification.
+2. Implement an original `LibrimeBackend` using only librime's public C API and
    the exact source closure in `A_ROUTE_SOURCE_LOCK.json`.
-2. Add a standalone Gradle/NDK test shell, build arm64-v8a and x86_64, then run
+3. Add a standalone Gradle/NDK test shell, build arm64-v8a and x86_64, then run
    the locked synthetic vectors with fresh user-data for every case.
-3. Complete license/NOTICE/source delivery paths and obtain explicit approval;
+4. Complete license/NOTICE/source delivery paths and obtain explicit approval;
    keep all binary upload disabled until then.
-4. Resolve the exact fcitx5 Rime plugin/addon boundary and complete B's source,
+5. Resolve the exact fcitx5 Rime plugin/addon boundary and complete B's source,
    dependency and license inventory.
-5. Build B externally without adding fcitx5 code to the ClipVault production
+6. Build B externally without adding fcitx5 code to the ClipVault production
    APK.
-6. Run 16 KB runtime checks, two clean reproducible builds, size/time/patch/
+7. Run 16 KB runtime checks, two clean reproducible builds, size/time/patch/
    bootstrap measurements and the fixed upgrade drill.
-7. Update ADR-0010 only after both routes have complete pass-or-fail evidence.
+8. Update ADR-0010 only after both routes have complete pass-or-fail evidence.
 
 The decision algorithm remains: choose A if A passes; choose B only if A fails
 and B passes; otherwise remain blocked.
