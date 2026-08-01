@@ -6,17 +6,33 @@ row is incomplete or unapproved.
 
 ## Track A — custom librime JNI
 
-| Component | Role | Version/SHA | SPDX | Combination | Binary/data path | Obligations | Approval |
+The source identities below are frozen in `A_ROUTE_SOURCE_LOCK.json`. License
+families have been verified against the corresponding upstream source, but that
+verification is not distribution approval. Actual package paths, notices,
+source delivery and modification records still have to be completed from the
+built artifact closure.
+
+| Component | Role | Version/SHA | SPDX | Planned combination | Runtime | Required distribution work | Approval |
 |---|---|---|---|---|---|---|---|
-| rime/librime | Chinese input engine | 1.16.1 / `de4700e9f6b75b109910613df907965e3cbe0567` | BSD-3-Clause | planned native/JNI | unresolved | license text, copyright, transitive inventory | pending |
-| librime submodules/dependencies | native transitive closure | unresolved | unresolved | unresolved | unresolved | source, notices, patches, relink/source duties as applicable | blocked |
-| ClipVault JNI wrapper | minimal adapter | not implemented | project license unresolved | JNI | planned | must be original implementation; do not copy GPL Trime code | pending |
+| rime/librime | Chinese input engine | 1.17.0 / `33e78140250125871856cdc5b42ddc6a5fcd3cd4` | BSD-3-Clause | static into project JNI `.so` | yes | license/copyright, source identity, patches | pending |
+| Boost | regex and headers | 1.89.0 / `ef7fea34711a189472893b88205b1dd3c275677b` | BSL-1.0 | static/header use | yes | retain required license material and source identity | pending |
+| google/glog | optional logging | `7b134a5c82c0c0b5698bb6bf7a835b230c5638e4` | BSD-3-Clause | excluded with `ENABLE_LOGGING=OFF` | no | prove absent from final closure | pending |
+| google/leveldb | Rime storage | `99b3c03b3284f5886f9ef9a4ef703d57373e61be` | BSD-3-Clause | static | yes | license/copyright and source identity | pending |
+| yaml-cpp | configuration parser | `2f86d13775d119edbb69af52e5f566fd65c6953b` | MIT | static | yes | license/copyright and source identity | pending |
+| googletest | upstream tests | `f8d7d77c06936315286eb55f8de22cd23c188571` | BSD-3-Clause | excluded with `BUILD_TEST=OFF` | no | prove absent from final closure | pending |
+| marisa-trie | trie implementation | `0d4e8ab58eec355facf8f65ff11ef811b330e373` | BSD-2-Clause OR LGPL-2.1-or-later | static; BSD-2-Clause selected | yes | BSD notice/copyright and source identity | pending |
+| OpenCC | script conversion | `556ed22496d650bd0b13b6c163be9814637970ae` | Apache-2.0 | static; reuse locked marisa | yes | Apache license, NOTICE if present, modification notice | pending |
+| ClipVault bridge/JNI | original adapter | host contract implemented; native backend pending | project license unresolved | JNI shared library | planned | original implementation; do not copy GPL Trime code | pending |
+
+The planned closure disables glog, tests, timestamps and accidental Snappy
+discovery. This is a build policy, not evidence that the resulting Android
+binary has that closure. The final `.so` inventory must prove it.
 
 ## Project-owned deterministic PoC data
 
 These files are pinned and may be used for local/CI compilation and text-only
 reports. Their final redistribution license still requires Owner approval, so
-they do not authorize uploading APK, AAB, `.so`, or addon artifacts.
+they do not authorize uploading APK, AAB, `.so` or addon artifacts.
 
 | Component | Content SHA-256 | License | Path | Approval |
 |---|---|---|---|---|
@@ -24,8 +40,8 @@ they do not authorize uploading APK, AAB, `.so`, or addon artifacts.
 | Synthetic dictionary | `e7147b4d96d271fe358a634149fbc61c319fb7541ca7bea4433f7f7c5951141d` | LicenseRef-ClipVault-Owner-Approval-Pending | `data/clipvault_poc.dict.yaml` | local-build only |
 | Default configuration | `edcc5cf7ba1e384d5b4ffa83459c1ed423fd1c0b5aa643cdf60e6a4d5c81fed4` | LicenseRef-ClipVault-Owner-Approval-Pending | `data/default.yaml` | local-build only |
 
-The dictionary contains four synthetic mappings only. It is deliberately not a
-production lexicon and contains no user data.
+The dictionary contains four synthetic mappings only. It is not a production
+lexicon and contains no user data.
 
 ## Track B — fcitx5 external addon
 
@@ -40,7 +56,7 @@ production lexicon and contains no user data.
 
 | Component | Version/SHA | SPDX | Allowed use |
 |---|---|---|---|
-| osfans/trime | v3.3.10 / `11440ffceb618b68deeddf4bdf7497b082cb87ae` | GPL-3.0-or-later | Study architecture and upstream interfaces only. Do not copy source, build scripts, or JNI code into ClipVault. |
+| osfans/trime | v3.3.10 / `11440ffceb618b68deeddf4bdf7497b082cb87ae` | GPL-3.0-or-later | Study architecture and upstream interfaces only. Do not copy source, build scripts or JNI code into ClipVault. |
 
 ## Approval record
 
