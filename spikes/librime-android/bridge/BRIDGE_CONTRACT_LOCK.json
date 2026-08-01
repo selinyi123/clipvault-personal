@@ -83,7 +83,7 @@
     },
     {
       "path": "bridge/src/jni_bridge.cpp",
-      "content_sha256": "f54d73c3c3e06082527bde27e17a9dfff7fbb5be4ca6c45b416a3ba0973e1f5c"
+      "content_sha256": "283c3a44aec2483a24ab79f8cec417ddeb03433c096b9eef859fd5293938d0d0"
     },
     {
       "path": "bridge/tests/rime_bridge_test.cpp",
