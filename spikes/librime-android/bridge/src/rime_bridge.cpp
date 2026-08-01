@@ -41,8 +41,13 @@ void Bridge::initialize(const InitOptions& options) {
     throw std::logic_error("bridge is already initialized");
   }
   validate_options(options);
-  backend_->initialize(options);
-  initialized_ = true;
+  try {
+    backend_->initialize(options);
+    initialized_ = true;
+  } catch (...) {
+    backend_->shutdown();
+    throw;
+  }
 }
 
 void Bridge::require_initialized() const {
@@ -75,8 +80,9 @@ Snapshot Bridge::reset() {
   require_initialized();
   backend_->reset();
   auto value = backend_->snapshot();
-  if (!value.composition.empty() || !value.candidates.empty()) {
-    throw std::runtime_error("backend reset left composition or candidates behind");
+  if (!value.composition.empty() || !value.candidates.empty() ||
+      !value.commit.empty()) {
+    throw std::runtime_error("backend reset left stale state behind");
   }
   return value;
 }
