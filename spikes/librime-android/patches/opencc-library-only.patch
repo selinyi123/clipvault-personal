@@ -16,7 +16,7 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 1d8c8e6..0000000 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -25,6 +25,8 @@ option(BUILD_DOCUMENTATION "Use Doxygen to create the HTML based API documentation" OFF)
+@@ -25,4 +25,6 @@ option(BUILD_DOCUMENTATION "Use Doxygen to create the HTML based API documentation" OFF)
  option(BUILD_SHARED_LIBS "Build opencc as shared library" ON)
 +option(BUILD_TOOLS "Build OpenCC command-line tools" ON)
 +option(BUILD_DATA "Build and install OpenCC conversion dictionaries" ON)
@@ -38,7 +38,7 @@ diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
 index 7768c89..0000000 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -7,9 +7,11 @@ if(NOT USE_SYSTEM_MARISA)
+@@ -7,7 +7,9 @@ if(NOT USE_SYSTEM_MARISA)
  endif()
  if(NOT USE_SYSTEM_RAPIDJSON)
    include_directories(../deps/rapidjson-1.1.0)
