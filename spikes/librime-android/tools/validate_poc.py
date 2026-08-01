@@ -12,11 +12,24 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "POC_LOCK.json"
+SOURCE_LOCK_PATH = ROOT / "A_ROUTE_SOURCE_LOCK.json"
 VECTORS_PATH = ROOT / "vectors" / "rime-vectors.json"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 FLOATING_REFS = {"main", "master", "latest", "head", "develop", "dev"}
 PINNED_DATA_STATUS = "PINNED_PROJECT_OWNED_LICENSE_REVIEW_PENDING"
+EXPECTED_BUILD_POLICY = {
+    "BUILD_SHARED_LIBS": "OFF",
+    "BUILD_STATIC": "ON",
+    "BUILD_TEST": "OFF",
+    "BUILD_DATA": "OFF",
+    "BUILD_SEPARATE_LIBS": "OFF",
+    "ENABLE_LOGGING": "OFF",
+    "ENABLE_TIMESTAMP": "OFF",
+    "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
+    "CMAKE_DISABLE_FIND_PACKAGE_Snappy": "TRUE",
+    "OpenCC_USE_SYSTEM_MARISA": "ON",
+}
 
 
 class ValidationError(ValueError):
@@ -50,6 +63,19 @@ def reject_floating_ref(value: Any, label: str) -> None:
         raise ValidationError(f"{label} uses forbidden floating ref {value!r}")
 
 
+def resolve_locked_file(relative_path: Any, label: str) -> Path:
+    if not isinstance(relative_path, str) or not relative_path:
+        raise ValidationError(f"{label}.path is missing")
+    candidate = (ROOT / relative_path).resolve()
+    try:
+        candidate.relative_to(ROOT)
+    except ValueError as exc:
+        raise ValidationError(f"{label}.path escapes the PoC directory") from exc
+    if not candidate.is_file():
+        raise ValidationError(f"{label}.path is not a regular file: {relative_path}")
+    return candidate
+
+
 def iter_release_locks(lock: dict[str, Any]):
     tracks = lock.get("tracks")
     if not isinstance(tracks, dict) or not tracks:
@@ -65,19 +91,6 @@ def iter_release_locks(lock: dict[str, Any]):
                         f"tracks.{track_name}.{release_name} must be an object"
                     )
                 yield track_name, release_name, release
-
-
-def resolve_locked_data(relative_path: Any, label: str) -> Path:
-    if not isinstance(relative_path, str) or not relative_path:
-        raise ValidationError(f"{label}.path is missing")
-    candidate = (ROOT / relative_path).resolve()
-    try:
-        candidate.relative_to(ROOT)
-    except ValueError as exc:
-        raise ValidationError(f"{label}.path escapes the PoC directory") from exc
-    if not candidate.is_file():
-        raise ValidationError(f"{label}.path is not a regular file: {relative_path}")
-    return candidate
 
 
 def validate_data_inputs(lock: dict[str, Any]) -> dict[str, str]:
@@ -96,7 +109,7 @@ def validate_data_inputs(lock: dict[str, Any]) -> dict[str, str]:
             raise ValidationError(f"data_inputs.{name}.license is missing")
         expected = item.get("content_sha256")
         require_sha256(expected, f"data_inputs.{name}.content_sha256")
-        path = resolve_locked_data(item.get("path"), f"data_inputs.{name}")
+        path = resolve_locked_file(item.get("path"), f"data_inputs.{name}")
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         if actual != expected:
             raise ValidationError(
@@ -104,29 +117,144 @@ def validate_data_inputs(lock: dict[str, Any]) -> dict[str, str]:
             )
         observed[name] = actual
 
-    schema_text = resolve_locked_data(
+    schema_text = resolve_locked_file(
         data_inputs["schema"]["path"], "data_inputs.schema"
     ).read_text(encoding="utf-8")
-    dictionary_text = resolve_locked_data(
+    dictionary_text = resolve_locked_file(
         data_inputs["dictionary"]["path"], "data_inputs.dictionary"
     ).read_text(encoding="utf-8")
     if "schema_id: clipvault_poc" not in schema_text:
         raise ValidationError("schema does not declare schema_id clipvault_poc")
     if "dictionary: clipvault_poc" not in schema_text:
         raise ValidationError("schema does not bind dictionary clipvault_poc")
+    if "enable_user_dict: false" not in schema_text:
+        raise ValidationError("schema must keep user dictionary learning disabled")
     if "name: clipvault_poc" not in dictionary_text:
         raise ValidationError("dictionary does not declare name clipvault_poc")
     return observed
 
 
+def validate_source_entry(entry: dict[str, Any], label: str) -> None:
+    repository = entry.get("repository")
+    if not isinstance(repository, str) or "/" not in repository:
+        raise ValidationError(f"{label}.repository is invalid")
+    require_sha40(entry.get("sha"), f"{label}.sha")
+    tag = entry.get("tag")
+    if tag is not None:
+        if not isinstance(tag, str) or not tag.strip():
+            raise ValidationError(f"{label}.tag is invalid")
+        reject_floating_ref(tag, f"{label}.tag")
+    license_value = entry.get("license")
+    if not isinstance(license_value, str) or not license_value:
+        raise ValidationError(f"{label}.license is missing")
+
+
+def validate_source_lock(lock: dict[str, Any], source: dict[str, Any]) -> None:
+    if source.get("route") != "A_custom_librime_jni":
+        raise ValidationError("A_ROUTE_SOURCE_LOCK.json has the wrong route")
+    if source.get("status") != "SOURCE_CLOSURE_IDENTIFIED_BUILD_NOT_PROVEN":
+        raise ValidationError("A source lock must not claim a native build result")
+
+    librime = source.get("librime")
+    if not isinstance(librime, dict):
+        raise ValidationError("A source lock librime entry must be an object")
+    validate_source_entry(librime, "source_lock.librime")
+
+    track = lock["tracks"]["A_custom_librime_jni"]
+    latest = track["latest_stable"]
+    for field in ("repository", "tag", "sha", "license"):
+        if librime.get(field) != latest.get(field):
+            raise ValidationError(
+                f"source_lock.librime.{field} does not match POC_LOCK latest_stable"
+            )
+
+    dependencies = source.get("dependencies")
+    if not isinstance(dependencies, list) or not dependencies:
+        raise ValidationError("A source lock dependencies must be a non-empty array")
+    names: set[str] = set()
+    runtime_count = 0
+    for index, dependency in enumerate(dependencies):
+        if not isinstance(dependency, dict):
+            raise ValidationError(f"source dependency {index} must be an object")
+        name = dependency.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValidationError(f"source dependency {index} has no name")
+        if name in names:
+            raise ValidationError(f"duplicate source dependency: {name}")
+        names.add(name)
+        validate_source_entry(dependency, f"source_lock.dependencies[{index}]")
+        runtime_included = dependency.get("runtime_included")
+        if not isinstance(runtime_included, bool):
+            raise ValidationError(f"{name}.runtime_included must be boolean")
+        if runtime_included:
+            runtime_count += 1
+        elif not isinstance(dependency.get("exclusion"), str):
+            raise ValidationError(f"excluded dependency {name} needs an exclusion reason")
+    if runtime_count == 0:
+        raise ValidationError("A source lock must identify runtime dependencies")
+
+    policy = source.get("planned_build_policy")
+    if policy != EXPECTED_BUILD_POLICY:
+        raise ValidationError("A planned build policy drifted from the minimal closure")
+    unresolved = source.get("unresolved_items")
+    if not isinstance(unresolved, list) or not unresolved:
+        raise ValidationError("A source lock must retain unresolved native evidence items")
+
+
+def validate_bridge_contract(lock: dict[str, Any]) -> None:
+    bridge_ref = lock.get("bridge_contract")
+    if not isinstance(bridge_ref, dict):
+        raise ValidationError("bridge_contract must be an object")
+    path = resolve_locked_file(bridge_ref.get("path"), "bridge_contract")
+    bridge = load_json(path)
+    if bridge.get("status") != "HOST_CONTRACT_ONLY":
+        raise ValidationError("bridge must remain explicitly host-contract-only")
+    if bridge.get("native_librime_linked") is not False:
+        raise ValidationError("bridge must not claim native librime linkage")
+    if bridge.get("production_integration_allowed") is not False:
+        raise ValidationError("bridge must not allow production integration")
+    if bridge.get("language_standard") != "c++17":
+        raise ValidationError("bridge language standard must match librime C++17")
+
+    contract = bridge.get("contract")
+    if not isinstance(contract, dict):
+        raise ValidationError("bridge contract description is missing")
+    if contract.get("unhandled_key_is_error") is not False:
+        raise ValidationError("an unhandled Rime key must not be modeled as an engine error")
+    if contract.get("reset_requires_empty_composition_and_candidates") is not True:
+        raise ValidationError("reset invariant is missing")
+
+    files = bridge.get("files")
+    if not isinstance(files, list) or not files:
+        raise ValidationError("bridge locked files must be a non-empty array")
+    seen: set[str] = set()
+    for index, item in enumerate(files):
+        if not isinstance(item, dict):
+            raise ValidationError(f"bridge file {index} must be an object")
+        relative = item.get("path")
+        if not isinstance(relative, str) or relative in seen:
+            raise ValidationError(f"bridge file {index} has an invalid or duplicate path")
+        seen.add(relative)
+        expected = item.get("content_sha256")
+        require_sha256(expected, f"bridge.files[{index}].content_sha256")
+        actual_path = resolve_locked_file(relative, f"bridge.files[{index}]")
+        actual = hashlib.sha256(actual_path.read_bytes()).hexdigest()
+        if actual != expected:
+            raise ValidationError(
+                f"bridge file digest mismatch for {relative}: expected {expected}, got {actual}"
+            )
+
+
 def validate_lock(lock: dict[str, Any]) -> dict[str, str]:
+    if lock.get("format_version") != 2:
+        raise ValidationError("POC_LOCK.json format_version must be 2")
     clipvault = lock.get("clipvault")
     if not isinstance(clipvault, dict):
         raise ValidationError("clipvault must be an object")
     require_sha40(clipvault.get("base_sha"), "clipvault.base_sha")
 
     if clipvault.get("production_integration_allowed") is not False:
-        raise ValidationError("production integration must remain disabled in P0")
+        raise ValidationError("production integration must remain disabled")
 
     license_gate = lock.get("license_gate")
     if not isinstance(license_gate, dict):
@@ -139,21 +267,14 @@ def validate_lock(lock: dict[str, Any]) -> dict[str, str]:
             "binary artifact upload must remain disabled while license items are unresolved"
         )
 
+    tracks = lock.get("tracks")
+    if not isinstance(tracks, dict):
+        raise ValidationError("tracks must be an object")
     for track_name, release_name, release in iter_release_locks(lock):
-        repository = release.get("repository")
-        tag = release.get("tag")
-        if not isinstance(repository, str) or "/" not in repository:
-            raise ValidationError(
-                f"tracks.{track_name}.{release_name}.repository is invalid"
-            )
-        if not isinstance(tag, str) or not tag.strip():
-            raise ValidationError(f"tracks.{track_name}.{release_name}.tag is missing")
-        reject_floating_ref(tag, f"tracks.{track_name}.{release_name}.tag")
-        require_sha40(release.get("sha"), f"tracks.{track_name}.{release_name}.sha")
-        if not isinstance(release.get("license"), str):
-            raise ValidationError(
-                f"tracks.{track_name}.{release_name}.license is missing"
-            )
+        validate_source_entry(release, f"tracks.{track_name}.{release_name}")
+
+    validate_source_lock(lock, load_json(SOURCE_LOCK_PATH))
+    validate_bridge_contract(lock)
     return validate_data_inputs(lock)
 
 
