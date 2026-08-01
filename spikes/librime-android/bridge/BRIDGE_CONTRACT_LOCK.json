@@ -1,7 +1,7 @@
 {
-  "format_version": 3,
+  "format_version": 2,
   "captured_at_utc": "2026-08-01T09:11:37Z",
-  "status": "HOST_CONTRACT_PUBLIC_API_BACKEND_AND_JNI_SOURCE",
+  "status": "HOST_CONTRACT_AND_PUBLIC_API_BACKEND_SOURCE",
   "native_librime_linked": false,
   "production_integration_allowed": false,
   "language_standard": "c++17",
