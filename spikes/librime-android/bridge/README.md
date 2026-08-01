@@ -5,8 +5,8 @@ adapter will use. It deliberately does **not** link librime yet.
 
 The separation is intentional:
 
-- `Bridge` owns lifecycle validation, serialization, reset invariants and
-  fail-closed argument checks;
+- `Bridge` owns lifecycle validation, partial-initialization cleanup, reset
+  invariants and fail-closed argument checks;
 - `Backend` is the narrow implementation boundary for a future
   `LibrimeBackend` built only from librime's public C API;
 - an unhandled `process_key` result is returned to the caller instead of being
@@ -20,6 +20,9 @@ The fake backend test proves the intended flow:
 ```text
 initialize -> n i h a o -> 你好 candidate -> select -> 你好 commit -> reset
 ```
+
+It also verifies that a partially failed initialization is shut down and that
+reset rejects stale composition, candidates or commit data.
 
 Run locally:
 
