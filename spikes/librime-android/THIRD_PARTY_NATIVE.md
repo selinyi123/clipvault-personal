@@ -23,19 +23,22 @@ from the built artifact closure.
 | marisa-trie | trie implementation | `0d4e8ab58eec355facf8f65ff11ef811b330e373` | BSD-2-Clause OR LGPL-2.1-or-later | static; BSD-2-Clause selected | yes | BSD notice/copyright and source identity | pending |
 | OpenCC | script conversion | `556ed22496d650bd0b13b6c163be9814637970ae` | Apache-2.0 | static; reuse locked marisa | yes | Apache license, NOTICE if present, modification notice | pending |
 | OpenCC vendored RapidJSON | OpenCC JSON configuration headers | 1.1.0 inside OpenCC SHA `556ed224…` | MIT | headers compiled into OpenCC | yes | retain RapidJSON license/copyright and record vendored path | pending |
-| OpenCC vendored TCLAP | OpenCC command-line tools | 1.2.5 inside OpenCC SHA `556ed224…` | NOASSERTION | must be excluded by an auditable library-only patch | no | classify license and prove tools/TCLAP absent | blocked |
+| OpenCC vendored TCLAP | OpenCC command-line tools | 1.2.5 inside OpenCC SHA `556ed224…` | NOASSERTION | excluded by locked library-only patch plus `BUILD_TOOLS=OFF` | no | classify license and prove tools/TCLAP absent | blocked |
 | OpenCC vendored darts-clone | optional Darts dictionary | 0.32 inside OpenCC SHA `556ed224…` | NOASSERTION | excluded with `ENABLE_DARTS=OFF` | no | classify license and prove Darts sources/objects absent | blocked |
 | ClipVault bridge/JNI | original adapter | host contract implemented; native backend pending | project license unresolved | JNI shared library | planned | original implementation; do not copy GPL Trime code | pending |
 
 The planned closure disables glog, upstream tests, timestamps, Darts, benchmark,
 Python bindings and accidental Snappy discovery. It also reuses the locked
-marisa library. OpenCC's current CMake graph still adds its command-line tools
-unconditionally; therefore the Android PoC requires a small, repository-owned,
-replayable **library-only patch** before any native build result can be accepted.
-The patch must skip `src/tools` rather than merely delete produced executables.
-Until the patched source graph and final object/ELF closure are inspected,
-TCLAP and darts-clone remain unresolved even though they are intended to be
-excluded.
+marisa library. OpenCC's current CMake graph adds its command-line tools and
+conversion-data build by default. The PoC now contains a repository-owned,
+replayable patch at `patches/opencc-library-only.patch`, locked by SHA-256, that
+adds opt-in `BUILD_TOOLS` and `BUILD_DATA` switches while retaining upstream
+defaults.
+
+The patch's presence and hash are verified by the static gate. Its clean
+application to the locked OpenCC SHA, resulting CMake target graph and final
+object/ELF closure are **not yet proven**. Until those checks pass, TCLAP and
+darts-clone remain unresolved even though they are intended to be excluded.
 
 This is a build policy, not evidence that the resulting Android binary has the
 claimed closure. The final `.so` inventory and build trace must prove it.
@@ -74,7 +77,7 @@ lexicon and contains no user data.
 
 - License reviewer: unresolved
 - Project-owned PoC data redistribution license: pending Owner decision
-- OpenCC library-only patch: required, not implemented
+- OpenCC library-only patch: locked; clean application and target-graph proof pending
 - TCLAP and darts-clone license classification: unresolved
 - Track A approval: not approved
 - Track B approval: not approved
