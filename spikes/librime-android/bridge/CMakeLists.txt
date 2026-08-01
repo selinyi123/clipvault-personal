@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(clipvault_rime_bridge STATIC
   src/rime_bridge.cpp
+  src/utf8.cpp
 )
 target_include_directories(clipvault_rime_bridge PUBLIC include)
 target_compile_options(clipvault_rime_bridge PRIVATE
@@ -21,4 +22,11 @@ if(BUILD_TESTING)
     $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Werror>
   )
   add_test(NAME clipvault_rime_bridge_test COMMAND clipvault_rime_bridge_test)
+
+  add_executable(clipvault_utf8_test tests/utf8_test.cpp)
+  target_link_libraries(clipvault_utf8_test PRIVATE clipvault_rime_bridge)
+  target_compile_options(clipvault_utf8_test PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Werror>
+  )
+  add_test(NAME clipvault_utf8_test COMMAND clipvault_utf8_test)
 endif()
