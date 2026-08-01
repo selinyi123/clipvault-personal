@@ -9,6 +9,17 @@ import re
 from clipvault import __version__
 from clipvault.core import origin_metadata, secret_guard
 from clipvault.core import suggest as suggest_core
+from clipvault.otp.ingress import (
+    OTP_BROKER_FORWARD_TIMEOUT_S,
+    OtpOpaqueIngress,
+    OtpOpaqueIngressError,
+    OtpOpaqueIngressPort,
+    OtpPairIdentityPort,
+)
+from clipvault.otp.pairing import (
+    DisabledOtpPairingAuthority,
+    OtpPairingError,
+)
 from clipvault.service import ClipVaultService
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
@@ -151,13 +162,43 @@ def _lan_reachable(host: str) -> bool:
 
 
 class Api:
-    def __init__(self, service: ClipVaultService, pairing: Pairing | None = None):
+    def __init__(
+        self,
+        service: ClipVaultService,
+        pairing: Pairing | None = None,
+        *,
+        otp_ingress_port: OtpOpaqueIngressPort | None = None,
+        otp_pair_identity_port: OtpPairIdentityPort | None = None,
+        otp_pairing_authority=None,
+        otp_now_ms=None,
+        otp_broker_timeout_s: float = OTP_BROKER_FORWARD_TIMEOUT_S,
+    ):
         self.service = service
         self.conn = service.conn
         self.clips = ClipsRepo(self.conn)
         self.memory = MemoryRepo(self.conn)
         self.peers = PeersRepo(self.conn)
         self.pairing = pairing or Pairing()
+        self.otp_ingress = OtpOpaqueIngress(
+            otp_ingress_port,
+            otp_pair_identity_port,
+            now_ms=otp_now_ms,
+            broker_timeout_s=otp_broker_timeout_s,
+        )
+        self.otp_pairing_authority = (
+            otp_pairing_authority
+            if otp_pairing_authority is not None
+            else DisabledOtpPairingAuthority()
+        )
+        for method in ("pair", "revoke", "close"):
+            if not callable(getattr(self.otp_pairing_authority, method, None)):
+                raise TypeError("invalid OTP pairing authority")
+
+    def close(self) -> None:
+        """Release ephemeral integration buffers; safe to call repeatedly."""
+
+        self.otp_ingress.close()
+        self.otp_pairing_authority.close()
 
     def health(self) -> tuple[int, dict]:
         try:
@@ -546,6 +587,17 @@ class Api:
     def unpair(self, device_id: str) -> tuple[int, dict]:
         """Management (loopback-only): revoke a paired device. Its bearer token
         stops authenticating immediately (lost/compromised-device recovery)."""
+        if self.peers.get(device_id) is None:
+            return 404, {"error": {"code": "not_found", "message": device_id}}
+        try:
+            self.otp_pairing_authority.revoke(device_id)
+        except OtpPairingError as exc:
+            return exc.http_status, {
+                "error": {
+                    "code": exc.security_code,
+                    "message": "OTP pair revocation failed",
+                }
+            }
         if not self.peers.unpair(device_id):
             return 404, {"error": {"code": "not_found", "message": device_id}}
         return 200, {"device_id": device_id, "unpaired": True}
@@ -629,6 +681,51 @@ class Api:
 
     def auth_ok(self, token: str | None) -> bool:
         return self._auth_device(token) is not None
+
+    def otp_pair(self, token: str | None, body: dict) -> tuple[int, dict]:
+        """Bootstrap an OTP-only identity/key from one authenticated sync peer."""
+
+        peer = self._auth_device(token)
+        if peer is None:
+            return 401, {
+                "error": {"code": "unauthorized", "message": "bad token"}
+            }
+        try:
+            result = self.otp_pairing_authority.pair(peer["device_id"], body)
+        except OtpPairingError as exc:
+            return exc.http_status, {
+                "error": {
+                    "code": exc.security_code,
+                    "message": "OTP pairing rejected",
+                }
+            }
+        return 201, result.response()
+
+    def otp_relay(
+        self,
+        token: str | None,
+        raw_body: bytes | bytearray,
+    ) -> tuple[int, dict]:
+        """Synchronously route one opaque envelope; never persist or decrypt it."""
+
+        peer = self._auth_device(token)
+        if peer is None:
+            return 401, {
+                "error": {"code": "unauthorized", "message": "bad token"}
+            }
+        try:
+            receipt = self.otp_ingress.relay(
+                raw_body,
+                authenticated_sync_device_id=peer["device_id"],
+            )
+        except OtpOpaqueIngressError as exc:
+            return exc.http_status, {
+                "error": {
+                    "code": exc.security_code,
+                    "message": "OTP relay rejected",
+                }
+            }
+        return 202, {"status": "accepted", "event_hash": receipt.event_hash}
 
     def sync_push(self, token: str | None, body: dict) -> tuple[int, dict]:
         peer = self._auth_device(token)

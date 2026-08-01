@@ -19,7 +19,20 @@ from clipvault.api import server as api_server
 from clipvault.backup import cancellation as backup_cancellation
 from clipvault.backup.github_backup import BackupWorker
 from clipvault.config import Config
+from clipvault.otp.ingress import (
+    DisabledOtpOpaqueIngressPort,
+)
+from clipvault.otp.pairing import (
+    SqliteOtpPairIdentityPort,
+    SqliteOtpPairingAuthority,
+    WindowsCredentialManagerStore,
+    disabled_pair_identity_factory,
+    disabled_pairing_authority_factory,
+)
+from clipvault.otp.windows_pipe import WindowsNamedPipeOtpOpaqueIngressPort
 from clipvault.runtime.obsidian_worker import ObsidianWorker
+from clipvault.runtime.snapshot_windows import WindowsRuntimeSnapshotServer
+from clipvault.runtime.snapshot_worker import RuntimeSnapshotWorker
 from clipvault.service import ClipVaultService
 from clipvault.store import db
 from clipvault.store.outbox_repo import OutboxRepo
@@ -45,11 +58,50 @@ class RuntimeAdapters:
     connect: Callable = db.connect
     migrate: Callable = db.migrate
     api_serve: Callable = _RUNTIME_API_SERVE
+    otp_ingress_port_factory: Callable = DisabledOtpOpaqueIngressPort
+    otp_pair_identity_port_factory: Callable = disabled_pair_identity_factory
+    otp_pairing_authority_factory: Callable = disabled_pairing_authority_factory
+    runtime_snapshot_server_factory: Callable | None = None
+    runtime_snapshot_worker_factory: Callable = RuntimeSnapshotWorker
     watcher_factory: Callable = PollingWatcher
     obsidian_worker_factory: Callable = ObsidianWorker
     backup_worker_factory: Callable = BackupWorker
     thread_factory: Callable = threading.Thread
     monotonic: Callable[[], float] = time.monotonic
+
+
+def _production_adapters(config: Config) -> RuntimeAdapters:
+    otp_ingress_port_factory: Callable = DisabledOtpOpaqueIngressPort
+    if config.otp_windows_broker_enabled:
+        otp_ingress_port_factory = partial(
+            WindowsNamedPipeOtpOpaqueIngressPort,
+            enabled=True,
+        )
+    otp_pair_identity_port_factory: Callable = disabled_pair_identity_factory
+    if config.otp_pairing_enabled:
+        otp_pair_identity_port_factory = SqliteOtpPairIdentityPort
+
+    def otp_pairing_authority_factory(conn):
+        return SqliteOtpPairingAuthority(
+            conn,
+            WindowsCredentialManagerStore(enabled=True),
+            pairing_enabled=config.otp_pairing_enabled,
+        )
+
+    runtime_snapshot_server_factory = None
+    if config.ime_snapshot_enabled:
+        runtime_snapshot_server_factory = partial(
+            WindowsRuntimeSnapshotServer,
+            expected_host_path=config.ime_snapshot_host_path,
+            require_signature=config.ime_snapshot_require_signed_host,
+        )
+
+    return RuntimeAdapters(
+        otp_ingress_port_factory=otp_ingress_port_factory,
+        otp_pair_identity_port_factory=otp_pair_identity_port_factory,
+        otp_pairing_authority_factory=otp_pairing_authority_factory,
+        runtime_snapshot_server_factory=runtime_snapshot_server_factory,
+    )
 
 
 class ClipVaultRuntime:
@@ -64,7 +116,7 @@ class ClipVaultRuntime:
         start_timeout_s: float = _DEFAULT_START_TIMEOUT_S,
     ) -> None:
         self.config = config
-        self.adapters = adapters or RuntimeAdapters()
+        self.adapters = adapters or _production_adapters(config)
         self.maintenance_interval_s = max(0.01, float(maintenance_interval_s))
         self.start_timeout_s = max(0.1, float(start_timeout_s))
         self.stop_event = threading.Event()
@@ -124,6 +176,39 @@ class ClipVaultRuntime:
     ):
         return self.adapters.thread_factory(
             target=self._guarded_target(name, target, *args, **kwargs),
+            daemon=daemon,
+            name=name,
+        )
+
+    def _new_degraded_thread(
+        self,
+        name: str,
+        target: Callable,
+        *args,
+        daemon: bool = True,
+        retry_delay_s: float = 1.0,
+        **kwargs,
+    ):
+        """Run an optional surface without participating in global shutdown."""
+
+        retry_delay_s = max(0.01, float(retry_delay_s))
+
+        def run() -> None:
+            while not self.stop_event.is_set():
+                try:
+                    target(*args, **kwargs)
+                except BaseException as exc:
+                    if self.stop_event.is_set():
+                        return
+                    self._record_degraded_error(name, exc.__class__.__name__)
+                else:
+                    if self.stop_event.is_set():
+                        return
+                    self._record_degraded_error(name, "UnexpectedWorkerExit")
+                self.stop_event.wait(retry_delay_s)
+
+        return self.adapters.thread_factory(
+            target=run,
             daemon=daemon,
             name=name,
         )
@@ -221,6 +306,13 @@ class ClipVaultRuntime:
             api_serve = partial(
                 api_serve,
                 on_preflight_complete=self._api_preflight_complete.set,
+                otp_ingress_port_factory=self.adapters.otp_ingress_port_factory,
+                otp_pair_identity_port_factory=(
+                    self.adapters.otp_pair_identity_port_factory
+                ),
+                otp_pairing_authority_factory=(
+                    self.adapters.otp_pairing_authority_factory
+                ),
             )
         else:
             # Injected adapters retain their historical signature and own any
@@ -244,6 +336,33 @@ class ClipVaultRuntime:
             ),
             self._new_thread("maintenance", self._maintenance_loop),
         ]
+        if self.config.ime_snapshot_enabled:
+            snapshot_server_factory = (
+                self.adapters.runtime_snapshot_server_factory
+            )
+            if snapshot_server_factory is None:
+                # Custom/incomplete adapter sets degrade inside the optional
+                # worker. They must not make API or clipboard startup fail.
+                def snapshot_server_factory(_publisher):
+                    raise RuntimeError("snapshot server unavailable")
+
+            snapshot_worker = self.adapters.runtime_snapshot_worker_factory(
+                self.config.db_path,
+                connect=self.adapters.connect,
+                server_factory=snapshot_server_factory,
+                weights=self.config.weights(),
+                on_error=lambda error_class: self._record_degraded_error(
+                    "ime-snapshot",
+                    error_class,
+                ),
+            )
+            threads.append(
+                self._new_degraded_thread(
+                    "ime-snapshot",
+                    snapshot_worker.run,
+                    self.stop_event,
+                )
+            )
         if self.config.backup_enabled and self.config.backup_repo_path:
             # A persistent Git ref/index critical section must outlive main's
             # first bounded join rather than be killed by interpreter teardown.

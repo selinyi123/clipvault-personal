@@ -14,7 +14,7 @@ from clipvault.store.migration_lock import (
 )
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
-LATEST_SCHEMA_VERSION = 9
+LATEST_SCHEMA_VERSION = 10
 _MIGRATION_NAME = re.compile(
     r"^(?P<number>[0-9]{4})_[A-Za-z0-9][A-Za-z0-9_]*\.sql$"
 )

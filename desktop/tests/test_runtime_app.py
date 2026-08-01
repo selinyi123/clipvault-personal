@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -24,7 +25,12 @@ from clipvault.store.peers_repo import PeersRepo
 _THREAD_COORDINATION_TIMEOUT_S = 10.0
 
 
-def _cfg(tmp_path, *, backup_enabled: bool = False) -> Config:
+def _cfg(
+    tmp_path,
+    *,
+    backup_enabled: bool = False,
+    snapshot_enabled: bool = False,
+) -> Config:
     return Config(
         device_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
         device_name="runtime-test",
@@ -34,6 +40,12 @@ def _cfg(tmp_path, *, backup_enabled: bool = False) -> Config:
         vault_path=str(tmp_path / "vault"),
         backup_enabled=backup_enabled,
         backup_repo_path=str(tmp_path / "backup") if backup_enabled else "",
+        ime_snapshot_enabled=snapshot_enabled,
+        ime_snapshot_host_path=(
+            "C:/Program Files/ClipVault/ClipVaultImeHost.exe"
+            if snapshot_enabled
+            else ""
+        ),
     )
 
 
@@ -108,6 +120,144 @@ def test_runtime_start_stop_join_are_idempotent_and_content_free(tmp_path):
     assert runtime.join(0) == []
     assert all(not row["alive"] for row in runtime.health().values())
     assert all(row["error_class"] is None for row in runtime.health().values())
+
+
+def test_snapshot_disabled_constructs_neither_worker_nor_thread(tmp_path):
+    def forbidden_worker(*_args, **_kwargs):
+        raise AssertionError("disabled snapshot must not construct a worker")
+
+    runtime = ClipVaultRuntime(
+        _cfg(tmp_path),
+        adapters=replace(
+            _adapters(),
+            runtime_snapshot_worker_factory=forbidden_worker,
+        ),
+    )
+
+    assert "ime-snapshot" not in {
+        thread.name for thread in runtime._build_threads()
+    }
+
+
+def test_production_snapshot_adapter_binds_expected_host_and_signature_policy(
+    tmp_path,
+    monkeypatch,
+):
+    observed = {}
+
+    class FakeServer:
+        def __init__(
+            self,
+            publisher,
+            expected_host_path,
+            *,
+            require_signature,
+        ):
+            observed.update(
+                publisher=publisher,
+                expected_host_path=expected_host_path,
+                require_signature=require_signature,
+            )
+
+    monkeypatch.setattr(runtime_app, "WindowsRuntimeSnapshotServer", FakeServer)
+    config = _cfg(tmp_path, snapshot_enabled=True)
+    config.ime_snapshot_require_signed_host = False
+    runtime = ClipVaultRuntime(config)
+    publisher = object()
+
+    server = runtime.adapters.runtime_snapshot_server_factory(publisher)
+
+    assert isinstance(server, FakeServer)
+    assert observed == {
+        "publisher": publisher,
+        "expected_host_path": config.ime_snapshot_host_path,
+        "require_signature": False,
+    }
+
+
+def test_snapshot_worker_owns_connection_and_failure_is_degraded_only(
+    tmp_path,
+    caplog,
+):
+    private_marker = r"D:\Private\ClipVaultImeHost.exe"
+    first_failure = threading.Event()
+    server_running = threading.Event()
+    opened_in_snapshot = []
+    closed_in_snapshot = []
+    attempts = 0
+    lock = threading.Lock()
+
+    class TrackedConnection:
+        def __init__(self, path):
+            self.inner = db.connect(path)
+            self.creator_name = threading.current_thread().name
+            self.identity = id(self)
+            if self.creator_name == "ime-snapshot":
+                with lock:
+                    opened_in_snapshot.append(self.identity)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def close(self):
+            self.inner.close()
+            if self.creator_name == "ime-snapshot":
+                assert threading.current_thread().name == "ime-snapshot"
+                with lock:
+                    closed_in_snapshot.append(self.identity)
+
+    def server_factory(_publisher):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            first_failure.set()
+            raise OSError(private_marker)
+
+        class Server:
+            def run(self, stop_event):
+                server_running.set()
+                stop_event.wait()
+
+        return Server()
+
+    def worker_factory(*args, **kwargs):
+        return runtime_app.RuntimeSnapshotWorker(
+            *args,
+            retry_delay_s=0.2,
+            **kwargs,
+        )
+
+    runtime = ClipVaultRuntime(
+        _cfg(tmp_path, snapshot_enabled=True),
+        adapters=replace(
+            _adapters(),
+            connect=TrackedConnection,
+            runtime_snapshot_server_factory=server_factory,
+            runtime_snapshot_worker_factory=worker_factory,
+        ),
+        maintenance_interval_s=60,
+    )
+
+    with caplog.at_level("WARNING"):
+        runtime.start()
+        assert first_failure.wait(_THREAD_COORDINATION_TIMEOUT_S)
+        deadline = time.monotonic() + _THREAD_COORDINATION_TIMEOUT_S
+        while runtime.health()["ime-snapshot"]["error_class"] != "OSError":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert not runtime.stop_event.is_set()
+        assert runtime.health()["api"]["alive"] is True
+        assert runtime.health()["watcher"]["alive"] is True
+        assert server_running.wait(_THREAD_COORDINATION_TIMEOUT_S)
+        while runtime.health()["ime-snapshot"]["error_class"] is not None:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+
+    assert attempts == 2
+    assert opened_in_snapshot
+    assert private_marker not in caplog.text
+    assert runtime.close(2) == []
+    assert sorted(closed_in_snapshot) == sorted(opened_in_snapshot)
 
 
 class _FakeHttpd:
@@ -699,7 +849,8 @@ def test_backup_exit_drain_waits_only_for_backup_worker(tmp_path):
         def is_alive(self):
             return self.alive
 
-    runtime = ClipVaultRuntime(_cfg(tmp_path), adapters=_adapters())
+    adapters = replace(_adapters(), monotonic=lambda: 100.0)
+    runtime = ClipVaultRuntime(_cfg(tmp_path), adapters=adapters)
     api = WaitingThread("api")
     backup = WaitingThread("backup-worker")
     runtime._threads = [api, backup]

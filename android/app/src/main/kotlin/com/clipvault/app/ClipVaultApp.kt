@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import androidx.room.Room
 import com.clipvault.app.data.AppDatabase
+import com.clipvault.app.otp.OtpRelayRuntime
 
 /** App singletons. Deliberately tiny — no DI framework for a self-use app. */
 class ClipVaultApp : Application() {
@@ -14,6 +15,12 @@ class ClipVaultApp : Application() {
         super.onCreate()
         instance = this
         db = Room.databaseBuilder(this, AppDatabase::class.java, "clipvault.db").build()
+        OtpRelayRuntime.initialize(this)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= TRIM_MEMORY_COMPLETE) OtpRelayRuntime.onSevereMemoryPressure()
     }
 
     companion object {

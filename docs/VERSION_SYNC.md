@@ -1,6 +1,6 @@
 # ClipVault Version Sync Report
 
-Date: 2026-07-03
+Date: 2026-08-01
 
 ## Current truth (verified from repository)
 
@@ -22,15 +22,15 @@ Date: 2026-07-03
 
 All visible source-tree release version metadata is currently aligned at **1.6.0**.
 
-## Remaining release blockers for Issue #36
+## Published release status
 
-- GitHub Actions CI result must be recorded for the target commit.
-- Desktop portable exe, desktop installer, signed Android APK, and checksums
-  must be built before publishing `v1.6.0`.
-- Manual Android device QA and Windows clipboard privacy QA remain owner-run
-  gates and are not claimed by this document.
-- Final `v1.6.0` GitHub Release publication remains blocked until Owner
-  approval records the signed artifacts and manual QA evidence on Issue #36.
+- `v1.6.0` was published on 2026-07-30 from
+  `531d177b4485a5f32f97229a8d571969f6edf536`.
+- Issue #36 was closed by explicit Owner risk exception with a final manual
+  worksheet of 15 pass, 0 fail and 10 blocked.
+- Publication and closure do not convert blocked manual rows into passing QA.
+- The v2 input-foundation PoCs do not change release version metadata. A later
+  version bump requires separate Owner approval and remains an Owner-controlled action.
 
 ## Single-source strategy
 

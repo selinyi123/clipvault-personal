@@ -1,8 +1,9 @@
 # Instrumented QA backlog (residual device-only checks)
 
 The historical IME manual QA residuals were automated as far as the host JVM
-allows, then carried forward into the current Issue #36 / v1.6.0 manual QA
-gate (`docs/MANUAL_QA_V1_6_0.md`). Five checks still exercise live IME
+allows, then carried forward from the Issue #36 / v1.6.0 manual QA
+gate (`docs/MANUAL_QA_V1_6_0.md`). Issue #36 was closed by Owner risk exception,
+not by turning blocked rows into passes. Five checks still exercise live IME
 behaviour and on-screen rendering; they cannot run on the host JVM and need an
 instrumented (`androidTest`) run on a device or emulator.
 
@@ -10,10 +11,13 @@ Until a device/emulator cycle is picked up, the checks are encoded as
 `@Ignore`-d scaffolds in
 `android/app/src/androidTest/kotlin/com/clipvault/app/ime/ResidualImeChecksTest.kt`.
 
-CI now compiles the `androidTest` source set with AndroidX Test dependencies so
-the residual QA scaffolds cannot drift out of buildability. It still does not run
+CI now compiles both the historical Runtime `androidTest` source set and the
+standalone `ime-app` `androidTest` source set with AndroidX Test dependencies so
+neither the residual QA scaffolds nor the production IME device tests can drift
+out of buildability. It still does not run
 `connectedDebugAndroidTest`, does not enable/select the IME on a device, and does
-not satisfy the Owner/manual QA gate for Issue #36.
+not supply the missing device evidence. These checks remain v2.0 stability debt
+despite the historical release-gate exception.
 
 ## Residual checks
 
@@ -88,8 +92,10 @@ is executed against the exact recorded commit.
   request/session invalidation, stale candidate commit gates, Memory metadata
   and payload budgets, generated `[memory:<kind>]` query matching, and the rule
   that stored labels do not expand query semantics.
-- `:app:compileDebugAndroidTestKotlin` only proves that
+- `:app:compileDebugAndroidTestKotlin` only proves that the historical
   `ResidualImeChecksTest` and `MemoryCandidatePageTest` compile.
+- `:ime-app:compileDebugAndroidTestKotlin` proves that the standalone IME
+  device-test sources compile; it does not execute them.
 - `:app:assembleDebug` proves packaging only. None of these commands enables an
   IME, interacts with an editor, runs TalkBack, or executes connected tests.
 
@@ -116,8 +122,8 @@ evidence.
    ```
 
 2. CI compile gate: `.github/workflows/ci.yml` runs
-   `./gradlew :app:compileDebugAndroidTestKotlin --no-daemon` after Android unit
-   tests and before assembling the debug APK.
+   `./gradlew :ime-app:compileDebugAndroidTestKotlin :app:compileDebugAndroidTestKotlin --no-daemon`
+   after Android unit tests and before assembling both debug APKs.
 3. IME enablement: an IME cannot self-enable. Enable + select the ClipVault
    keyboards before the interaction, e.g. via `adb shell ime enable/set` in a
    test-orchestration step, or `UiAutomator` driving the system input-method
@@ -139,7 +145,7 @@ Compile the residual test source set without a device:
 
 ```bash
 cd android
-./gradlew :app:compileDebugAndroidTestKotlin --no-daemon
+./gradlew :ime-app:compileDebugAndroidTestKotlin :app:compileDebugAndroidTestKotlin --no-daemon
 ```
 
 Run the real checks only after replacing the scaffolds with assertions and
@@ -154,12 +160,10 @@ cd android
 
 - The five `@Ignore` annotations are removed and the assertions are real.
 - `connectedDebugAndroidTest` passes on a device/emulator.
-- `docs/MANUAL_QA_V1_6_0.md` and the Issue #36 evidence comment are updated to
-  point at the now-live instrumented tests instead of this backlog.
+- The v2.0 device-evidence record points at the now-live instrumented tests;
+  historical v1.6 evidence remains immutable and is not rewritten as passing.
 - The current IME sprint acceptance checklist is executed against the exact
   recorded commit, with no clip contents or device serials included in evidence.
-- Issue #36 still requires the final signed APK declared-device lane. An
-  official emulator is eligible only when the exact signed release APK and all
-  strict Draft/commit/digest/signer bindings are recorded; an unsigned debug
-  APK result does not close the release gate, and emulator evidence does not
-  claim OEM or physical-hardware coverage.
+- A debug/emulator result does not prove signed-release behavior, OEM coverage
+  or physical-hardware coverage. Any future release gate must bind its exact
+  signed APK, commit, digest, signer and declared device lane.

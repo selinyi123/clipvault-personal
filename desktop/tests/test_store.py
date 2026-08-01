@@ -20,7 +20,7 @@ EXPECTED_TABLES = {
 
 
 def test_a1_migration_from_zero(conn):
-    assert db.schema_version(conn) == 9
+    assert db.schema_version(conn) == 10
     names = {
         r[0]
         for r in conn.execute(
@@ -34,7 +34,7 @@ def test_a1_migration_from_zero(conn):
 
 
 def test_a1_migration_idempotent(conn):
-    assert db.migrate(conn) == 9  # second run is a no-op, returns current version
+    assert db.migrate(conn) == 10  # second run is a no-op, returns current version
 
 
 def test_a1_v5_to_v6_backfills_only_eligible_obsidian_rows(tmp_path):

@@ -1,0 +1,16 @@
+# ClipVault-owned minimal Rime frontend configuration.
+# This file is a cross-platform canonical asset shared by Android and Windows.
+config_version: "2.3"
+
+schema_list:
+  - schema: clipvault_pinyin
+  - schema: clipvault_pinyin_private
+
+menu:
+  page_size: 8
+
+switcher:
+  caption: "输入方案"
+  hotkeys:
+    - Control+grave
+    - F4

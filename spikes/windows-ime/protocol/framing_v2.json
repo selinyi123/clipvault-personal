@@ -1,0 +1,22 @@
+{
+  "format_version": 1,
+  "length_prefix": {
+    "bytes": 4,
+    "signed": false,
+    "byte_order": "big-endian"
+  },
+  "protobuf_payload": {
+    "min_bytes": 1,
+    "max_bytes": 1048576,
+    "exact_length_required": true,
+    "zero_rejected": true,
+    "truncated_rejected": true,
+    "oversize_rejected": true,
+    "trailing_bytes_rejected": true
+  },
+  "handshake": {
+    "per_connection_order": ["ClientHello", "HostHello"],
+    "application_frames_after_ready_only": true,
+    "restart_requires_new_connection": true
+  }
+}

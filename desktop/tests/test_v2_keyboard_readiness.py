@@ -1,7 +1,8 @@
-"""Unit tests for the local v2.0 dual-IME readiness checker."""
+"""Unit tests for the v2 daily-use Android keyboard readiness checker."""
 
 import importlib.util
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -19,84 +20,134 @@ def _gates(report):
     return {gate["name"]: gate for gate in report["gates"]}
 
 
-def test_current_repo_reports_static_v2_keyboard_evidence_but_keeps_owner_gate_blocked():
+def _copy_package_boundary(tmp_path: Path) -> None:
+    for relative in (
+        "android/app/src/main/AndroidManifest.xml",
+        "android/app/build.gradle.kts",
+        "android/ime-app/src/main/AndroidManifest.xml",
+        "android/ime-app/build.gradle.kts",
+    ):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(_ROOT / relative, target)
+
+
+def test_current_repo_passes_android_static_gates_but_keeps_owner_gate_blocked():
     report = v2_keyboard_readiness.build_report(root=_ROOT)
     gates = _gates(report)
 
     assert report["status"] == "blocked"
     assert report["blocked"] == 1
-    assert gates["dual IME manifest registration"]["status"] == "pass"
-    assert gates["input-method XML switch-back support"]["status"] == "pass"
-    assert gates["Keyboard Lab source controls"]["status"] == "pass"
-    assert gates["Panel IME source controls"]["status"] == "pass"
-    assert gates["IME privacy/static test coverage"]["status"] == "pass"
-    assert gates["v2.0 docs/release boundary"]["status"] == "pass"
-    assert gates["Owner/manual release gate"]["status"] == "blocked"
-    assert "does not call GitHub" in report["scope_note"]
-    assert "claim v2.0 stable" in report["scope_note"]
+    assert gates["standalone IME package boundary"]["status"] == "pass"
+    assert gates["standalone input-method XML"]["status"] == "pass"
+    assert gates["standalone IME source controls"]["status"] == "pass"
+    assert gates["standalone IME static test coverage"]["status"] == "pass"
+    assert gates["v2 daily-use Android architecture docs"]["status"] == "pass"
+    owner = gates["Owner signed/manual release gate"]
+    assert owner["status"] == "blocked"
+    assert owner["metadata"]["delegated_to"] == "tools/v2_daily_readiness.py"
+    assert owner["metadata"]["synthetic_evidence_allowed"] is False
+    assert "Android-local report" in report["scope_note"]
+    assert "claim v2 daily-use release readiness" in report["scope_note"]
 
 
-def test_manifest_gate_locks_exact_two_system_ime_services():
-    gate = v2_keyboard_readiness.check_dual_ime_manifest(_ROOT)
+def test_package_gate_locks_one_standalone_ime_and_no_enabled_runtime_ime():
+    gate = v2_keyboard_readiness.check_package_ime_boundary(_ROOT)
 
     assert gate.status == "pass"
-    rows = {row["name"]: row for row in gate.metadata["rows"]}
-    assert set(rows) == {
-        ".ime.ClipVaultPanelImeService",
-        ".ime.ClipVaultFullKeyboardService",
-    }
-    assert rows[".ime.ClipVaultPanelImeService"]["expected"]["label"] == "ClipVault 面板"
-    assert rows[".ime.ClipVaultFullKeyboardService"]["expected"]["label"] == "ClipVault 键盘(实验)"
-    for row in rows.values():
-        assert all(row["checks"].values())
+    assert gate.metadata["enabled_runtime_ime_services"] == []
+    assert gate.metadata["runtime_ime_services"] == []
+    assert gate.metadata["runtime_legacy_ime_sources"] == []
+    assert gate.metadata["runtime_legacy_ime_resources"] == []
+    assert gate.metadata["runtime_packages_rime"] is False
+    assert gate.metadata["standalone_active_ime_services"] == [
+        ".ClipVaultIsolatedImeService"
+    ]
+    assert all(gate.metadata["standalone_service_checks"].values())
+    assert "android.permission.INTERNET" not in gate.metadata["standalone_permissions"]
+    assert "android.permission.RECEIVE_SMS" not in gate.metadata["standalone_permissions"]
 
 
-def test_input_method_xml_gate_requires_switching_support():
+def test_input_method_xml_gate_requires_switching_and_inline_autofill():
     gate = v2_keyboard_readiness.check_input_method_xml(_ROOT)
 
     assert gate.status == "pass"
-    for row in gate.metadata["rows"]:
-        assert row["tag"] == "input-method"
-        assert row["supports_switching_to_next_input_method"] is True
+    assert gate.metadata["checks"] == {
+        "input_method_root": True,
+        "switch_back": True,
+        "inline_autofill": True,
+    }
 
 
-def test_cli_json_no_fail_emits_machine_readable_blocked_report(capsys):
-    exit_code = v2_keyboard_readiness.main(["--root", str(_ROOT), "--json", "--no-fail"])
+def test_cli_json_no_fail_emits_machine_readable_owner_block(capsys):
+    exit_code = v2_keyboard_readiness.main(
+        ["--root", str(_ROOT), "--json", "--no-fail"]
+    )
 
-    captured = capsys.readouterr()
-    report = json.loads(captured.out)
+    report = json.loads(capsys.readouterr().out)
     assert exit_code == 0
     assert report["status"] == "blocked"
     assert report["blocked"] == 1
-    assert any(gate["name"] == "Owner/manual release gate" for gate in report["gates"])
+    assert any(
+        gate["name"] == "Owner signed/manual release gate"
+        for gate in report["gates"]
+    )
 
 
-def test_cli_returns_nonzero_when_owner_gate_is_still_blocked(capsys):
+def test_cli_returns_nonzero_while_owner_gate_is_blocked(capsys):
     exit_code = v2_keyboard_readiness.main(["--root", str(_ROOT)])
 
     captured = capsys.readouterr()
     assert exit_code == 2
-    assert "Owner/manual release gate" in captured.out
+    assert "Owner signed/manual release gate" in captured.out
 
 
-def test_manifest_gate_blocks_when_an_ime_label_drifts(tmp_path):
-    source_manifest = _ROOT / "android/app/src/main/AndroidManifest.xml"
-    target_manifest = tmp_path / "android/app/src/main/AndroidManifest.xml"
-    target_manifest.parent.mkdir(parents=True)
-    text = source_manifest.read_text(encoding="utf-8").replace("ClipVault 面板", "ClipVault")
-    target_manifest.write_text(text, encoding="utf-8")
+def test_package_gate_blocks_when_standalone_service_identity_drifts(tmp_path):
+    _copy_package_boundary(tmp_path)
+    manifest = tmp_path / "android/ime-app/src/main/AndroidManifest.xml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            ".ClipVaultIsolatedImeService", ".UnexpectedImeService"
+        ),
+        encoding="utf-8",
+    )
 
-    gate = v2_keyboard_readiness.check_dual_ime_manifest(tmp_path)
+    gate = v2_keyboard_readiness.check_package_ime_boundary(tmp_path)
 
     assert gate.status == "blocked"
-    assert any("failed manifest checks: label" in problem for problem in gate.metadata["problems"])
+    assert "service_name" in gate.metadata["problems"][0]
 
 
-@pytest.mark.parametrize("checker_name", [
-    "check_keyboard_lab_source",
-    "check_panel_ime_source",
-    "check_docs_release_boundaries",
-])
+def test_package_gate_blocks_if_networked_runtime_declares_even_a_disabled_legacy_ime(tmp_path):
+    _copy_package_boundary(tmp_path)
+    manifest = tmp_path / "android/app/src/main/AndroidManifest.xml"
+    text = manifest.read_text(encoding="utf-8")
+    injected = """
+        <service
+            android:name=".ime.ClipVaultPanelImeService"
+            android:enabled="false"
+            android:exported="true"
+            android:permission="android.permission.BIND_INPUT_METHOD" />
+"""
+    manifest.write_text(text.replace("</application>", injected + "</application>"), encoding="utf-8")
+
+    gate = v2_keyboard_readiness.check_package_ime_boundary(tmp_path)
+
+    assert gate.status == "blocked"
+    assert gate.metadata["enabled_runtime_ime_services"] == []
+    assert gate.metadata["runtime_ime_services"] == [
+        ".ime.ClipVaultPanelImeService"
+    ]
+
+
+@pytest.mark.parametrize(
+    "checker_name",
+    [
+        "check_package_ime_boundary",
+        "check_isolated_ime_source",
+        "check_architecture_docs",
+    ],
+)
 def test_local_file_checkers_fail_closed_when_repo_root_is_wrong(tmp_path, checker_name):
     checker = getattr(v2_keyboard_readiness, checker_name)
 

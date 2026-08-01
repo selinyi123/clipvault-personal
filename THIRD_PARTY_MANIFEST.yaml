@@ -1,0 +1,215 @@
+{
+  "format_version": 1,
+  "candidate_line": "v2-daily",
+  "maintained_against_locked_inputs": true,
+  "scope": {
+    "android": "Components packaged in the networked Runtime APK, components statically linked into the production IME APK, bundled Rime data, and provenance-only sources of those locked inputs.",
+    "windows": "Top-level Host runtime and bundled Rime data only. The transitive composition of the official rime.dll is not asserted by the current Windows lock and remains an Owner notice review item."
+  },
+  "project_license": {
+    "status": "internal_only",
+    "license_file": null,
+    "distribution_allowed": false,
+    "note": "The Owner has selected internal-only use for ClipVault-owned code. No license is granted to third parties and public or external distribution remains prohibited until a future file-backed approval is recorded."
+  },
+  "components": [
+    {
+      "name": "librime",
+      "version": "1.16.1",
+      "commit": "de4700e9f6b75b109910613df907965e3cbe0567",
+      "license": "BSD-3-Clause",
+      "upstream": "https://github.com/rime/librime.git",
+      "mode": {
+        "android": "static-linked-native-dependency",
+        "windows": "dynamically-loaded-by-ClipVaultImeHost.exe"
+      },
+      "artifacts": {
+        "windows_official_runtime": {
+          "name": "rime-de4700e-Windows-msvc-x64.7z",
+          "sha256": "e17c1bb4acc9934669e7a62003aef3f8b56d0afa89e5d893ed7dbf34546abb6e",
+          "size_bytes": 7373905
+        }
+      },
+      "lock_files": [
+        "android/rime-engine-android/RIME_PRODUCTION_LOCK.json",
+        "windows/ime/rime/RIME_SDK_LOCK.json"
+      ],
+      "license_assets": {
+        "repository": "windows/ime/rime/LICENSE-librime.txt",
+        "repository_sha256": "e8699fc03a2565cc7c6f392149922f1c30043501fb025357f0735e5561b04e32",
+        "android_package": "assets/rime/third_party/librime-BSD-3-Clause.txt",
+        "windows_package": "licenses/librime-BSD-3-Clause.txt"
+      },
+      "distribution_status": "owner_notice_and_signing_review_required"
+    },
+    {
+      "name": "rime-pinyin-simp",
+      "version": null,
+      "commit": "0c6861ef7420ee780270ca6d993d18d4101049d0",
+      "license": "Apache-2.0",
+      "upstream": "https://github.com/rime/rime-pinyin-simp.git",
+      "mode": {
+        "android": "bundled-data",
+        "windows": "bundled-data"
+      },
+      "archive_sha256": "46f37114a7929ecc01003a236803c8b1e5198382e6a21f83fae036604a6b08bf",
+      "lock_files": [
+        "android/rime-engine-android/RIME_PRODUCTION_LOCK.json",
+        "shared-input/rime/RIME_ASSET_LOCK.json"
+      ],
+      "license_assets": {
+        "repository": "third_party/licenses/rime-pinyin-simp-Apache-2.0.txt",
+        "repository_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "android_package": "assets/rime/third_party/rime-pinyin-simp-Apache-2.0.txt",
+        "windows_package": "licenses/rime-pinyin-simp-Apache-2.0.txt"
+      },
+      "distribution_status": "owner_dictionary_provenance_review_required"
+    },
+    {
+      "name": "yaml-cpp",
+      "version": "0.9.0",
+      "commit": null,
+      "license": "MIT",
+      "upstream": "https://github.com/jbeder/yaml-cpp",
+      "mode": {
+        "android": "static-linked-native-dependency",
+        "windows": "not-enumerated-by-current-Windows-binary-lock"
+      },
+      "lock_files": [
+        "android/rime-engine-android/RIME_PRODUCTION_LOCK.json"
+      ],
+      "license_assets": {
+        "repository": "third_party/licenses/yaml-cpp-MIT.txt",
+        "repository_sha256": "aa6fcc27be034e41e21dd832f9175bfe694a48491d9e14ff0fa278e19ad14f1b",
+        "android_package": "assets/rime/third_party/yaml-cpp-MIT.txt"
+      },
+      "distribution_status": "android_exact_archive_source_and_notice_review_required"
+    },
+    {
+      "name": "LevelDB",
+      "version": "1.23.0",
+      "commit": null,
+      "license": "BSD-3-Clause",
+      "upstream": "https://github.com/google/leveldb",
+      "mode": {
+        "android": "static-linked-native-dependency",
+        "windows": "not-enumerated-by-current-Windows-binary-lock"
+      },
+      "lock_files": [
+        "android/rime-engine-android/RIME_PRODUCTION_LOCK.json"
+      ],
+      "license_assets": {
+        "repository": "third_party/licenses/leveldb-BSD-3-Clause.txt",
+        "repository_sha256": "ccc19f1da0798ed666609b65a5b44dd8b3abe6fc08b9c0592eb76e82e174db19",
+        "android_package": "assets/rime/third_party/leveldb-BSD-3-Clause.txt"
+      },
+      "distribution_status": "android_exact_archive_source_and_notice_review_required"
+    },
+    {
+      "name": "OpenCC",
+      "version": "1.2.0",
+      "commit": null,
+      "license": "Apache-2.0",
+      "upstream": "https://github.com/BYVoid/OpenCC",
+      "mode": {
+        "android": "static-linked-native-dependency",
+        "windows": "not-enumerated-by-current-Windows-binary-lock"
+      },
+      "lock_files": [
+        "android/rime-engine-android/RIME_PRODUCTION_LOCK.json"
+      ],
+      "license_assets": {
+        "repository": "third_party/licenses/OpenCC-Apache-2.0.txt",
+        "repository_sha256": "b534e465949558eec2597b04f5092b5e161236a68dfbfd04d547592ac3964308",
+        "android_package": "assets/rime/third_party/opencc-Apache-2.0.txt"
+      },
+      "distribution_status": "android_exact_archive_source_and_notice_review_required"
+    },
+    {
+      "name": "marisa-trie",
+      "version": "0.3.1",
+      "commit": null,
+      "license": "BSD-2-Clause OR LGPL-2.1-or-later",
+      "selected_distribution_option": "BSD-2-Clause",
+      "upstream": "https://github.com/s-yata/marisa-trie",
+      "mode": {
+        "android": "static-linked-native-dependency",
+        "windows": "not-enumerated-by-current-Windows-binary-lock"
+      },
+      "lock_files": [
+        "android/rime-engine-android/RIME_PRODUCTION_LOCK.json"
+      ],
+      "license_assets": {
+        "repository": "third_party/licenses/marisa-trie-COPYING.txt",
+        "repository_sha256": "edf58dab34c3dc239ba4ba2d5d3d844d8c5b442aa4dd1149fac81b2d8c6cb8d1",
+        "android_package": "assets/rime/third_party/marisa-BSD-2-Clause.txt"
+      },
+      "distribution_status": "android_exact_archive_source_and_notice_review_required"
+    },
+    {
+      "name": "fcitx5-android/prebuilt source",
+      "version": null,
+      "commit": "86ce2c95d42f1132746fbf60c278193aa1f4b758",
+      "license": null,
+      "upstream": "https://github.com/fcitx5-android/prebuilt.git",
+      "mode": {
+        "android": "build-input-provenance-only",
+        "windows": "not-used"
+      },
+      "parent_commit": "048f581c652367567b8ee5c28c5163b805288895",
+      "lock_files": [
+        "android/rime-engine-android/RIME_PRODUCTION_LOCK.json"
+      ],
+      "distribution_status": "repository_not_shipped; extracted_archives_are_listed_and_hash_locked_separately"
+    },
+    {
+      "name": "com.google.android.gms:play-services-auth-api-phone",
+      "version": "18.2.0",
+      "commit": null,
+      "license": "Android Software Development Kit License",
+      "upstream": "https://dl.google.com/dl/android/maven2/com/google/android/gms/play-services-auth-api-phone/18.2.0/",
+      "mode": {
+        "android": "Runtime APK dependency for explicit one-message SMS User Consent",
+        "windows": "not-used"
+      },
+      "artifacts": {
+        "aar": {
+          "name": "play-services-auth-api-phone-18.2.0.aar",
+          "sha256": "15963fa1cf08ad2778fd54f17ef72cb7597af15f40415885833b1240369230f3",
+          "size_bytes": 105177
+        },
+        "pom": {
+          "name": "play-services-auth-api-phone-18.2.0.pom",
+          "sha256": "1014bbbd9f385e57e1fb3f99d536e60e494b2ef7f4e3959088f748413a89a4b0",
+          "size_bytes": 2279
+        }
+      },
+      "lock_files": [
+        "android/app/PLAY_SERVICES_SMS_USER_CONSENT_LOCK.json"
+      ],
+      "license_source": {
+        "pom": "https://dl.google.com/dl/android/maven2/com/google/android/gms/play-services-auth-api-phone/18.2.0/play-services-auth-api-phone-18.2.0.pom",
+        "terms_url": "https://developer.android.com/studio/terms.html",
+        "repository_copy": null
+      },
+      "distribution_status": "owner_google_sdk_terms_and_notice_review_required; no local license text is asserted or redistributed"
+    }
+  ],
+  "release_requirements": [
+    "choose_and_record_file_backed_project_license_before_any_external_distribution",
+    "package_all_applicable_license_texts_and_notices",
+    "preserve_exact_source_archive_and_dictionary_hashes",
+    "record_corresponding_source_or_relink_material_when_required",
+    "complete_google_play_services_sdk_terms_and_notice_review",
+    "complete_official_windows_rime_dll_transitive_composition_review",
+    "sign_android_windows_and_installer_artifacts",
+    "bind_owner_evidence_to_one_immutable_candidate"
+  ],
+  "prohibited_shortcuts": [
+    "treating_an_engine_license_as_a_dictionary_license",
+    "copying_source_from_reference_only_gpl_projects",
+    "distributing_from_floating_main_or_unlocked_binary_inputs",
+    "claiming_public_distribution_approval_from_this_manifest",
+    "claiming_the_windows_rime_dll_transitive_closure_from_unverified_assumptions"
+  ]
+}

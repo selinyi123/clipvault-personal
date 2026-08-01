@@ -2,17 +2,23 @@
 
 > 规则：门禁先冻结，结果后判断。Builder 不得自我验收；以原始测试输出、diff、文件为准。
 > 全局门禁适用于每一个 slice；版本门禁在对应版本的最后一片全部复验。
+> v2.1-v2.5 的统一“可日用”完成定义见 [V2_DAILY_USE_ACCEPTANCE.md](V2_DAILY_USE_ACCEPTANCE.md)。
+> `python tools/v2_daily_readiness.py --no-fail` 汇总源码、不可变候选与 Owner 证据；
+> `--source-only` 仅供候选聚合前的 CI 源码门禁；`--automated-only` 还要求提供并
+> 验证 `--candidate-dir`，两者都不能绕过
+> [V2_DAILY_USE_MANUAL_QA.md](V2_DAILY_USE_MANUAL_QA.md) 的签名、真机、应用矩阵、7 天日用与最终批准。
 
 ## 全局门禁（每个 PR 都要过）
 
 - G1. 密钥不进 Obsidian、不进 GitHub、不进同步、不进 FTS、不进 memory 派生。
 - G2. IME 不记录普通键入；ime/ 模块无网络依赖。
 - G3. GitHub 只做备份，不做同步；禁止 pull/force-push/rebase（purge runbook 除外）。
-- G4. SQLite 是本地事实源；任何数据可从本地重建展示。
+- G4. SQLite 是普通持久数据的本地事实源；OTP 是明确例外，只允许短时内存态且不得重建历史。
 - G5. 范围外功能未经 Architect 批准不得出现在 diff 中。
 - G6. 日志不含 clip 正文。
 - G7. 所有新行为有对应测试；contracts/vectors 既有用例不得删改。
 - G8. core/ 纯逻辑层无 IO import（桌面端）。
+- G9. OTP 不进 clip/memory、Room/SQLite、普通 outbox、剪切板历史、搜索、备份、Obsidian 或内容日志。
 
 ## v0.1 门禁（Desktop Core）
 
@@ -92,7 +98,7 @@ Android 侧（S005/S008/S009）与端到端双端联调在 Android 完成后复�
 > 北极星：**做一个完整的（中文）输入法**。主线定义见 [ROADMAP_V2_KEYBOARD.md](ROADMAP_V2_KEYBOARD.md)，
 > 隐私分层见 [ADR-0008](ADR/0008-v1-as-runtime.md)（键入用于输入、显式保存才成资产、L0–L4）。
 > 本段是"先冻验收标准、再开工"的门禁登记处；**门禁先冻结，结果后判断**（Builder 不自我验收）。
-> 全局门禁 **G1–G8 仍逐 PR 适用**（IME 模块无网络、密钥不外泄、日志无正文、core 无 IO、新行为有测试）。
+> 全局门禁 **G1–G9 仍逐 PR 适用**（IME 模块无网络、密钥不外泄、日志无正文、core 无 IO、OTP 不持久化、新行为有测试）。
 >
 > **可验证性标签**（本仓库环境约束）：
 > - 🟢 **本地可验**：桌面 Python / contracts 向量 / host-JVM 单测，能在 Linux 跑命令断言。
@@ -122,7 +128,7 @@ Android 侧（S005/S008/S009）与端到端双端联调在 Android 完成后复�
   （host-JVM 决策逻辑单测 🟢 + 真机痕迹核查 🔵）。
 - 🟢 文档：ADR-0011（input-context-privacy）+ KEYBOARD_PRIVACY.md + CONTRACTS_KEYBOARD.md 落地。
 
-## v2.1 门禁（底座 Spike → ADR-0010）— 未开工（需 build PoC）
+## v2.1 门禁（跨端输入基础）— bootstrap 已落地，硬证据未完成
 
 - 🟡 **双 build PoC**：按 [V2-S004](SLICES/V2-S004-librime-build-poc.md) 分别跑通 A（最小 librime JNI）
   与 B（外部 fcitx5 addon 候选注入）；缺任一路线证据都不终裁。
@@ -142,28 +148,68 @@ Android 侧（S005/S008/S009）与端到端双端联调在 Android 完成后复�
 - ⚖️ **A/B 选择尚未裁定**：两边先各自产出 pass/fail 证据；A 通过则选 A，A 失败且 B 通过才选 B，
   两边都失败则阻塞且不启动 v2.2。许可未批准只使对应路线失败。Owner review 后才更新
   ADR/生产接入/版本。
+- 🟢 **Engine Protocol V2**：session、request sequence、revision、稳定 candidate ID、UTF-16 caret/segment、
+  paging、commit/cancel 与 Host epoch 失效均映射到
+  `contracts/vectors/input_foundation_v2.json` 的 `ENG2-V001..ENG2-V008`；Android 与 Windows
+  各自的可执行 harness 必须逐项报告并完整映射
+  `contracts/vectors/engine_protocol_v2_assertions.tsv` 中的稳定 assertion ID；重复请求不得重复上屏。
+- 🟢/🟡 **Windows bootstrap**：TypeDuck frontend/backend、libIME2、librime 与 schema/data 固定 commit、
+  license/submodule 状态；protobuf/golden frames 可离线验证。该项不等于 TSF 已安装或可用。
+- 🟡/🔵 **Windows 原样闭环**：不接 Python/ClipVault 数据，先完成 x64 register → activate → compose →
+  page/select/commit/cancel → unregister；强杀外置 Host 时宿主应用不崩溃、旧 session 全部失效。
+- 🟢 文档：ADR-0013/0014/0015 与 `CONTRACTS_INPUT_ENGINE_V2.md` 已先于 production 接入冻结。
 
-## v2.2 门禁（CandidateMixer）— 未开工
+## v2.2 门禁（Android 中文日用 Beta）— 未开工
 
 - 🟢 排序公式可验（共享评分向量，两端一致）：
   `final = engine_score + prefix + recency + frequency + pinned_boost + app_context_boost
   + remote_freshness + explicit_saved_boost − secret_risk_penalty − sensitive_field_penalty`。
 - 🟢 **pinned 硬置顶**（沿用 SUG-1.1）；**Secret 不进候选**；**密码框（sensitive field）不展示 ClipVault 候选**
   ——三条均有断言用例（既有 PrivacyAwareFilter / 来源上限逻辑复用，不另造）。
-- 🟢 ClipVault 内容（剪切板/词库/Prompt/命令/路径）与引擎候选混排，确定性、可解释、权重可配。
+- 🟢 ClipVault 内容（剪切板/词库/Prompt/命令/路径）在工具栏内部确定性、可解释、权重可配。
+- 🟢 系统 Inline Autofill、Rime 引擎候选与 ClipVault 工具栏为三个独立身份/生命周期的候选面；
+  不以数组下标跨面选词，不要求首版统一混排。
+- 🟡/🔵 全拼、长句、退格、翻页、选词、取消、中英文/数字/网址/密码/多行输入通过 Android
+  build 与真机矩阵；Runtime 包被终止或网络断开时基本输入仍可用。
+- 🟡 最终 IME 权限边界按 ADR-0013 验证；拆 APK 前必须证明签名级 Binder、超时和升级路径。
 
-## v2.3 门禁（本地学习）— 未开工（开工时细化）
+## v2.2-L 门禁（本地学习，Android 日用稳定后）— 未开工
 
 - 🟢 只存**可解释统计事件**（词频/短语/Prompt/命令/场景/最近），**绝不存普通键入正文**
   （schema 审查 + 单测断言无正文字段）。
 - 🟢 学习全本地、可关闭、可清除；不外传、不上云（G1/G2 复验）。
 - ⏳ 具体事件 schema 与权重在该阶段开工时随 slice 冻结。
 
-## v2.4 门禁（Cloud Relay POC）— 未开工（开工时细化，需威胁模型先行）
+## v2.3 门禁（Windows TSF Beta）— 未开工
 
+- 🟡 TSF DLL 只含 COM/TSF、composition/edit session 与候选 UI；静态/依赖审查确认不含 Python、
+  librime、SQLite、HTTP、同步或设备密钥。
+- 🟡 每用户 ACL Named Pipe + 版本化 protobuf；协议错配、超时、Host 崩溃均 fail closed 并可恢复。
+- 🔵 Notepad、Office 32/64、Chromium/Electron、WPF、Terminal、系统搜索与多屏/DPI 候选定位通过。
+- 🟡/🔵 x86/x64 构建与对应宿主通过；ARM64 进入发行设计；清洁安装、覆盖升级、卸载无残留。
+- 🟢 Python Runtime 只异步推送经 Secret Guard 的本地快照；逐键路径无 Python/SQLite/HTTP/网络。
+- 🔵 DLL、Host 与 installer 的正式签名仍是发行门，不得用 PoC 二进制替代。
+
+## v2.4 门禁（OTP Relay 本机/合成 PoC）— 内存核心已起步，平台面未开工
+
+- 🟢 合成 OTP 内存核心通过 TTL、容量上限、目标绑定、防重放、原子单次消费、dismiss/revoke/expire；
+  实现测试映射到 `contracts/vectors/input_foundation_v2.json` 的 `OTP-V001..OTP-V010`，payload
+  不出现在 repr/log，且不创建任何持久化/outbox 数据。
+- 🟢/🟡 独立 envelope/golden vectors；离线目标到期丢弃，不补传。
+- 🟡 Android 先完成 Inline Autofill 展示；真实明文获取路径分别验证权限、角色冲突、Android 13/15/17
+  行为与发行政策。IME APK 不申请 SMS/INTERNET。
+- 🟡/🔵 Windows 非激活弹窗 + 显式 TSF 插入；armed 模式绑定 process/window/document/context，
+  锁屏、过期或上下文变化时拒绝，且永不自动按 Enter。
+- 🟢 文档：ADR-0016、`CONTRACTS_OTP_RELAY.md` 与 `THREAT_MODEL_OTP_RELAY.md` 先于平台接线。
+- 🟢 本阶段不把 OTP 明文跨设备传输；合成 sender/receiver 只能用于合同与 UI 测试，不得称为 Beta。
+
+## v2.5 门禁（跨设备 OTP Beta + E2EE Relay / transport hardening）— 未开工
+
+- 🟡 **OTP 跨端硬门**：目标电脑必须已显式配对；sender/target/session/sequence/event/nonce/expiry
+  全部经认证，payload 端到端加密，设备撤销、重放、锁屏与错误目标测试通过后才可称为 OTP Beta。
 - 🟢 **端到端加密**：云只中继密文，服务端无法还原明文（密钥不出设备，G1 复验；加密/解密单测）。
 - 🟢 云中继为**可选、默认关**；关闭时所有核心功能照常（本地优先）。
-- 🟢 文档：ADR-0012（cloud-relay-threat-model）先于实现落地。
+- 🟢 文档：Cloud Relay 使用新的未占用 ADR 编号；ADR-0012 已用于 v1.6 Windows tray/LGPL 决策。
 - ⏳ 协议细节随该阶段 slice 冻结。
 
 ## v3.0 门禁（智能输入）— 未开工（开工时细化）
@@ -176,5 +222,6 @@ Android 侧（S005/S008/S009）与端到端双端联调在 Android 完成后复�
 ## 范围刹车（主线明确暂不做，违反即范围外）
 
 商业 SaaS、多用户账号、支付、插件市场、皮肤商店、云端明文索引、云端知识库、
-自动上传普通键入、自动保存所有上屏文本、多人协同编辑、CRDT 笔记编辑器。
+自动上传普通键入、自动保存所有上屏文本、多人协同编辑、CRDT 笔记编辑器、
+OTP 进入普通剪切板/离线 outbox、向任意焦点盲目注入验证码。
 （与 ROADMAP_V2_KEYBOARD「范围刹车」一致；G5 范围门禁对主线同样适用。）

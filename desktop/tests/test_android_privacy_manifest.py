@@ -46,8 +46,8 @@ def test_android_data_extraction_rules_exclude_cloud_and_device_transfer():
         assert ("root", ".") in excludes
 
 
-def _manifest_services() -> dict[str, ET.Element]:
-    manifest = _read_xml("android/app/src/main/AndroidManifest.xml")
+def _manifest_services(rel: str) -> dict[str, ET.Element]:
+    manifest = _read_xml(rel)
     app = manifest.find("application")
     assert app is not None
 
@@ -70,36 +70,56 @@ def _metadata_by_name(service: ET.Element) -> dict[str, ET.Element]:
     }
 
 
-def test_android_ime_services_are_bound_only_as_system_input_methods():
-    expected_ime_services = {
-        ".ime.ClipVaultPanelImeService": "@xml/ime_panel_config",
-        ".ime.ClipVaultFullKeyboardService": "@xml/ime_full_config",
-    }
-    services = _manifest_services()
-
-    bind_input_services = {
-        name
-        for name, service in services.items()
+def test_networked_runtime_enables_no_ime_and_standalone_package_exposes_one():
+    runtime_services = _manifest_services("android/app/src/main/AndroidManifest.xml")
+    runtime_input_services = {
+        name: service
+        for name, service in runtime_services.items()
         if service.attrib.get(_android_attr("permission"))
         == "android.permission.BIND_INPUT_METHOD"
     }
-    assert bind_input_services == set(expected_ime_services)
+    assert runtime_input_services == {}
 
-    for name, config_resource in expected_ime_services.items():
-        service = services[name]
+    legacy_source = _ROOT / "android/app/src/main/kotlin/com/clipvault/app/ime"
+    assert not legacy_source.exists() or not any(legacy_source.glob("*.kt"))
+    assert not (_ROOT / "android/app/src/main/res/xml/ime_panel_config.xml").exists()
+    assert not (_ROOT / "android/app/src/main/res/xml/ime_full_config.xml").exists()
 
-        assert service.attrib[_android_attr("exported")] == "true"
-        assert service.attrib[_android_attr("permission")] == "android.permission.BIND_INPUT_METHOD"
+    ime_gradle = _read_text("android/ime-app/build.gradle.kts")
+    assert 'applicationId = "com.clipvault.ime"' in ime_gradle
+    ime_manifest = _read_xml("android/ime-app/src/main/AndroidManifest.xml")
+    ime_permissions = {
+        item.attrib.get(_android_attr("name"), "")
+        for item in ime_manifest.findall("uses-permission")
+    }
+    assert ime_permissions == {"com.clipvault.permission.RUNTIME_SNAPSHOT"}
 
-        intent_filters = service.findall("intent-filter")
-        assert len(intent_filters) == 1
-        assert _intent_actions(service) == ["android.view.InputMethod"]
-        assert intent_filters[0].findall("category") == []
-        assert intent_filters[0].findall("data") == []
+    ime_services = _manifest_services("android/ime-app/src/main/AndroidManifest.xml")
+    bind_input_services = {
+        name: service
+        for name, service in ime_services.items()
+        if service.attrib.get(_android_attr("permission"))
+        == "android.permission.BIND_INPUT_METHOD"
+        and service.attrib.get(_android_attr("enabled"), "true") != "false"
+    }
+    assert set(bind_input_services) == {".ClipVaultIsolatedImeService"}
 
-        metadata = _metadata_by_name(service)
-        assert set(metadata) == {"android.view.im"}
-        assert metadata["android.view.im"].attrib[_android_attr("resource")] == config_resource
+    service = bind_input_services[".ClipVaultIsolatedImeService"]
+    assert service.attrib[_android_attr("exported")] == "true"
+    assert service.attrib[_android_attr("permission")] == "android.permission.BIND_INPUT_METHOD"
+
+    intent_filters = service.findall("intent-filter")
+    assert len(intent_filters) == 1
+    assert _intent_actions(service) == ["android.view.InputMethod"]
+    assert intent_filters[0].findall("category") == []
+    assert intent_filters[0].findall("data") == []
+
+    metadata = _metadata_by_name(service)
+    assert set(metadata) == {"android.view.im"}
+    assert (
+        metadata["android.view.im"].attrib[_android_attr("resource")]
+        == "@xml/ime_isolated_config"
+    )
 
 
 def _read_text(rel: str) -> str:

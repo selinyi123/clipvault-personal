@@ -1,5 +1,10 @@
 # THIRD_PARTY_NATIVE — librime Android PoC
 
+> Historical PoC gate only. Production dependencies, exact archive hashes and
+> packaged license assets are governed by
+> `android/rime-engine-android/RIME_PRODUCTION_LOCK.json`; this document does
+> not override that production lock.
+
 Status: **NOT APPROVED**. This file is a distribution gate, not a best-effort
 notice list. No native/binary PoC artifact may be uploaded while any required
 row is incomplete or unapproved.
@@ -23,6 +28,7 @@ they do not authorize uploading APK, AAB, `.so`, or addon artifacts.
 | Rime schema | `ec39c3c59da62f7c8e6d6b81a6043a8534a0586b5e070fb65a3cb4e7139416f0` | LicenseRef-ClipVault-Owner-Approval-Pending | `data/clipvault_poc.schema.yaml` | local-build only |
 | Synthetic dictionary | `e7147b4d96d271fe358a634149fbc61c319fb7541ca7bea4433f7f7c5951141d` | LicenseRef-ClipVault-Owner-Approval-Pending | `data/clipvault_poc.dict.yaml` | local-build only |
 | Default configuration | `edcc5cf7ba1e384d5b4ffa83459c1ed423fd1c0b5aa643cdf60e6a4d5c81fed4` | LicenseRef-ClipVault-Owner-Approval-Pending | `data/default.yaml` | local-build only |
+| Session contract vectors | `112dda724b3591525a8d4f028b6f17206127b5e981b91110dd5450848afd30e3` | LicenseRef-ClipVault-Owner-Approval-Pending | `vectors/session-contract-vectors.tsv` | local-build only |
 
 The dictionary contains four synthetic mappings only. It is deliberately not a
 production lexicon and contains no user data.

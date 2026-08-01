@@ -61,6 +61,15 @@ enabled          = false
 host = "127.0.0.1"
 port = 8787
 
+[otp_relay]
+windows_broker_enabled = false
+pairing_enabled = false
+
+[ime_snapshot]
+enabled = false
+host_path = ""
+require_signed_host = true
+
 [log]
 dir = "{p(log_dir)}"
 retention_days = 14

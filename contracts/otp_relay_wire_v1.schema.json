@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clipvault.local/contracts/otp_relay_wire_v1.schema.json",
+  "title": "ClipVault OTP Relay online envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "algorithm",
+    "session_epoch",
+    "event_id",
+    "sender_device_id",
+    "target_device_id",
+    "sequence",
+    "issued_at_ms",
+    "expires_at_ms",
+    "nonce",
+    "ciphertext",
+    "authentication_tag"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "algorithm": {
+      "const": "A256GCM"
+    },
+    "session_epoch": {
+      "$ref": "#/$defs/uuid_v4"
+    },
+    "event_id": {
+      "$ref": "#/$defs/uuid_v4"
+    },
+    "sender_device_id": {
+      "$ref": "#/$defs/device_id"
+    },
+    "target_device_id": {
+      "$ref": "#/$defs/device_id"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    },
+    "issued_at_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "expires_at_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    },
+    "nonce": {
+      "type": "string",
+      "description": "Exactly 12 bytes encoded as canonical unpadded base64url.",
+      "pattern": "^[A-Za-z0-9_-]{16}$"
+    },
+    "ciphertext": {
+      "type": "string",
+      "description": "Exactly 4-8 encrypted OTP bytes encoded as canonical unpadded base64url.",
+      "pattern": "^(?:[A-Za-z0-9_-]{6,8}|[A-Za-z0-9_-]{10,11})$"
+    },
+    "authentication_tag": {
+      "type": "string",
+      "description": "Exactly 16 bytes encoded as canonical unpadded base64url.",
+      "pattern": "^[A-Za-z0-9_-]{22}$"
+    }
+  },
+  "$defs": {
+    "uuid_v4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "device_id": {
+      "type": "string",
+      "pattern": "^device:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    }
+  }
+}

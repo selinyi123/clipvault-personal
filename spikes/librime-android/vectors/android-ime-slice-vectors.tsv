@@ -1,0 +1,13 @@
+# format_version=1
+# source=project-authored-synthetic-fixtures
+# contains_personal_data=false
+# typed_text_persistence_allowed=false
+semantic_id	scenario	assertion_ids
+ENG2-V001	selection_commit	ENG2-V001-A01,ENG2-V001-A02,ENG2-V001-A03,ENG2-V001-A04,ENG2-V001-A05
+ENG2-V002	paging_stale_ids	ENG2-V002-A01,ENG2-V002-A02,ENG2-V002-A03,ENG2-V002-A04
+ENG2-V003	response_ledger	ENG2-V003-A01,ENG2-V003-A02,ENG2-V003-A03,ENG2-V003-A04,ENG2-V003-A05
+ENG2-V004	ambiguous_editor	ENG2-V004-A01,ENG2-V004-A02,ENG2-V004-A03
+ENG2-V005	session_loss	ENG2-V005-A01,ENG2-V005-A02,ENG2-V005-A03,ENG2-V005-A04,ENG2-V005-A05
+ENG2-V006	utf16_projection	ENG2-V006-A01,ENG2-V006-A02,ENG2-V006-A03
+ENG2-V007	privacy_surfaces	ENG2-V007-A01,ENG2-V007-A02,ENG2-V007-A03
+ENG2-V008	ack_cleanup_bounds	ENG2-V008-A01,ENG2-V008-A02,ENG2-V008-A03,ENG2-V008-A04

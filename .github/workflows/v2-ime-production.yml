@@ -1,0 +1,119 @@
+name: Android v2 native production gate
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-production-gate:
+    # This fail-closed runner is deliberately separate from ordinary debug CI.
+    # It must provision the lock-file-matched native inputs adjacent to the
+    # checkout and carry this explicit label. A missing runner is a blocked
+    # production gate, never a silently Direct-only success.
+    runs-on: [self-hosted, Windows, X64, clipvault-native]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Verify exact SMS User Consent AAR and POM bytes
+        shell: pwsh
+        run: |
+          Push-Location android
+          try {
+            .\gradlew.bat :app:verifySmsUserConsentDependency --no-daemon
+            if ($LASTEXITCODE -ne 0) { throw "SMS User Consent dependency verification failed with exit code $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Run Android core and IME JVM tests
+        shell: pwsh
+        run: |
+          Push-Location android
+          try {
+            .\gradlew.bat :core:test :ime-engine:test :rime-engine-android:testDebugUnitTest :ime-app:testDebugUnitTest :app:testDebugUnitTest --no-daemon
+            if ($LASTEXITCODE -ne 0) { throw "Android JVM tests failed with exit code $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Compile, lint, and test the restricted OTP lane without packaging it
+        shell: pwsh
+        run: |
+          Push-Location android
+          try {
+            .\gradlew.bat :app:compileOtpSmsRelayKotlin :app:testOtpSmsRelayUnitTest :app:lintOtpSmsRelay --no-daemon
+            if ($LASTEXITCODE -ne 0) { throw "Restricted OTP lane checks failed with exit code $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Prove unauthorized restricted assembly fails without leaving installables
+        shell: pwsh
+        run: .\android\scripts\verify-otp-sms-negative-gate.ps1
+
+      - name: Build and verify default Runtime plus standalone IME
+        shell: pwsh
+        run: |
+          .\android\scripts\build-v2-ime.ps1 `
+            -CandidateDirectory (Join-Path $env:GITHUB_WORKSPACE 'artifacts\v2-daily\android')
+
+      - name: Upload unsigned Android v2 candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: clipvault-v2-android-unsigned-candidate
+          path: artifacts/v2-daily/android/
+          if-no-files-found: error
+          retention-days: 14
+
+  native-device-instrumentation:
+    # This label is a contractual device capability, not an emulator shim.
+    # No matching runner leaves the production workflow queued/blocked; a
+    # runner with zero or multiple authorized devices fails in the script.
+    runs-on: [self-hosted, Windows, X64, clipvault-native, clipvault-android-device]
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build and verify the current locked native candidate
+        shell: pwsh
+        run: .\android\scripts\build-v2-ime.ps1
+
+      - name: Execute current NativeRimeDeviceTest on the attached device
+        shell: pwsh
+        run: .\android\scripts\run-v2-ime-device-tests.ps1
+
+      - name: Upload connected-device test evidence only
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clipvault-v2-android-native-device-evidence
+          path: android/ime-app/build/outputs/androidTest-results/connected/debug/
+          if-no-files-found: error
+          retention-days: 14

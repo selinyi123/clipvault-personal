@@ -252,10 +252,11 @@ def test_malformed_schema_metadata_is_rejected_without_writes(schema_sql):
 
 
 def test_future_schema_is_rejected_without_modifying_the_database():
+    future_version = db.LATEST_SCHEMA_VERSION + 1
     conn = sqlite3.connect(":memory:")
     conn.executescript(
         "CREATE TABLE schema_meta (version INTEGER NOT NULL);"
-        "INSERT INTO schema_meta VALUES (10);"
+        f"INSERT INTO schema_meta VALUES ({future_version});"
         "CREATE TABLE future_data (value TEXT NOT NULL);"
         "INSERT INTO future_data(value) VALUES ('keep');"
     )
@@ -263,7 +264,7 @@ def test_future_schema_is_rejected_without_modifying_the_database():
     with pytest.raises(db.SchemaCompatibilityError, match="newer"):
         db.migrate(conn)
 
-    assert db.schema_version(conn) == 10
+    assert db.schema_version(conn) == future_version
     assert conn.execute("SELECT value FROM future_data").fetchone()[0] == "keep"
     assert conn.execute(
         "SELECT 1 FROM sqlite_master WHERE name='clips'"

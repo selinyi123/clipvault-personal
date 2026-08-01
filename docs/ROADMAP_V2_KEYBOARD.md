@@ -1,8 +1,8 @@
-# ROADMAP V2 — ClipVault Runtime → 主输入法 → 云中继 → 智能输入
+# ROADMAP V2 — ClipVault Runtime → Android/Windows 主输入法 → OTP/E2EE → 智能输入
 
-> 状态：方向已裁定（ADR-0008，2026-06-19）。本文是 v1 之后的分期路线。
-> 铁律不变：先把 v1 改造成稳定 Runtime；再加 Keyboard Lab；再评估底座；再做候选混合；
-> 再考虑云中继；最后做 AI/语音。**不先做完整输入法，不先做云。**
+> 状态：ADR-0008 的 Runtime 方向继续有效；Owner 于 2026-08-01 授权启动跨端输入基础阶段。
+> 铁律不变：先隔离验证底座、进程边界和合同，再进入 production；最后才做 AI/语音。
+> 总体边界见 [NEXT_PHASE_V2_INPUT_FOUNDATION](NEXT_PHASE_V2_INPUT_FOUNDATION.md)。
 
 ## 阶段总览
 
@@ -11,20 +11,24 @@
 | v1.0/1.1 | Runtime 收口 | 现有 v1 明确为 Runtime；Android 引入 ClipVaultFacade；panel IME 改走 facade |
 | v1.2 | SyncTransport 抽象 | 不做云，但把 HTTP push/pull 抽象为 transport，为云预留接口 |
 | v2.0 | 双 IME 入口 | 同一 APK 内：ClipVault Panel + ClipVault Keyboard Lab（基础英文键盘 + 工具栏）；稳定判据见 `STABILITY_PLAN_V2_0.md` |
-| v2.1 | 底座 Spike | **paper spike 完成（ADR-0010）**：引擎=librime；待 NDK r28/16KB/许可/确定性与工程预算 **A/B 双 build PoC** 终裁 |
-| v2.2 | CandidateMixer | ClipVault 内容（剪切板/词库/Prompt/命令/路径）进入候选栏 |
-| v2.3 | 本地学习 | 词频/短语/Prompt/命令/场景/最近，仅存可解释统计事件，不存普通键入正文 |
-| v2.4 | Cloud Relay POC | 可选端到端加密中继；云只中继密文，看不到明文 |
+| v2.1 | 跨端输入基础 | Android librime A/B build PoC + Windows TSF PoC + Engine Protocol V2；不接 production |
+| v2.2 | Android 中文 Beta | Android 中文日用闭环；系统 Autofill、Rime 与 ClipVault 工具栏分层展示 |
+| v2.3 | Windows TSF Beta | 薄 TSF DLL + 外置 librime Host + Python Runtime 异步候选快照 |
+| v2.4 | OTP Relay 本机/合成 PoC | 内存态单次消费；分别验证 Android 授权捕获面与 Windows 显式 TSF 插入面，不跨设备传明文 |
+| v2.5 | 跨设备 OTP Beta + E2EE/传输硬化 | 最小配对/E2EE 是 OTP 跨端硬门；LAN/Tailscale 优先、可选密文 Relay、配对撤销与恢复 |
 | v3.0 | 智能输入 | 纠错/长句补全/Prompt 改写/语音/显式云 AI；AI 可关、显式触发 |
 
-## 开源底座裁决（v2.1 验证，预期结论）
+## 开源底座裁决（v2.1 验证，尚非 production 终裁）
 
 | 候选 | 角色 |
 |---|---|
 | Rime / librime | 中文输入引擎（核心，不自研拼音） |
-| Fcitx5 Android | 长期主输入法框架（候选提供器/工具栏/插件接入），LGPL-2.1 分发更友好 |
+| Fcitx5 Android | Android B 路线/完整输入法壳候选；addon 与薄 Fork 的真实扩展边界必须分别验证 |
 | Trime | Android Rime IME，最快验证 spike；GPL-3.0，长期 fork 需评估 |
 | HeliBoard | UI/隐私/手感参考，不作中文引擎底座 |
+| TypeDuck Windows + libIME2 | Windows 第一 TSF/外置 Host PoC；新且产品特定，必须锁版本、剥离网络/AI 并完成多架构门禁 |
+| Microsoft SampleIME | Windows TSF 平台合同参考，不作产品底座 |
+| Weasel | Windows Rime 行为参考；GPL 代码不混入不兼容模块 |
 | Espanso | 文本扩展模型参考（trigger / app-specific config） |
 | CopyQ | 剪切板动作模型参考（剪切板项可触发动作） |
 
@@ -54,27 +58,49 @@
 [todo] docs/ADR/0009-sync-transport-abstraction.md   (v1.2)
 [done] docs/ADR/0011-input-context-privacy.md        (v2.0，敏感上下文 session token + 候选/保存闸门)
 [done] docs/SLICES/V2-S004-librime-build-poc.md      (v2.1，A/B build PoC 执行门与终裁算法)
-[todo] docs/ADR/0012-cloud-relay-threat-model.md     (v2.4)
+[done] docs/ADR/0012-windows-tray-dependencies-and-lgpl-delivery.md (v1.6；该编号已占用)
+[done] docs/ADR/0013-cross-platform-input-process-boundary.md      (v2.1)
+[done] docs/ADR/0014-engine-protocol-v2-and-candidate-surfaces.md  (v2.1)
+[done] docs/ADR/0015-windows-tsf-stack.md                          (v2.1 PoC)
+[done] docs/ADR/0016-otp-relay.md                                  (v2.4 设计)
+[done] docs/CONTRACTS_INPUT_ENGINE_V2.md                           (v2.1)
+[done] docs/CONTRACTS_OTP_RELAY.md                                 (v2.4)
+[done] docs/THREAT_MODEL_OTP_RELAY.md                              (v2.4)
 [todo] docs/CONTRACTS_SYNC_TRANSPORT.md               (v1.2)
 [todo] docs/SLICES/V2-S00N-*.md                       (各阶段开工时)
 ```
 
-## CandidateMixer 排序（v2.2 目标公式）
+## 候选面与 CandidateMixer
+
+v2.2 第一阶段不把所有来源交错混排：
+
+```text
+system Inline Autofill | engine/Rime candidates | ClipVault toolbar
+```
+
+ClipVault 工具栏内部继续使用确定性排序：
 
 ```text
 final = engine_score + prefix + recency + frequency + pinned_boost
       + app_context_boost + remote_freshness + explicit_saved_boost
       - secret_risk_penalty - sensitive_field_penalty
 ```
-pinned 硬置顶（沿用 SUG-1.1）；Secret 不进候选；密码框不展示 ClipVault 候选。
+pinned 硬置顶（沿用 SUG-1.1）；Secret 不进候选；密码框不展示 ClipVault 候选。统一跨来源混排
+不再是 v2.2 必选门，需在稳定 ID、revision、学习所有权与隐私证据齐全后另作裁决（ADR-0014）。
 
-## v2.1 下一执行节点（2026-07-02 冻结）
+## v2.1 当前执行节点（2026-08-01）
 
-按 [V2-S004](SLICES/V2-S004-librime-build-poc.md) 执行隔离 A/B build PoC；新增调研与来源见
-[RESEARCH_V2_1_BUILD_POC_2026_07_02](RESEARCH_V2_1_BUILD_POC_2026_07_02.md)。在 PoC 产出 alignment、
-license、clean-state golden vectors、reproducible metadata 与冻结预算测量前，不把 librime 接进
-production IME，也不启动 v2.2；A/B 都失败时保持阻塞，不降低门禁制造结论。
+四条分支可以并行，但各自保持隔离：
+
+1. Android：继续按 [V2-S004](SLICES/V2-S004-librime-build-poc.md) 执行 A/B build PoC；
+2. Windows：按 ADR-0015 锁定上游、冻结 protobuf/golden frames，再做原样 TSF 闭环；
+3. Engine V2：按 `CONTRACTS_INPUT_ENGINE_V2.md` 验证 session/revision/stable ID/UTF-16/restart；
+4. OTP：先完成纯内存合成事件，再做 Android/Windows 平台捕获与插入。
+
+在对应 PoC 产出许可证、可复现构建、兼容、故障隔离与固定向量前，不接 production APK、
+Windows installer 或普通同步管线。并行分支建议按 foundation → OTP core → Android → Windows 顺序审查合并。
 
 ## 范围刹车（明确暂不做）
 商业 SaaS、多用户账号、支付、插件市场、皮肤商店、云端明文索引、云端知识库、
-自动上传普通键入、自动保存所有上屏文本、多人协同编辑、CRDT 笔记编辑器。
+自动上传普通键入、自动保存所有上屏文本、多人协同编辑、CRDT 笔记编辑器、
+OTP 进入普通剪切板/离线 outbox、向任意焦点盲目注入验证码。

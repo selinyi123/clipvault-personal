@@ -34,7 +34,7 @@ ANDROID_SIGNER_COUNT_LINE_RE = re.compile(
     r"Number of signers: (?P<count>[1-9][0-9]*)"
 )
 KINDS = {"release-candidate-dry-run", "release"}
-PLATFORMS = {"windows", "android"}
+PLATFORMS = {"windows", "android", "v2-daily"}
 
 
 def normalize_android_cert_sha256(value: str) -> str:
@@ -231,6 +231,18 @@ def _expected_artifact_names(manifest: dict[str, Any]) -> set[str]:
     if not isinstance(version, str) or not version:
         raise ValueError("manifest version must be a non-empty string")
 
+    if platform == "v2-daily":
+        if kind != "release-candidate-dry-run" or signed is not False:
+            raise ValueError("v2-daily manifest must describe an unsigned dry-run")
+        return {
+            "BUILD_RECEIPT.json",
+            "CANDIDATE-NOT-A-RELEASE.txt",
+            "ClipVault-Desktop-v2-unsigned.exe",
+            "ClipVault-IME-v2-unsigned.apk",
+            "ClipVault-Runtime-v2-unsigned.apk",
+            f"ClipVault-v2-Daily-Setup-v{version}.exe",
+            "ClipVault-Windows-IME-v2-unsigned.zip",
+        }
     if platform == "windows":
         return {
             f"ClipVault-Desktop-v{version}-portable.exe",
@@ -389,7 +401,7 @@ def verify_manifest(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify RELEASE_MANIFEST.json and SHA256SUMS.txt for staged artifacts.")
     parser.add_argument("--artifact-dir", required=True, type=Path)
-    parser.add_argument("--platform", choices=("windows", "android"))
+    parser.add_argument("--platform", choices=tuple(sorted(PLATFORMS)))
     parser.add_argument("--version")
     parser.add_argument("--commit")
     parser.add_argument("--expect-dry-run", action="store_true")

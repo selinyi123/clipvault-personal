@@ -3,7 +3,7 @@
 import re
 import tomllib
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from clipvault.core import origin_metadata, ulid
 from clipvault.obsidian.writer import DEFAULT_TYPE_DIRS
@@ -31,6 +31,15 @@ enabled          = false
 host = "127.0.0.1"          # 改为 0.0.0.0 前请确认只在可信 LAN/Tailscale 使用
 port = 8787
 
+[otp_relay]
+windows_broker_enabled = false
+pairing_enabled = false
+
+[ime_snapshot]
+enabled = false
+host_path = ""
+require_signed_host = true
+
 [log]
 dir = "logs"
 retention_days = 14
@@ -50,6 +59,28 @@ class ConfigError(Exception):
         super().__init__(f"{fieldname}: {message}")
 
 
+def validate_ime_snapshot_host_path(value: object, *, enabled: bool) -> str:
+    """Return a canonical input string for the local signed Host boundary."""
+
+    if not isinstance(value, str):
+        raise ConfigError(
+            "ime_snapshot.host_path",
+            "must be a string",
+        )
+    host_path = value.strip()
+    if enabled:
+        windows_host_path = PureWindowsPath(host_path)
+        if (
+            not windows_host_path.is_absolute()
+            or re.fullmatch(r"[A-Za-z]:", windows_host_path.drive) is None
+        ):
+            raise ConfigError(
+                "ime_snapshot.host_path",
+                "must be a local drive absolute Windows path when enabled",
+            )
+    return host_path
+
+
 @dataclass
 class Config:
     device_id: str
@@ -64,6 +95,11 @@ class Config:
     backup_enabled: bool = False
     host: str = "127.0.0.1"
     port: int = 8787
+    otp_windows_broker_enabled: bool = False
+    otp_pairing_enabled: bool = False
+    ime_snapshot_enabled: bool = False
+    ime_snapshot_host_path: str = ""
+    ime_snapshot_require_signed_host: bool = True
     log_dir: str = "logs"
     log_retention_days: int = 14
     # SUG-1 weights (CONTRACTS §11/§12)
@@ -97,6 +133,8 @@ def load(path: Path) -> Config:
     obsidian = data.get("obsidian", {})
     backup = data.get("backup", {})
     server = data.get("server", {})
+    otp_relay = data.get("otp_relay", {})
+    ime_snapshot = data.get("ime_snapshot", {})
     log = data.get("log", {})
 
     vault_path = str(obsidian.get("vault_path", "")).strip()
@@ -114,6 +152,39 @@ def load(path: Path) -> Config:
     poll_ms = watcher.get("poll_fallback_ms", 500)
     if not isinstance(poll_ms, int) or poll_ms < 50:
         raise ConfigError("watcher.poll_fallback_ms", "must be an integer >= 50")
+
+    otp_windows_broker_enabled = otp_relay.get("windows_broker_enabled", False)
+    if type(otp_windows_broker_enabled) is not bool:
+        raise ConfigError(
+            "otp_relay.windows_broker_enabled",
+            "must be a boolean",
+        )
+    otp_pairing_enabled = otp_relay.get("pairing_enabled", False)
+    if type(otp_pairing_enabled) is not bool:
+        raise ConfigError(
+            "otp_relay.pairing_enabled",
+            "must be a boolean",
+        )
+
+    ime_snapshot_enabled = ime_snapshot.get("enabled", False)
+    if type(ime_snapshot_enabled) is not bool:
+        raise ConfigError(
+            "ime_snapshot.enabled",
+            "must be a boolean",
+        )
+    ime_snapshot_require_signed_host = ime_snapshot.get(
+        "require_signed_host",
+        True,
+    )
+    if type(ime_snapshot_require_signed_host) is not bool:
+        raise ConfigError(
+            "ime_snapshot.require_signed_host",
+            "must be a boolean",
+        )
+    ime_snapshot_host_path = validate_ime_snapshot_host_path(
+        ime_snapshot.get("host_path", ""),
+        enabled=ime_snapshot_enabled,
+    )
 
     device_name = device.get("device_name", "desktop-main")
     if (
@@ -151,6 +222,11 @@ def load(path: Path) -> Config:
         backup_enabled=bool(backup.get("enabled", False)),
         host=str(server.get("host", "127.0.0.1")),
         port=port,
+        otp_windows_broker_enabled=otp_windows_broker_enabled,
+        otp_pairing_enabled=otp_pairing_enabled,
+        ime_snapshot_enabled=ime_snapshot_enabled,
+        ime_snapshot_host_path=ime_snapshot_host_path,
+        ime_snapshot_require_signed_host=ime_snapshot_require_signed_host,
         log_dir=str(log.get("dir", "logs")),
         log_retention_days=int(log.get("retention_days", 14)),
         suggest_half_life_days=float(sug.get("half_life_days", 14.0)),

@@ -1,0 +1,31 @@
+{
+  "format_version": 1,
+  "canonical_assets": {
+    "default.yaml": "9f81128909d34494b0479638db24867674550cb0f1893a937c9e02804780e16c",
+    "clipvault_pinyin.schema.yaml": "4ab5abfb8ead31439fd57c8427ebc6ff8d90048fc8c42ed089e1a120a7a48f46",
+    "clipvault_pinyin_private.schema.yaml": "608b25cae9e6731bf282afdc08b1b0d92d09caa1a69bc7e55f697b58d89d25c8",
+    "clipvault_punctuation.yaml": "59eb2e2f1b42a887e7e247aa07066d73d7b2dc7961bca78ba4ef2eafeaec2bf2"
+  },
+  "dictionary_source": {
+    "repository": "https://github.com/rime/rime-pinyin-simp.git",
+    "commit": "0c6861ef7420ee780270ca6d993d18d4101049d0",
+    "archive_sha256": "46f37114a7929ecc01003a236803c8b1e5198382e6a21f83fae036604a6b08bf",
+    "license": "Apache-2.0",
+    "repository_license_asset": "third_party/licenses/rime-pinyin-simp-Apache-2.0.txt",
+    "repository_license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "assets": {
+      "AUTHORS": "f4cff0fcbca4668ac449c24a53be547e162bc60cce63fdc5d5906801a452edc4",
+      "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "pinyin_simp.dict.yaml": "e341598343a0f0f2035bb1aafc34a7f3bb7887deeecb3f60796262aaa2983e6b"
+    }
+  },
+  "allowed_staged_files": [
+    "AUTHORS",
+    "LICENSE",
+    "clipvault_pinyin.schema.yaml",
+    "clipvault_pinyin_private.schema.yaml",
+    "clipvault_punctuation.yaml",
+    "default.yaml",
+    "pinyin_simp.dict.yaml"
+  ]
+}

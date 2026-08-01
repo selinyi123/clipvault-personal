@@ -15,7 +15,7 @@ from pathlib import Path
 
 EXCLUDED_NAMES = {"SHA256SUMS.txt", "RELEASE_MANIFEST.json"}
 KINDS = {"release-candidate-dry-run", "release"}
-PLATFORMS = {"windows", "android"}
+PLATFORMS = {"windows", "android", "v2-daily"}
 
 
 def validate_manifest_value(field: str, value: str) -> None:
@@ -115,6 +115,8 @@ def build_manifest(
             raise ValueError("dry-run manifest must not be marked signed")
         if published:
             raise ValueError("dry-run manifest must not be marked published")
+    if platform == "v2-daily" and kind != "release-candidate-dry-run":
+        raise ValueError("v2-daily manifests are unsigned internal candidates only")
     validate_manifest_value("version", version)
     validate_manifest_value("commit", commit)
     artifact_dir = artifact_dir.resolve()
@@ -136,7 +138,7 @@ def build_manifest(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Write SHA256SUMS.txt and RELEASE_MANIFEST.json for staged artifacts.")
     parser.add_argument("--artifact-dir", required=True, type=Path)
-    parser.add_argument("--platform", required=True, choices=("windows", "android"))
+    parser.add_argument("--platform", required=True, choices=tuple(sorted(PLATFORMS)))
     parser.add_argument("--version", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--kind", default="release-candidate-dry-run", choices=("release-candidate-dry-run", "release"))

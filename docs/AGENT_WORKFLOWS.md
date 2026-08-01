@@ -77,17 +77,19 @@
 
 ## 当前状态锚点（保持更新）
 
-- 版本：`__version__` = **1.6.0**（2026-06-28，未对外发版；最新已发布二进制 v1.5.10）。schema 版本 = **9**。
+- 版本：`__version__` = **1.6.0**；`v1.6.0` 已于 2026-07-30 发布。schema 版本 = **9**。
 - v1.5 gate（Issue #3）：**已关闭**（2026-06-26）。
 - 桌面测试：以当前 `cd desktop; python -m pytest -q` 输出和 GitHub CI 为准；不要把旧的固定测试数量写成发布证据。
-- v1.6 release gate（Issue #36）：自动化 CI/unsigned dry-run 证据持续更新；signed artifacts、Owner/manual QA、最终 GitHub Release 发布前不得关闭。
+- v1.6 release gate（Issue #36）：已按 Owner 风险豁免关闭（15 pass / 0 fail / 10 blocked）；不得把 blocked 人工项描述为通过。
 - v1.7 stable：按 `docs/STABILITY_PLAN_V1_6_V1_7.md` 的 exit criteria 推进；未有专门 release issue 与 Owner approval 前不得声称 `v1.7.0` 已发布或稳定完成。
 - v1.7 field-test packages：按 `docs/V1_7_FIELD_TEST_PACKAGES.md` 使用 `Release candidate dry run` 上传双端候选安装包做实机 smoke；不得把 unsigned candidate artifacts 冒充为 signed/final release evidence。
 - v2.0 stable：按 `docs/STABILITY_PLAN_V2_0.md` 的 exit criteria 推进；v2.0 是双 IME 入口稳定线，不得把 v2.1 librime 或 TLS 支线冒充为 v2.0 发布证据。
-- 主线下一步：恢复当前 main CI 并完成 R000 数据一致性 hotfix → Issue #36 Owner 证据 → v2.0 双 IME 稳定证据 → v2.1 librime build PoC → ADR-0010 终裁（🟡🔵，待 Owner 与设备/CI）。
+- 主线下一步：v2.0 双 IME 真机证据与 v2.1 隔离输入基础并行；Android A/B librime、Windows TSF/Host、
+  Engine Protocol V2 与 OTP memory core 分支分别取证，未经对应门禁不得接 production。
 - 支线候选：v2.0 自签 TLS（受 stdlib-only 约束，需 Architect 定证书生成方式）、Android Room CJK 搜索一致性。
 
 ## 范围刹车（明确不做，违反即范围外）
 
 商业 SaaS、多用户账号、支付、云端明文索引、自动上传普通键入、自动保存所有上屏文本、
-typed-text 学习/行为画像/分析 SDK（除非先有独立隐私设计 + ADR 批准）。
+typed-text 学习/行为画像/分析 SDK（除非先有独立隐私设计 + ADR 批准）、OTP 进入普通剪切板/离线 outbox、
+向任意焦点盲目注入验证码。

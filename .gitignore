@@ -15,15 +15,26 @@ android/*/build/
 android/local.properties
 android/.idea/
 *.iml
+spikes/librime-android/session-contract/.gradle/
+spikes/librime-android/session-contract/.kotlin/
+spikes/librime-android/session-contract/build/
 # PyInstaller build output (binaries go to GitHub Releases, not the repo)
 desktop/dist/
 desktop/build_pyi/
 desktop/packaging/*.spec
+desktop/packaging/runtime-notices/
 *.keystore
 *.jks
 *.p12
 *.pfx
 # Inno Setup output (the built installer ships via GitHub Releases)
 installer/dist/
+installer/dist-v2/
 # Local field-test downloads and extracted GitHub Actions artifacts
 .field-test-artifacts/
+artifacts/
+# Local Codex device screenshots and UI dumps; never ship test-field contents.
+.codex-evidence/
+# Android Gradle native build state is machine-specific and can contain
+# absolute paths to the audited local toolchain inputs.
+android/**/.cxx/

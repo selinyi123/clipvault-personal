@@ -1,0 +1,40 @@
+{
+  "format_version": 1,
+  "verified_on": "2026-08-01",
+  "usage": "external-cache build and test input only; not a release payload approval",
+  "source": {
+    "repository": "rime/librime",
+    "tag": "1.16.1",
+    "commit": "de4700e9f6b75b109910613df907965e3cbe0567",
+    "license": "BSD-3-Clause"
+  },
+  "official_windows_asset": {
+    "name": "rime-de4700e-Windows-msvc-x64.7z",
+    "url": "https://github.com/rime/librime/releases/download/1.16.1/rime-de4700e-Windows-msvc-x64.7z",
+    "sha256": "e17c1bb4acc9934669e7a62003aef3f8b56d0afa89e5d893ed7dbf34546abb6e",
+    "size_bytes": 7373905,
+    "published_at": "2026-01-20T00:30:44Z",
+    "transitive_composition_status": "not_enumerated_by_this_lock",
+    "required_files": [
+      "include/rime_api.h",
+      "lib/rime.dll"
+    ]
+  },
+  "runtime_boundary": {
+    "loaded_by": "ClipVaultImeHost.exe",
+    "loaded_by_tsf_dll": false,
+    "network_in_key_path": false,
+    "typed_text_persistence_added": false
+  },
+  "license_asset": {
+    "path": "windows/ime/rime/LICENSE-librime.txt",
+    "sha256": "e8699fc03a2565cc7c6f392149922f1c30043501fb025357f0735e5561b04e32"
+  },
+  "release_blockers": [
+    "official archive does not carry the librime license text and notices",
+    "statically linked transitive component notices are not yet packaged",
+    "the canonical ClipVault schemas and locked rime-pinyin-simp dictionary still require owner/legal redistribution approval",
+    "the official rime.dll and ClipVault binaries are not code signed",
+    "ARM64 artifacts and application compatibility matrices are incomplete"
+  ]
+}

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The IME has no INTERNET, network-state, SMS, notification-listener, or
+         clipboard permission. Only the owner-signed Runtime may satisfy this. -->
+    <uses-permission android:name="com.clipvault.permission.RUNTIME_SNAPSHOT" />
+
+    <application
+        android:name=".ClipVaultImeApplication"
+        android:allowBackup="false"
+        android:label="ClipVault IME"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="false">
+        <activity
+            android:name=".ClipVaultImeSetupActivity"
+            android:exported="true"
+            android:label="ClipVault IME 设置">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <service
+            android:name=".ClipVaultIsolatedImeService"
+            android:exported="true"
+            android:label="ClipVault 键盘"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/ime_isolated_config" />
+        </service>
+    </application>
+</manifest>

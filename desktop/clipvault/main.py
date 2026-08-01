@@ -18,6 +18,7 @@ from clipvault.runtime.app import ClipVaultRuntime, RuntimeStopRequested
 from clipvault.service import ClipVaultService
 from clipvault.store import db
 from clipvault.store.clips_repo import ClipsRepo
+from clipvault.v2_configure import configure_v2_ime_host
 from clipvault.watcher.win_clipboard import (
     get_clipboard_text,
     get_foreground_app,
@@ -63,7 +64,49 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print bundled third-party notices, then exit",
     )
+    parser.add_argument(
+        "--configure-v2-ime-host",
+        metavar="ABSOLUTE_PATH",
+        help="atomically configure the installed v2 Windows IME Host and exit",
+    )
+    parser.add_argument(
+        "--enable-otp-relay",
+        action="store_true",
+        help="explicitly enable OTP broker and pairing during v2 Host configuration",
+    )
     args = parser.parse_args(argv)
+
+    if args.enable_otp_relay and args.configure_v2_ime_host is None:
+        parser.error("--enable-otp-relay requires --configure-v2-ime-host")
+    if args.configure_v2_ime_host is not None and any(
+        (
+            args.config is not None,
+            args.once,
+            args.headless,
+            args.no_open,
+            args.self_test_tray,
+            args.self_test_tray_relink_marker,
+            args.third_party_notices,
+        )
+    ):
+        parser.error("v2 Host configuration cannot be combined with run modes")
+
+    if args.configure_v2_ime_host is not None:
+        try:
+            configure_v2_ime_host(
+                args.configure_v2_ime_host,
+                enable_otp_relay=args.enable_otp_relay,
+            )
+        except Exception as exc:
+            # Paths and TOML bodies are private local state. Installer-facing
+            # diagnostics expose only a stable operation and error class.
+            print(
+                f"v2 IME configuration failed err={exc.__class__.__name__}",
+                file=sys.stderr,
+            )
+            return 2
+        print("v2 IME configuration updated")
+        return 0
 
     if args.self_test_tray or args.self_test_tray_relink_marker:
         try:

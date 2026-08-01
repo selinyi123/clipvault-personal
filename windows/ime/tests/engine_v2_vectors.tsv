@@ -1,0 +1,5 @@
+# format_version=1
+# platform=windows-native
+semantic_id	test_target	assertion_ids
+ENG2-V003	clipvault-ime-engine-v2-semantics;clipvault-ime-protocol	ENG2-V003-A01,ENG2-V003-A02,ENG2-V003-A03,ENG2-V003-A04,ENG2-V003-A05
+ENG2-V008	clipvault-ime-engine-v2-semantics;clipvault-ime-engine-v2-replay-ledger	ENG2-V008-A01,ENG2-V008-A02,ENG2-V008-A03,ENG2-V008-A04

@@ -8,6 +8,7 @@ asserts *alignment* to `clipvault.__version__`, so it keeps protecting future
 bumps without edits.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -42,14 +43,14 @@ def test_desktop_pyproject_matches_runtime_version():
     assert m.group(1) == __version__
 
 
-def test_android_version_name_aligned_and_code_advanced():
+def test_android_runtime_has_advanced_to_the_v2_candidate_lock():
+    lock = json.loads(_read("contracts/v2_candidate_version.json"))
     gradle = _read("android/app/build.gradle.kts")
-    name = re.search(r'versionName\s*=\s*"([^"]+)"', gradle)
-    code = re.search(r'versionCode\s*=\s*(\d+)', gradle)
-    assert name, "versionName not found in build.gradle.kts"
-    assert code, "versionCode not found in build.gradle.kts"
-    assert name.group(1) == __version__
-    assert int(code.group(1)) >= 13  # never regress below the v1.6.0 floor
+    assert lock["version_name"] == "2.2.0-dev"
+    assert lock["android_runtime_version_code"] > 13
+    assert '../contracts/v2_candidate_version.json' in gradle
+    assert 'v2CandidateVersion["version_name"] as String' in gradle
+    assert 'v2CandidateVersion["android_runtime_version_code"]' in gradle
 
 
 def test_installer_app_version_aligned():
@@ -89,32 +90,37 @@ def test_installer_uses_runtime_mutex_without_forced_process_termination():
 
 def test_version_sync_doc_matches_source_tree():
     doc = _read("docs/VERSION_SYNC.md")
-    gradle = _read("android/app/build.gradle.kts")
-    code = re.search(r'versionCode\s*=\s*(\d+)', gradle)
-    assert code, "versionCode not found in build.gradle.kts"
 
     assert f"runtime version: {__version__}" in doc
     assert f"pyproject.toml: {__version__}" in doc
     assert f"versionName: {__version__}" in doc
-    assert f"versionCode: {code.group(1)}" in doc
+    assert "versionCode: 13" in doc
     assert f"AppVersion: {__version__}" in doc
     assert "Issue #36" in doc
-    assert "Final `v1.6.0` GitHub Release publication remains blocked" in doc
+    assert "`v1.6.0` was published on 2026-07-30" in doc
+    assert "15 pass, 0 fail and 10 blocked" in doc
+    assert "do not convert blocked manual rows into passing QA" in doc
     assert re.search(r"Owner\s+approval", doc)
 
 
-def test_readme_does_not_overstate_unreleased_v1_6_status():
+def test_readme_tracks_published_v1_6_without_overstating_qa_or_v2_pocs():
     readme = _read("README.md")
     status = readme.split("---", 1)[0]
 
-    assert "v1.6.0 二进制尚未发布" in status
-    assert "最新**已发布**二进制仍为 [v1.5.10]" in status
+    assert "最新正式发布版本均为 **1.6.0**" in status
+    assert "releases/tag/v1.6.0" in status
     assert "Issue #36" in status
-    assert "final Windows artifacts" in status
-    assert "signed Android artifacts" in status
-    assert "signed Windows/Android artifacts" not in status
-    assert "manual device QA" in status
-    assert "v1.7 仅作为稳定化/隐私/同步可靠性规划线推进" in status
+    assert "Owner 明确风险豁免关闭" in status
+    assert "15 pass / 0 fail / 10 blocked" in status
+    assert "不能把未执行项描述成完整 QA 通过" in status
+    assert "PoC 不等于 production 集成或稳定发布" in status
+    assert "v1.6.0 二进制尚未发布" not in status
+    assert "最新**已发布**二进制仍为 [v1.5.10]" not in status
+
+    assert "ClipVault-Setup-v1.6.0.exe" in readme
+    assert "ClipVault-Desktop-v1.6.0-portable.exe" in readme
+    assert "ClipVault-Android-v1.6.0-release-signed.apk" in readme
+    assert "不能直接覆盖安装 v1.5.10" in readme
 
     for stale_claim in (
         "桌面端 **166** 项测试",
@@ -272,10 +278,16 @@ def test_sync_pull_response_caps_cover_worst_case_clip_and_stay_aligned():
     assert "test_h8_pull_accepts_max_clip_with_worst_case_json_escaping" in desktop_test
 
 
-def test_panel_candidate_tabs_helper_and_test_exist():
+def test_networked_runtime_no_longer_packages_the_legacy_ime_implementation():
     base = _ROOT / "android/app/src"
-    assert (base / "main/kotlin/com/clipvault/app/ime/PanelCandidateTabs.kt").exists()
-    assert (base / "test/kotlin/com/clipvault/app/ime/PanelCandidateTabsTest.kt").exists()
+    legacy_main = base / "main/kotlin/com/clipvault/app/ime"
+    assert not legacy_main.exists() or not any(legacy_main.glob("*.kt"))
+    assert not (base / "main/res/xml/ime_panel_config.xml").exists()
+    assert not (base / "main/res/xml/ime_full_config.xml").exists()
+    assert (
+        base
+        / "test/kotlin/com/clipvault/app/privacy/RuntimeImeRemovalSourceTest.kt"
+    ).exists()
 
 
 def test_signed_release_workflow_is_manual_secret_gated_and_verifies_apk():
@@ -901,11 +913,15 @@ def test_ci_compiles_residual_android_instrumented_qa_sources():
     gradle = _read("android/app/build.gradle.kts")
     backlog = _read("docs/INSTRUMENTED_QA_BACKLOG.md")
 
-    assert "./gradlew :app:compileDebugAndroidTestKotlin --no-daemon" in workflow
+    assert (
+        "./gradlew :ime-app:compileDebugAndroidTestKotlin "
+        ":app:compileDebugAndroidTestKotlin --no-daemon"
+    ) in workflow
     assert "connectedDebugAndroidTest" not in workflow
     assert 'testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"' in gradle
     assert 'androidTestImplementation("androidx.test:runner:1.6.2")' in gradle
-    assert "Owner/manual QA gate" in backlog
+    assert "missing device evidence" in backlog
+    assert "v2.0 stability debt" in backlog
     assert "Issue #36" in backlog
 
 
@@ -939,7 +955,8 @@ def test_residual_ime_android_test_scaffolds_stay_ignored_until_device_qa_runs()
     assert residual.count("@Ignore(") == len(expected_methods)
     assert "does not run" in backlog
     assert "`connectedDebugAndroidTest`" in backlog
-    assert re.search(r"does\s+not\s+satisfy\s+the\s+Owner/manual\s+QA\s+gate\s+for\s+Issue\s+#36", backlog)
+    assert re.search(r"does\s+not\s+supply\s+the\s+missing\s+device\s+evidence", backlog)
+    assert "despite the historical release-gate exception" in backlog
 
     for method, manual_item in expected_methods.items():
         assert f"| `{method}` | {manual_item} |" in backlog
@@ -949,18 +966,20 @@ def test_residual_ime_android_test_scaffolds_stay_ignored_until_device_qa_runs()
         ), f"{method} must remain an ignored device/emulator scaffold until executed QA is recorded"
 
 
-def test_residual_ime_backlog_tracks_current_release_gate():
+def test_residual_ime_backlog_tracks_unresolved_device_evidence_after_release():
     backlog = _read("docs/INSTRUMENTED_QA_BACKLOG.md")
     version_sync = _read("docs/VERSION_SYNC.md")
     research = _read("docs/RESEARCH_AND_ROADMAP.md")
 
-    assert re.search(r"current Issue #36 / v1\.6\.0 manual QA\s+gate", backlog)
+    assert re.search(r"Issue #36 / v1\.6\.0 manual QA\s+gate", backlog)
+    assert "Issue #36 was closed by Owner risk exception" in backlog
+    assert "not by turning blocked rows into passes" in backlog
     assert "`docs/MANUAL_QA_V1_6_0.md`" in backlog
-    assert "Issue #36 evidence comment" in backlog
     assert "connectedDebugAndroidTest" in backlog
     assert "docs/MANUAL_QA_V1_5_16.md" not in backlog
     assert "v1.5.16 manual QA gate" not in backlog
-    assert "Final `v1.6.0` GitHub Release publication remains blocked" in version_sync
+    assert "`v1.6.0` was published on 2026-07-30" in version_sync
+    assert "do not convert blocked manual rows into passing QA" in version_sync
     assert "R74 | Residual IME backlog gate routing" in research
 
 
@@ -1069,7 +1088,6 @@ def test_stability_plan_defines_v1_7_exit_criteria_without_release_overclaim():
     ):
         assert blocker_truth in plan
 
-
 def test_v1_7_field_test_packages_use_release_candidates_without_stable_overclaim():
     plan = _read("docs/STABILITY_PLAN_V1_6_V1_7.md")
     field_test = _read("docs/V1_7_FIELD_TEST_PACKAGES.md")
@@ -1175,8 +1193,12 @@ def test_stability_plan_defines_v2_0_exit_criteria_without_release_overclaim():
     research = _read("docs/RESEARCH_AND_ROADMAP.md")
 
     assert "## Scope lock" in plan
+    assert "## Production architecture supersession" in plan
     assert "## v2.0 stable exit criteria" in plan
     assert "tools/v2_keyboard_readiness.py --no-fail" in plan
+    assert "standalone, no-network `com.clipvault.ime` package" in plan
+    assert "tools/v2_daily_readiness.py" in plan
+    assert "Neither\nhelper may convert unsigned builds" in plan
     assert "v2.0 means the same APK exposes two IME entrypoints" in plan
     assert "ClipVault Panel IME" in plan
     assert "ClipVault Keyboard Lab" in plan
@@ -1207,39 +1229,98 @@ def test_stability_plan_defines_v2_0_exit_criteria_without_release_overclaim():
         "v2.0 does not mean the optional LAN TLS transport-hardening branch.",
         "Not stable if L0/L1 typed text is persisted, learned, logged, synced, or saved without explicit user action.",
         "Do not wire librime/fcitx5 into the production IME.",
-        "Do not start v2.2 CandidateMixer",
+        "Do not start the v2.2 Android production engine/candidate surfaces",
         "Do not add network work inside any IME service.",
     ):
         assert blocker_truth in plan
-    assert re.search(r"A planning label or source-tree version is not\s+release\s+evidence\.", plan)
 
+    assert re.search(r"A planning label or source-tree version is not\s+release\s+evidence\.", plan)
     assert "STABILITY_PLAN_V2_0.md" in roadmap
     assert "v2.0 门禁（双 IME 入口）" in gates
     assert "R84 | v2.0 stability evidence taxonomy" in research
     assert "do not relabel v2.1 librime/fcitx5 build-PoC work" in research
 
 
-def test_top_level_agents_file_matches_current_release_gate():
+def test_published_v1_6_risk_exception_is_consistent_in_active_stability_plans():
+    v1_plan = _read("docs/STABILITY_PLAN_V1_6_V1_7.md")
+    v2_plan = _read("docs/STABILITY_PLAN_V2_0.md")
+
+    for plan in (v1_plan, v2_plan):
+        assert "Issue #36" in plan
+        assert "risk exception" in plan
+        assert "15 pass, 0 fail" in plan
+        assert "10 blocked" in plan
+
+    assert "`v1.6.0` was published on 2026-07-30" in v1_plan
+    assert "inherited stability debt" in v1_plan
+    assert "Issue #36 remains the v1.6.0 release" not in v2_plan
+    assert "Blocked until Owner configures environment secrets" not in v1_plan
+    assert "Blocked until Owner approves release creation/publication" not in v1_plan
+
+
+def test_v2_input_foundation_keeps_package_learning_and_otp_phases_consistent():
+    next_phase = _read("docs/NEXT_PHASE_V2_INPUT_FOUNDATION.md")
+    roadmap = _read("docs/ROADMAP_V2_KEYBOARD.md")
+    gates = _read("docs/GATES.md")
+    product = _read("docs/PRODUCT_SPEC.md")
+    keyboard = _read("docs/CONTRACTS_KEYBOARD.md")
+    privacy = _read("docs/KEYBOARD_PRIVACY.md")
+    adr_0010 = _read("docs/ADR/0010-keyboard-base-selection.md")
+    adr_0013 = _read("docs/ADR/0013-cross-platform-input-process-boundary.md")
+    adr_0014 = _read("docs/ADR/0014-engine-protocol-v2-and-candidate-surfaces.md")
+    adr_0016 = _read("docs/ADR/0016-otp-relay.md")
+
+    assert "v2.2-L" in gates and "v2.2-L" in keyboard and "v2.2-L" in privacy
+    assert "v2.4 | 本机/合成 OTP Relay PoC" in next_phase
+    assert "v2.5 | 最小配对/E2EE 后的跨设备 OTP Beta" in next_phase
+    assert "v2.4 | OTP Relay 本机/合成 PoC" in roadmap
+    assert "v2.5 | 跨设备 OTP Beta + E2EE/传输硬化" in roadmap
+    assert "本阶段不把 OTP 明文跨设备传输" in gates
+    assert "最小配对/E2EE 后的跨设备 OTP Beta" in product
+
+    assert "KBD-3A — 双包候选快照桥" in keyboard
+    assert "IME 不打开数据库" in keyboard
+    assert "逐键路径不得同步调用 Binder" in keyboard
+    assert "IME 内的推荐只查本地 Room" not in product
+    assert "IME 端只查本地 Room" not in keyboard
+
+    for adr in (adr_0010, adr_0013, adr_0014, adr_0016):
+        assert "\ufffd" not in adr
+
+    assert "ADR-0013 supersedes the former single-package IME boundary" in adr_0010
+    assert "ADR-0014 supersedes index-based candidate integration" in adr_0010
+    assert "ADR-0016 supersedes clipboard-shaped OTP handling" in adr_0010
+    assert "Android targets two packages" in adr_0013
+    assert "Every later mutating request" in adr_0014
+    assert "`EndSession` is sequenced but does not require a revision" in adr_0014
+    assert "OTP Relay as an ephemeral credential channel" in adr_0016
+
+
+def test_top_level_agents_file_matches_current_release_baseline():
     agents = _read("AGENTS.md")
 
     assert "Issue #3 / the v1.5 gate is closed." in agents
-    assert "Issue #36 is the current v1.6.0 release" in agents
-    assert "Do not claim v1.6 stable" in agents
-    assert "Current main CI result is known." in agents
-    assert "Current main release-candidate dry run result is known." in agents
-    assert "Owner-controlled final Windows artifacts and signed Android artifacts exist." in agents
-    assert "Manual QA checklist passes with evidence." in agents
-    assert "Final `v1.6.0` GitHub Release publication is Owner-approved." in agents
+    assert "`v1.6.0` was published on 2026-07-30" in agents
+    assert "Issue #36 was closed by explicit Owner risk exception" in agents
+    assert "15 pass, 0 fail, and 10 blocked" in agents
+    assert "do not describe the blocked checks as passed" in agents
+    assert "without fresh explicit Owner authorization" in agents
     assert "Do not claim v1.7 stable until docs/STABILITY_PLAN_V1_6_V1_7.md" in agents
     assert "Do not claim v2.0 stable until docs/STABILITY_PLAN_V2_0.md" in agents
     assert re.search(r"v2\.0 is\s+the dual-IME-entrypoint stability line", agents)
-    assert "Do not close Issue #36 without CI, signed artifact, final release, and manual" in agents
+    assert "docs/NEXT_PHASE_V2_INPUT_FOUNDATION.md" in agents
+    assert re.search(
+        r"a compiled or\s+synthetic scaffold is not production integration evidence",
+        agents,
+    )
 
     for stale_claim in (
         "Current v1.5 blockers",
         "Do not start v1.6 work until these are closed",
         "Do not close Issue 3 without CI and manual QA evidence.",
         "Owner-controlled signed Windows/Android artifacts exist.",
+        "Issue #36 is the current v1.6.0 release",
+        "Do not close Issue #36 without CI",
     ):
         assert stale_claim not in agents
 
@@ -1250,7 +1331,8 @@ def test_agent_workflows_status_anchor_avoids_stale_test_counts_and_overclaims()
     assert "python -m pytest -q` 输出和 GitHub CI 为准" in workflows
     assert "不要把旧的固定测试数量写成发布证据" in workflows
     assert "v1.6 release gate（Issue #36）" in workflows
-    assert "signed artifacts、Owner/manual QA、最终 GitHub Release 发布前不得关闭" in workflows
+    assert "已按 Owner 风险豁免关闭" in workflows
+    assert "不得把 blocked 人工项描述为通过" in workflows
     assert "v1.7 stable" in workflows
     assert "不得声称 `v1.7.0` 已发布或稳定完成" in workflows
     assert "v2.0 stable" in workflows
@@ -1261,55 +1343,22 @@ def test_agent_workflows_status_anchor_avoids_stale_test_counts_and_overclaims()
     assert "Linux/CI 跑通 + 4 项 Windows-only" not in workflows
 
 
-def test_handoff_current_state_anchors_v1_6_gate_before_v1_7_or_v2_work():
+def test_handoff_current_state_tracks_release_and_authorized_v2_foundation():
     handoff = _read("docs/HANDOFF.md")
 
     current_state = handoff.split("## Current development note", 1)[0]
-    assert "v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning" in current_state
-    assert "Issue #36 remains open" in current_state
-    assert "Owner-controlled final Windows artifacts, signed Android artifacts" in current_state
-    assert "Owner-approved GitHub Release publication" in current_state
-    assert "v1.7 stays planning/stability-only" in current_state
-    assert "v2.0 stays planning/stability-only" in current_state
-    assert "docs/STABILITY_PLAN_V2_0.md" in current_state
-    assert "dedicated Owner-approved v2.0 release-gate issue" in current_state
-    assert "signed Windows/Android artifacts" not in current_state
-    assert "v2.1 V2-S004" not in current_state
+    assert "v2.1 cross-platform input foundation" in current_state
+    assert "Android engine, Windows TSF/Host protocol and OTP memory-core PoCs" in current_state
+    assert "No production integration, merge, release or stability claim" in current_state
+    assert "| Last updated | 2026-08-01 |" in current_state
 
     current_development_note = handoff.split("## Current development note", 1)[1].split(
-        "## Recent completed note", 1
+        "## Current development note", 1
     )[0]
-    assert "tools/release_readiness.py" in current_development_note
-    assert re.search(r"without\s+triggering\s+workflows,\s+setting\s+secrets,\s+creating\s+releases", current_development_note)
-    assert re.search(r"prints\s+the\s+exact\s+unchecked\s+release-gate\s+checklist\s+items", current_development_note)
-    assert "docs/STABILITY_PLAN_V2_0.md" in current_development_note
-    assert "dual-IME entrypoint stability milestone" in current_development_note
-    assert "does not claim" in current_development_note
-    assert "v2.0 stable" in current_development_note
-    assert "tools/v2_keyboard_readiness.py" in current_development_note
-    assert "does not call GitHub, trigger workflows" in current_development_note
-
-    current_version = handoff.split("## Current Version Status", 1)[1].split(
-        "## Hardening Support Line Snapshot", 1
-    )[0]
-    assert "`v1.6.0` GitHub Release is not published" in current_version
-    assert "Latest downloadable binaries remain **v1.5.10**" in current_version
-    assert re.search(r"do not cite stale fixed test counts as\s+current release evidence", current_version)
-    assert "Issue #36 remains the release gate" in current_version
-    assert "final Windows artifacts, signed Android" in current_version
-    for stale_release_evidence in (
-        "桌面 134 测试",
-        "166 项 Linux 跑通",
-        "4 项 Windows-only",
-        "signed Windows/Android artifacts",
-    ):
-        assert stale_release_evidence not in current_version
-
-    assert "## v1.6 Release Gate — Issue #36 OPEN" in handoff
-    release_gate = handoff.split("## v1.6 Release Gate — Issue #36 OPEN", 1)[1]
-    assert re.search(r"v1\.6\s+stable/release is not complete", release_gate)
-    assert "Owner-controlled final" in release_gate
-    assert "signed Android artifacts" in release_gate
-    assert "signed Windows/Android artifacts" not in release_gate
-    assert re.search(r"must not claim\s+`v1\.7\.0` stable or published", release_gate)
-    assert "v1.6 Entry Gate" not in handoff
+    assert "`v1.6.0`" in current_development_note
+    assert "531d177b4485a5f32f97229a8d571969f6edf536" in current_development_note
+    assert "NOT_PLANNED" in current_development_note
+    assert re.search(r"15\s+pass,\s+0\s+fail\s+and\s+10\s+blocked", current_development_note)
+    assert "Four independent branches/worktrees" in current_development_note
+    assert "does not by itself authorize commit, push, merge, release" in current_development_note
+    assert "Statements that v1.6.0 is unpublished" in current_development_note

@@ -1,0 +1,60 @@
+{
+  "contract": "Runtime Snapshot V1",
+  "protocol_version": 1,
+  "limits": {
+    "max_items": 8,
+    "max_candidate_id_utf8_bytes": 128,
+    "max_label_utf8_bytes": 64,
+    "max_text_utf8_bytes": 16384,
+    "max_response_bytes": 65536,
+    "request_deadline_ms": 250,
+    "max_snapshot_lifetime_ms": 30000
+  },
+  "assertions": [
+    {
+      "id": "SNAP-V001",
+      "name": "bounded_allowed_response",
+      "expect": "accept_current_generation"
+    },
+    {
+      "id": "SNAP-V002",
+      "name": "sensitive_context",
+      "contexts": ["password", "incognito", "no_personalized_learning", "configured_sensitive", "unknown_sensitive"],
+      "expect": "cancel_wipe_and_empty"
+    },
+    {
+      "id": "SNAP-V003",
+      "name": "late_response",
+      "mutations": ["request_id", "input_session_generation", "clipvault_allowed"],
+      "expect": "discard"
+    },
+    {
+      "id": "SNAP-V004",
+      "name": "publisher_restart",
+      "expect": "invalidate_old_epoch_generation_and_ids"
+    },
+    {
+      "id": "SNAP-V005",
+      "name": "bounds",
+      "mutations": ["item_count_9", "candidate_id_129_bytes", "label_65_bytes", "text_16385_bytes", "response_65537_bytes"],
+      "expect": "reject_without_truncation"
+    },
+    {
+      "id": "SNAP-V006",
+      "name": "strict_decode",
+      "mutations": ["duplicate_candidate_id", "duplicate_singleton_field", "unknown_field", "invalid_utf8", "generation_rollback"],
+      "expect": "reject_and_close"
+    },
+    {
+      "id": "SNAP-V007",
+      "name": "runtime_unavailable",
+      "mutations": ["binder_death", "pipe_timeout", "runtime_crash"],
+      "expect": "empty_clipvault_surface_engine_still_operational"
+    },
+    {
+      "id": "SNAP-V008",
+      "name": "local_selection",
+      "expect": "one_local_commit_no_context_or_body_returned_to_runtime"
+    }
+  ]
+}

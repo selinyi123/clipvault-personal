@@ -2,13 +2,14 @@
 
 Two trust zones, enforced at the handler regardless of bind address:
   - management + Web UI routes: loopback-only (127.0.0.1), no auth.
-  - /api/pair and /api/sync/*: reachable from the LAN, protected by a one-time
-    pairing code / bearer token respectively (so paired Android devices can sync).
+  - /api/pair, /api/sync/*, and exact OTP routes: bearer/code protected;
+    OTP pair creation additionally requires loopback or a Tailscale source.
 Plain single-threaded HTTPServer: the SQLite connection lives on the serving
 thread and is never crossed (S004 lesson).
 """
 
 import json
+import ipaddress
 import logging
 import re
 import socket
@@ -22,6 +23,18 @@ from urllib.parse import urlparse, parse_qs
 
 from clipvault import __version__
 from clipvault.api.handlers import Api
+from clipvault.otp.ingress import (
+    DisabledOtpOpaqueIngressPort,
+    OTP_RELAY_MAX_BODY_BYTES,
+    OTP_RELAY_ROUTE,
+    log_otp_security_event,
+)
+from clipvault.otp.pairing import (
+    OTP_PAIR_MAX_BODY_BYTES,
+    OTP_PAIR_ROUTE,
+    disabled_pair_identity_factory,
+    disabled_pairing_authority_factory,
+)
 
 log = logging.getLogger("clipvault.api")
 
@@ -59,6 +72,15 @@ _CSP = (
     "frame-ancestors 'none'; "
     "object-src 'none'"
 )
+
+
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON member")
+        result[key] = value
+    return result
 
 
 class _RequestDeadline:
@@ -235,10 +257,43 @@ class _SafeHTTPServer(HTTPServer):
         error_class = exc_type.__name__ if exc_type is not None else "Exception"
         log.error("api connection failed error=%s", error_class)
 
+    def server_close(self) -> None:
+        try:
+            super().server_close()
+        finally:
+            callback = getattr(self, "_clipvault_on_close", None)
+            if callback is not None:
+                callback()
+
 
 def _remote_allowed(route: str) -> bool:
     """Routes a paired LAN device may reach (auth enforced in the handler)."""
-    return route == "/api/pair" or route.startswith("/api/sync/")
+    return (
+        route == "/api/pair"
+        or route == OTP_RELAY_ROUTE
+        or route == OTP_PAIR_ROUTE
+        or route.startswith("/api/sync/")
+    )
+
+
+_TAILSCALE_V4 = ipaddress.ip_network("100.64.0.0/10")
+_TAILSCALE_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
+
+
+def _otp_pair_source_allowed(address: str) -> bool:
+    """Accept only local or Tailscale transport for verifier bootstrap."""
+
+    if not isinstance(address, str):
+        return False
+    try:
+        parsed = ipaddress.ip_address(address.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped:
+        parsed = parsed.ipv4_mapped
+    return parsed.is_loopback or parsed in (
+        _TAILSCALE_V4 if parsed.version == 4 else _TAILSCALE_V6
+    )
 
 
 def _safe_route(raw_target: str) -> str:
@@ -295,12 +350,19 @@ def make_handler(
             method = getattr(self, "command", "UNKNOWN")
             path = getattr(self, "path", "")
             route = _safe_route(path)
-            log.error(
-                "api request failed method=%s route=%s error=%s",
-                method,
-                route,
-                exc.__class__.__name__,
-            )
+            if route in (OTP_RELAY_ROUTE, OTP_PAIR_ROUTE):
+                log_otp_security_event(
+                    logging.ERROR,
+                    "otp_http_failure",
+                    exc.__class__.__name__,
+                )
+            else:
+                log.error(
+                    "api request failed method=%s route=%s error=%s",
+                    method,
+                    route,
+                    exc.__class__.__name__,
+                )
             if self._response_started:
                 return
             try:
@@ -394,6 +456,15 @@ def make_handler(
 
         def _send_request_timeout(self) -> None:
             self.close_connection = True
+            if _safe_route(getattr(self, "path", "")) in (
+                OTP_RELAY_ROUTE,
+                OTP_PAIR_ROUTE,
+            ):
+                log_otp_security_event(
+                    logging.WARNING,
+                    "otp_request_timeout",
+                    "OtpHttpRequestTimeout",
+                )
             if self._response_started:
                 return
             try:
@@ -406,7 +477,10 @@ def make_handler(
             except OSError:
                 pass
 
-        def _best_effort_drain_rejected_body(self) -> None:
+        def _best_effort_drain_rejected_body(
+            self,
+            max_bytes: int = _MAX_SYNC_PUSH_BODY,
+        ) -> None:
             """Give a small rejected request a bounded graceful-close window.
 
             Windows may reset a TCP connection when the server closes it with
@@ -447,7 +521,7 @@ def make_handler(
                 length = int(raw_value)
             except ValueError:
                 return
-            if length <= 0 or length > _MAX_SYNC_PUSH_BODY:
+            if length <= 0 or length > max_bytes:
                 return
 
             try:
@@ -553,12 +627,16 @@ def make_handler(
                 })
                 return None
 
-        def _read_request_bytes(self, length: int) -> bytes | None:
-            """Read an exact bounded body under the request's fixed deadline."""
+        @staticmethod
+        def _wipe_request_buffer(data: bytearray) -> None:
+            data[:] = b"\x00" * len(data)
+
+        def _read_request_buffer(self, length: int) -> bytearray | None:
+            """Read an exact bounded body into caller-owned mutable storage."""
 
             deadline = self._request_deadline
             if length <= 0:
-                return b"" if self._finish_request_ingress() else None
+                return bytearray() if self._finish_request_ingress() else None
             reason = deadline.begin_body(length) if deadline is not None else None
             if reason is not None:
                 self.close_connection = True
@@ -566,41 +644,64 @@ def make_handler(
                     self._send_request_timeout()
                 return None
             data = bytearray()
-            read_chunk = getattr(self.rfile, "read1", self.rfile.read)
-            while len(data) < length:
-                reason = deadline.check() if deadline is not None else None
-                if reason is not None:
-                    self.close_connection = True
-                    if reason == "deadline":
-                        self._send_request_timeout()
-                    return None
-                try:
+            succeeded = False
+            try:
+                read_chunk = getattr(self.rfile, "read1", self.rfile.read)
+                while len(data) < length:
+                    reason = deadline.check() if deadline is not None else None
+                    if reason is not None:
+                        self.close_connection = True
+                        if reason == "deadline":
+                            self._send_request_timeout()
+                        return None
                     chunk = read_chunk(min(64 * 1024, length - len(data)))
-                except TimeoutError:
-                    self._send_request_timeout()
-                    return None
-                except OSError:
+                    if not chunk:
+                        reason = deadline.check() if deadline is not None else None
+                        self.close_connection = True
+                        if reason == "deadline":
+                            self._send_request_timeout()
+                        return None
+                    data.extend(chunk)
                     reason = deadline.check() if deadline is not None else None
-                    self.close_connection = True
-                    if reason == "deadline":
-                        self._send_request_timeout()
+                    if reason is not None:
+                        self.close_connection = True
+                        if reason == "deadline":
+                            self._send_request_timeout()
+                        return None
+                if not self._finish_request_ingress():
                     return None
-                if not chunk:
-                    reason = deadline.check() if deadline is not None else None
-                    self.close_connection = True
-                    if reason == "deadline":
-                        self._send_request_timeout()
-                    return None
-                data.extend(chunk)
+                succeeded = True
+                return data
+            except TimeoutError:
+                self._send_request_timeout()
+                return None
+            except OSError:
                 reason = deadline.check() if deadline is not None else None
-                if reason is not None:
-                    self.close_connection = True
-                    if reason == "deadline":
-                        self._send_request_timeout()
-                    return None
-            return bytes(data) if self._finish_request_ingress() else None
+                self.close_connection = True
+                if reason == "deadline":
+                    self._send_request_timeout()
+                return None
+            finally:
+                if not succeeded:
+                    self._wipe_request_buffer(data)
 
-        def _body(self, max_bytes: int = _MAX_JSON_BODY) -> dict | None:
+        def _read_request_bytes(self, length: int) -> bytes | None:
+            """Read a body and wipe its mutable ingress allocation after copy."""
+
+            data = self._read_request_buffer(length)
+            if data is None:
+                return None
+            try:
+                return bytes(data)
+            finally:
+                self._wipe_request_buffer(data)
+
+        def _body(
+            self,
+            max_bytes: int = _MAX_JSON_BODY,
+            *,
+            unique_keys: bool = False,
+        ) -> dict | None:
             if self._reject_transfer_encoding():
                 return None
             length = self._content_length()
@@ -629,7 +730,12 @@ def make_handler(
                 raw = self._read_request_bytes(length)
                 if raw is None:
                     return None
-                obj = json.loads(raw.decode("utf-8"))
+                obj = json.loads(
+                    raw.decode("utf-8"),
+                    object_pairs_hook=(
+                        _unique_json_object if unique_keys else None
+                    ),
+                )
             except TimeoutError:
                 self._send_request_timeout()
                 return None
@@ -640,6 +746,51 @@ def make_handler(
                 self._send_json(400, {"error": {"code": "bad_request", "message": "json object required"}})
                 return None
             return obj
+
+        def _opaque_json_body(self) -> bytearray | None:
+            """Read one OTP envelope without deserializing opaque fields here."""
+
+            if self._reject_transfer_encoding():
+                return None
+            length = self._content_length()
+            if length is None:
+                return None
+            if length > OTP_RELAY_MAX_BODY_BYTES:
+                self.close_connection = True
+                log_otp_security_event(
+                    logging.WARNING,
+                    "otp_payload_too_large",
+                    "OtpHttpPayloadRejected",
+                )
+                self._send_json(413, {
+                    "error": {
+                        "code": "payload_too_large",
+                        "message": "request body too large",
+                    }
+                })
+                return None
+            content_type = (
+                self.headers.get("Content-Type", "")
+                .split(";", 1)[0]
+                .strip()
+                .lower()
+            )
+            if content_type != "application/json":
+                log_otp_security_event(
+                    logging.WARNING,
+                    "otp_media_type_rejected",
+                    "OtpHttpMediaTypeRejected",
+                )
+                if not self._drain(OTP_RELAY_MAX_BODY_BYTES):
+                    return None
+                self._send_json(415, {
+                    "error": {
+                        "code": "unsupported_media_type",
+                        "message": "application/json required",
+                    }
+                })
+                return None
+            return self._read_request_buffer(length)
 
         def _drain(self, max_bytes: int = _MAX_JSON_BODY) -> bool:
             """Discard an unread request body so leftover bytes do not corrupt the
@@ -695,7 +846,10 @@ def make_handler(
         def log_message(self, fmt, *args):  # route through our logger, no content
             method = getattr(self, "command", "UNKNOWN")
             path = getattr(self, "path", "")
-            log.info("%s %s", method, _safe_route(path))
+            route = _safe_route(path)
+            if route in (OTP_RELAY_ROUTE, OTP_PAIR_ROUTE):
+                return
+            log.info("%s %s", method, route)
 
         def do_GET(self):
             if not self._accept_bodyless_request():
@@ -738,6 +892,94 @@ def make_handler(
         def do_POST(self):
             route = urlparse(self.path).path
             if not self._guard(route):
+                return
+            if route == OTP_PAIR_ROUTE:
+                token = self._bearer()
+                if not api.auth_ok(token):
+                    log_otp_security_event(
+                        logging.WARNING,
+                        "otp_pair_auth_failed",
+                        "OtpPairAuthenticationRejected",
+                    )
+                    self.close_connection = True
+                    self._send_json(401, {
+                        "error": {
+                            "code": "unauthorized",
+                            "message": "bad token",
+                        }
+                    })
+                    self._best_effort_drain_rejected_body(
+                        OTP_PAIR_MAX_BODY_BYTES
+                    )
+                    return
+                if not _otp_pair_source_allowed(self.client_address[0]):
+                    log_otp_security_event(
+                        logging.WARNING,
+                        "otp_pair_transport_rejected",
+                        "OtpPairTransportRejected",
+                    )
+                    self.close_connection = True
+                    self._send_json(403, {
+                        "error": {
+                            "code": "otp_pair_transport_rejected",
+                            "message": "secure local transport required",
+                        }
+                    })
+                    self._best_effort_drain_rejected_body(
+                        OTP_PAIR_MAX_BODY_BYTES
+                    )
+                    return
+                body = self._body(
+                    OTP_PAIR_MAX_BODY_BYTES,
+                    unique_keys=True,
+                )
+                if body is None:
+                    return
+                self._send_json(*api.otp_pair(token, body))
+                return
+            if route == OTP_RELAY_ROUTE:
+                if not _otp_pair_source_allowed(self.client_address[0]):
+                    log_otp_security_event(
+                        logging.WARNING,
+                        "otp_relay_transport_rejected",
+                        "OtpRelayTransportRejected",
+                    )
+                    self.close_connection = True
+                    self._send_json(403, {
+                        "error": {
+                            "code": "otp_relay_transport_rejected",
+                            "message": "secure local transport required",
+                        }
+                    })
+                    self._best_effort_drain_rejected_body(
+                        OTP_RELAY_MAX_BODY_BYTES
+                    )
+                    return
+                token = self._bearer()
+                if not api.auth_ok(token):
+                    log_otp_security_event(
+                        logging.WARNING,
+                        "otp_auth_failed",
+                        "OtpHttpAuthenticationRejected",
+                    )
+                    self.close_connection = True
+                    self._send_json(401, {
+                        "error": {
+                            "code": "unauthorized",
+                            "message": "bad token",
+                        }
+                    })
+                    self._best_effort_drain_rejected_body(
+                        OTP_RELAY_MAX_BODY_BYTES
+                    )
+                    return
+                raw_body = self._opaque_json_body()
+                if raw_body is None:
+                    return
+                try:
+                    self._send_json(*api.otp_relay(token, raw_body))
+                finally:
+                    self._wipe_request_buffer(raw_body)
                 return
             if route == "/api/clips":
                 body = self._body(_MAX_CONTENT_JSON_BODY)
@@ -841,10 +1083,14 @@ def build_server(
     # exposing the socket does not expose the unauthenticated endpoints.
     if read_timeout_s <= 0:
         raise ValueError("read_timeout_s must be positive")
-    return _SafeHTTPServer(
+    httpd = _SafeHTTPServer(
         (host, port),
         make_handler(api, read_timeout_s, stop_event=stop_event),
     )
+    close_api = getattr(api, "close", None)
+    if callable(close_api):
+        httpd._clipvault_on_close = close_api
+    return httpd
 
 
 def _prepare_database(conn) -> None:
@@ -866,6 +1112,9 @@ def serve(
     obsidian_notify=None,
     on_ready=None,
     on_preflight_complete=None,
+    otp_ingress_port_factory=DisabledOtpOpaqueIngressPort,
+    otp_pair_identity_port_factory=disabled_pair_identity_factory,
+    otp_pairing_authority_factory=disabled_pairing_authority_factory,
 ) -> None:
     """Own the DB connection inside this (serving) thread, then loop."""
     from clipvault.service import ClipVaultService
@@ -873,8 +1122,15 @@ def serve(
 
     conn = db.connect(config.db_path)
     httpd = None
+    api = None
+    otp_ingress_port = None
+    otp_pair_identity_port = None
+    otp_pairing_authority = None
     try:
+        otp_ingress_port = otp_ingress_port_factory()
         _prepare_database(conn)
+        otp_pair_identity_port = otp_pair_identity_port_factory(conn)
+        otp_pairing_authority = otp_pairing_authority_factory(conn)
         if on_preflight_complete is not None:
             on_preflight_complete()
         # A stop requested during a long repair must not permit a late bind.
@@ -883,6 +1139,9 @@ def serve(
         api = Api(
             ClipVaultService(conn, config, obsidian_notify=obsidian_notify),
             pairing=pairing,
+            otp_ingress_port=otp_ingress_port,
+            otp_pair_identity_port=otp_pair_identity_port,
+            otp_pairing_authority=otp_pairing_authority,
         )
         httpd = build_server(
             api, config.host, config.port, stop_event=stop
@@ -896,4 +1155,31 @@ def serve(
     finally:
         if httpd is not None:
             httpd.server_close()
+        if api is not None:
+            api.close()
+        elif otp_ingress_port is not None:
+            try:
+                otp_ingress_port.close()
+            except Exception as exc:
+                log.error(
+                    "otp ingress close failed code=otp_broker_close_failure error=%s",
+                    exc.__class__.__name__,
+                )
+        if api is None and otp_pair_identity_port is not None:
+            try:
+                otp_pair_identity_port.close()
+            except Exception as exc:
+                log.error(
+                    "otp ingress close failed "
+                    "code=otp_pair_identity_close_failure error=%s",
+                    exc.__class__.__name__,
+                )
+        if api is None and otp_pairing_authority is not None:
+            try:
+                otp_pairing_authority.close()
+            except Exception as exc:
+                log.error(
+                    "otp pairing authority close failed error=%s",
+                    exc.__class__.__name__,
+                )
         conn.close()

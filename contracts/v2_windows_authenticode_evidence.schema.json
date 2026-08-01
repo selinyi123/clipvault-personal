@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clipvault.local/contracts/v2_windows_authenticode_evidence.schema.json",
+  "title": "ClipVault v2 Windows Authenticode evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "signing_thumbprint", "top_level", "package"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "signing_thumbprint": { "$ref": "#/$defs/thumbprint" },
+    "top_level": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "$ref": "#/$defs/fileEvidence" }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "members"],
+      "properties": {
+        "path": { "$ref": "#/$defs/evidencePath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "members": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/memberEvidence" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "fileEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "path", "sha256", "status", "signing_thumbprint"],
+      "properties": {
+        "role": { "enum": ["desktop_executable", "windows_installer"] },
+        "path": { "$ref": "#/$defs/evidencePath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "status": { "const": "Valid" },
+        "signing_thumbprint": { "$ref": "#/$defs/thumbprint" }
+      }
+    },
+    "memberEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["archive_path", "sha256", "status", "signing_thumbprint"],
+      "properties": {
+        "archive_path": {
+          "enum": [
+            "host-x64/ClipVaultImeHost.exe",
+            "otp-broker/ClipVaultOtpBroker.exe",
+            "x64/ClipVaultTextService.dll",
+            "x86/ClipVaultTextService.dll"
+          ]
+        },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "status": { "const": "Valid" },
+        "signing_thumbprint": { "$ref": "#/$defs/thumbprint" }
+      }
+    },
+    "thumbprint": { "type": "string", "pattern": "^(?!0+$)[0-9A-Fa-f]{40,128}$" },
+    "sha256": { "type": "string", "pattern": "^(?!0{64}$)[0-9A-Fa-f]{64}$" },
+    "evidencePath": { "type": "string", "minLength": 1, "maxLength": 4096 }
+  }
+}

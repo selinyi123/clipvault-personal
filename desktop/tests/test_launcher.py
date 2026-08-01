@@ -7,7 +7,29 @@ import types
 
 import pytest
 
+from clipvault import config as config_mod
 from clipvault import launcher
+
+
+def test_first_run_config_freezes_optional_ime_surfaces_off(tmp_path):
+    text = launcher._config_text(
+        device_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        vault_path=tmp_path / "vault",
+        db_path=tmp_path / "data" / "clipvault.db",
+        log_dir=tmp_path / "logs",
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(text, encoding="utf-8")
+
+    cfg = config_mod.load(config_path)
+
+    assert cfg.otp_windows_broker_enabled is False
+    assert cfg.otp_pairing_enabled is False
+    assert cfg.ime_snapshot_enabled is False
+    assert cfg.ime_snapshot_host_path == ""
+    assert cfg.ime_snapshot_require_signed_host is True
+    assert "[otp_relay]" in text
+    assert "[ime_snapshot]" in text
 
 
 def test_tray_self_test_constructs_icon_without_running_it(monkeypatch):

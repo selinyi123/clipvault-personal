@@ -7,6 +7,10 @@
 #define AppPublisher "ClipVault"
 #define AppExe "clipvault.exe"
 
+#ifdef ClipVaultImeV2PackageDir
+  #error The frozen v1 installer cannot own v2 IME lifecycle state. Compile clipvault-v2-daily.iss instead.
+#endif
+
 [Setup]
 AppId={{B7E9C4A1-0F3D-4E2A-9C5B-CV11PERSONAL}}
 AppName={#AppName}

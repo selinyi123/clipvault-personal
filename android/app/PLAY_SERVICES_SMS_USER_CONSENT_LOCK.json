@@ -1,0 +1,28 @@
+{
+  "format_version": 1,
+  "component": "com.google.android.gms:play-services-auth-api-phone",
+  "version": "18.2.0",
+  "repository": "https://dl.google.com/dl/android/maven2/",
+  "metadata_last_updated_utc": "2026-07-07T15:00:59Z",
+  "selection_reason": "18.2.0 is the newest verified release compatible with the project's Kotlin 2.0.21 toolchain; 18.3.1 publishes Kotlin metadata 2.3.0 and is intentionally excluded.",
+  "artifact": {
+    "file": "play-services-auth-api-phone-18.2.0.aar",
+    "size_bytes": 105177,
+    "sha256": "15963fa1cf08ad2778fd54f17ef72cb7597af15f40415885833b1240369230f3"
+  },
+  "pom": {
+    "file": "play-services-auth-api-phone-18.2.0.pom",
+    "size_bytes": 2279,
+    "sha256": "1014bbbd9f385e57e1fb3f99d536e60e494b2ef7f4e3959088f748413a89a4b0"
+  },
+  "license": {
+    "name": "Android Software Development Kit License",
+    "url": "https://developer.android.com/studio/terms.html",
+    "source": "artifact POM"
+  },
+  "purpose": "Explicit, one-message SMS User Consent fallback only",
+  "forbidden_permissions": [
+    "android.permission.READ_SMS",
+    "android.permission.RECEIVE_SMS"
+  ]
+}

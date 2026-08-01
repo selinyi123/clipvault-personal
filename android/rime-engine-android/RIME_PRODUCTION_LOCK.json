@@ -1,0 +1,71 @@
+{
+  "format_version": 1,
+  "decision": "A_custom_librime_jni",
+  "captured_at_utc": "2026-08-01T00:00:00Z",
+  "toolchain": {
+    "jdk": "17",
+    "gradle": "8.10.2",
+    "android_gradle_plugin": "8.5.2",
+    "android_ndk": "28.0.13004108",
+    "cmake": "3.22.1",
+    "compile_sdk": 36,
+    "target_sdk": 36,
+    "abis": ["arm64-v8a", "x86_64"],
+    "required_page_size_bytes": 16384
+  },
+  "sources": {
+    "librime": {
+      "repository": "https://github.com/rime/librime.git",
+      "tag": "1.16.1",
+      "commit": "de4700e9f6b75b109910613df907965e3cbe0567",
+      "license": "BSD-3-Clause"
+    },
+    "rime_pinyin_simp": {
+      "repository": "https://github.com/rime/rime-pinyin-simp.git",
+      "commit": "0c6861ef7420ee780270ca6d993d18d4101049d0",
+      "archive_sha256": "46f37114a7929ecc01003a236803c8b1e5198382e6a21f83fae036604a6b08bf",
+      "license": "Apache-2.0",
+      "file_sha256": {
+        "AUTHORS": "f4cff0fcbca4668ac449c24a53be547e162bc60cce63fdc5d5906801a452edc4",
+        "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "pinyin_simp.dict.yaml": "e341598343a0f0f2035bb1aafc34a7f3bb7887deeecb3f60796262aaa2983e6b",
+        "pinyin_simp.schema.yaml": "726772190a325ae4bf236915e7d62a23fedd8cf1da8a74370a20f87196c67775"
+      }
+    },
+    "fcitx5_android_prebuilt": {
+      "parent_repository": "https://github.com/fcitx5-android/fcitx5-android.git",
+      "parent_tag": "0.1.3",
+      "parent_commit": "048f581c652367567b8ee5c28c5163b805288895",
+      "repository": "https://github.com/fcitx5-android/prebuilt.git",
+      "commit": "86ce2c95d42f1132746fbf60c278193aa1f4b758",
+      "usage": "archive_source_only_not_fcitx_runtime"
+    }
+  },
+  "native_archives": [
+    {"path": "third-party-build/librime-de4700e9-arm64/lib/librime.a", "sha256": "574cdb786fdfe92fcccebc87077a4362a6135e463ee4df591d165a3e178c89f2"},
+    {"path": "third-party-build/librime-de4700e9-x86_64/lib/librime.a", "sha256": "5ab6745b3712c103bcef769111edcd8e547b1bd4f3dd473fc6a79925128910e2"},
+    {"path": "third-party-cache/fcitx5-android-048f581c/lib/fcitx5/src/main/cpp/prebuilt/yaml-cpp/arm64-v8a/lib/libyaml-cpp.a", "sha256": "5a3a443dd099e543db6e5a79f1bd01258b52c379d4c20394ae81396c8a941ba0"},
+    {"path": "third-party-cache/fcitx5-android-048f581c/lib/fcitx5/src/main/cpp/prebuilt/leveldb/arm64-v8a/lib/libleveldb.a", "sha256": "e070afd4eff2392a96976a17c69c66694d6f891ac0177a96b91e9edb4cf6781a"},
+    {"path": "third-party-cache/fcitx5-android-048f581c/lib/fcitx5/src/main/cpp/prebuilt/opencc/arm64-v8a/lib/libopencc.a", "sha256": "e5f889175425165c4a78d9ecee9b3cd90b0daba15764c0813a2888a725b633e7"},
+    {"path": "third-party-cache/fcitx5-android-048f581c/lib/fcitx5/src/main/cpp/prebuilt/marisa/arm64-v8a/lib/libmarisa.a", "sha256": "572eae47d67aa6915a999658ab7671c99430c9446f8813615a19a0c53dc777a6"},
+    {"path": "third-party-cache/fcitx5-android-048f581c/lib/fcitx5/src/main/cpp/prebuilt/yaml-cpp/x86_64/lib/libyaml-cpp.a", "sha256": "039ab3ad0eff99daf3c1d6e710483cab4079f6b6f7d6fd58b81f8899c849d68a"},
+    {"path": "third-party-cache/fcitx5-android-048f581c/lib/fcitx5/src/main/cpp/prebuilt/leveldb/x86_64/lib/libleveldb.a", "sha256": "b2b545ff3b5dda82d959196f91e16aebca3e5aaaeb3a274c6a353fd4bd2905ad"},
+    {"path": "third-party-cache/fcitx5-android-048f581c/lib/fcitx5/src/main/cpp/prebuilt/opencc/x86_64/lib/libopencc.a", "sha256": "74fc96b9303c92dbed06f7919e32aebe584a7571c17b1db143cd13e628873d33"},
+    {"path": "third-party-cache/fcitx5-android-048f581c/lib/fcitx5/src/main/cpp/prebuilt/marisa/x86_64/lib/libmarisa.a", "sha256": "121ea01c7997f333a16646b581259196ae4fd6b6b6284e56a9d49f6cb8d4b368"}
+  ],
+  "licenses": [
+    {"component": "librime", "version": "1.16.1", "spdx": "BSD-3-Clause", "asset": "third_party/librime-BSD-3-Clause.txt"},
+    {"component": "yaml-cpp", "version": "0.9.0", "spdx": "MIT", "asset": "third_party/yaml-cpp-MIT.txt"},
+    {"component": "LevelDB", "version": "1.23.0", "spdx": "BSD-3-Clause", "asset": "third_party/leveldb-BSD-3-Clause.txt"},
+    {"component": "OpenCC", "version": "1.2.0", "spdx": "Apache-2.0", "asset": "third_party/opencc-Apache-2.0.txt"},
+    {"component": "marisa-trie", "version": "0.3.1", "spdx": "BSD-2-Clause", "upstream_expression": "BSD-2-Clause OR LGPL-2.1-or-later", "selected_distribution_option": "BSD-2-Clause", "asset": "third_party/marisa-BSD-2-Clause.txt"},
+    {"component": "rime-pinyin-simp", "commit": "0c6861ef7420ee780270ca6d993d18d4101049d0", "spdx": "Apache-2.0", "asset": "third_party/rime-pinyin-simp-Apache-2.0.txt"}
+  ],
+  "distribution": {
+    "notice_asset": "third_party/NOTICE.txt",
+    "repository_review_assets": "THIRD_PARTY_MANIFEST.yaml and third_party/licenses/README-v2-rime.md",
+    "prebuilt_archive_corresponding_source": "owner_review_required",
+    "public_binary_release": "owner_license_and_signing_gate_required",
+    "direct_only_build_is_release_evidence": false
+  }
+}

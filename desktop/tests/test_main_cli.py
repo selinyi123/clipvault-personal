@@ -52,6 +52,84 @@ def test_help_renders_literal_localappdata_placeholder(capsys):
     assert "%LOCALAPPDATA%/ClipVault/config.toml" in output
 
 
+def test_v2_configuration_command_is_local_management_only(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(
+        clipvault_main,
+        "configure_v2_ime_host",
+        lambda host, *, enable_otp_relay: calls.append(
+            (host, enable_otp_relay)
+        ),
+    )
+    monkeypatch.setattr(
+        clipvault_main.launcher,
+        "ensure_config",
+        lambda _path: pytest.fail("management mode must not start service mode"),
+    )
+
+    assert clipvault_main.main(
+        [
+            "--configure-v2-ime-host",
+            "C:/Program Files/ClipVault/ClipVaultImeHost.exe",
+            "--enable-otp-relay",
+        ]
+    ) == 0
+    assert calls == [
+        ("C:/Program Files/ClipVault/ClipVaultImeHost.exe", True)
+    ]
+    assert capsys.readouterr().out == "v2 IME configuration updated\n"
+
+
+@pytest.mark.parametrize(
+    "conflicting",
+    [
+        ["--headless"],
+        ["--once"],
+        ["--config", "private.toml"],
+        ["--self-test-tray"],
+        ["--third-party-notices"],
+    ],
+)
+def test_v2_configuration_cannot_mix_with_run_modes(conflicting):
+    with pytest.raises(SystemExit) as exc:
+        clipvault_main.main(
+            [
+                "--configure-v2-ime-host",
+                "C:/Program Files/ClipVault/ClipVaultImeHost.exe",
+                *conflicting,
+            ]
+        )
+
+    assert exc.value.code == 2
+
+
+def test_otp_opt_in_requires_v2_configuration_command():
+    with pytest.raises(SystemExit) as exc:
+        clipvault_main.main(["--enable-otp-relay"])
+
+    assert exc.value.code == 2
+
+
+def test_v2_configuration_failure_does_not_print_private_path(
+    monkeypatch,
+    capsys,
+):
+    private = r"C:\Users\owner\Private\ClipVaultImeHost.exe"
+
+    def fail(_host, *, enable_otp_relay):
+        raise OSError(private)
+
+    monkeypatch.setattr(clipvault_main, "configure_v2_ime_host", fail)
+
+    assert clipvault_main.main(
+        ["--configure-v2-ime-host", private]
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "v2 IME configuration failed err=OSError\n"
+    assert private not in captured.err
+
+
 def test_tray_self_test_exits_without_loading_config(monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(

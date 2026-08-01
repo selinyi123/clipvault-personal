@@ -4,6 +4,10 @@
 > 本文件中每个合同有编号（NORM-1, CLS-1, SG-1, OBS-1, GHB-1, SYNC-1, API-1, SUG-1, CFG-1, DB-1）。
 > Builder 实现必须逐条对应；修改合同必须先在 HANDOFF.md 提出 disagreement，由 Architect 裁决。
 > 两端（Python/Kotlin）共享的逻辑以 `contracts/vectors/*.json` 测试向量为唯一仲裁（§8）。
+> v2 输入主线采用加法式合同，不重写本文 v1 语义：键盘兼容面见
+> [CONTRACTS_KEYBOARD](CONTRACTS_KEYBOARD.md)，新会话协议见
+> [CONTRACTS_INPUT_ENGINE_V2](CONTRACTS_INPUT_ENGINE_V2.md)，临时验证码见
+> [CONTRACTS_OTP_RELAY](CONTRACTS_OTP_RELAY.md)。OTP 不是 Clip/Memory/sync wire 类型。
 
 ---
 
@@ -557,7 +561,9 @@ score = 3.0 * pinned
 - **SUG-1.3（确定性末位仲裁，2026-06-28）**：排序键追加唯一 ULID `id` 作最后一项（DESC）。
   当 (pinned, score, last_used_at) 全相等时（秒级时间戳下常见，或从未使用的项），原先会落到
   SQL 任意行序 → 建议非确定。以 id 收尾保证两端/多次运行结果一致（SUG-1"确定性、可解释"）。
-- 实现：SQL 预筛（LIKE prefix / FTS prefix）→ 取 ≤200 候选 → 内存重排。**IME 端只查本地 Room，不发网络。**
+- 实现：SQL 预筛（LIKE prefix / FTS prefix）→ 取 ≤200 候选 → 内存重排。v2.0 单包兼容面经
+  `ClipVaultFacade` 查本地 Room；ADR-0013 双包目标由 Companion Runtime 执行查询并异步发布有界
+  过滤快照，IME 不打开数据库且逐键路径不发网络/不等待 Binder。
 
 ## 12. 桌面配置（CFG-1，config.toml）
 

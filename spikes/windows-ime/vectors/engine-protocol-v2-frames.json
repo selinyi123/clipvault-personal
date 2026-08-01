@@ -1,0 +1,813 @@
+{
+  "format_version": 2,
+  "protocol_version": 2,
+  "protocol_sha256": "982be920e2a3a9346a6f1ba1fb8c3f441b5c7446d18e7b91756e52577815286f",
+  "privacy": {
+    "source": "project-authored synthetic fixtures",
+    "contains_personal_data": false,
+    "typed_text_persistence_allowed": false,
+    "network_allowed": false
+  },
+  "required_scenarios": [
+    "candidate-page-select",
+    "explicit-commit-and-option",
+    "cancel-composition",
+    "error-contracts",
+    "host-restart-invalidation",
+    "privacy-contexts"
+  ],
+  "scenarios": [
+    {
+      "id": "candidate-page-select",
+      "expected_editor_commits": ["拟😀", "z"],
+      "connection_boundaries": [
+        {"before_frame": "page-client-hello", "connection_id": "pipe-page-1"}
+      ],
+      "frames": [
+        {
+          "id": "page-client-hello",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "ClientHello",
+          "payload": {
+            "client_instance_id": "client-page",
+            "supported_protocol_versions": [2],
+            "platform": "INPUT_PLATFORM_WINDOWS",
+            "architecture": "x64",
+            "build_id": "synthetic-client-v2"
+          }
+        },
+        {
+          "id": "page-host-hello",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "HostHello",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "selected_protocol_version": 2,
+            "engine_build_id": "synthetic-engine-v2",
+            "capabilities": ["engine-v2", "stable-candidate-id"]
+          }
+        },
+        {
+          "id": "page-start",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "StartSessionRequest",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "request_seq": 1,
+            "context": {
+              "platform": "INPUT_PLATFORM_WINDOWS",
+              "field_kind": "INPUT_FIELD_KIND_TEXT",
+              "action": "INPUT_ACTION_ENTER",
+              "incognito": false,
+              "learning_allowed": true,
+              "clipvault_allowed": true,
+              "app_scope": "scope-2f71a0c9"
+            }
+          }
+        },
+        {
+          "id": "page-start-state",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "EngineState",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "ack_request_seq": 1,
+            "revision": 0,
+            "handled": true,
+            "preedit": "",
+            "caret_utf16": 0,
+            "segments": [],
+            "candidates": [],
+            "page": {"page_index": 0, "page_size": 2, "has_previous_page": false, "has_next_page": false},
+            "composition_active": false,
+            "mode": "ENGINE_MODE_DIRECT"
+          }
+        },
+        {
+          "id": "page-start-duplicate",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "StartSessionRequest",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "request_seq": 1,
+            "context": {
+              "platform": "INPUT_PLATFORM_WINDOWS",
+              "field_kind": "INPUT_FIELD_KIND_TEXT",
+              "action": "INPUT_ACTION_ENTER",
+              "incognito": false,
+              "learning_allowed": true,
+              "clipvault_allowed": true,
+              "app_scope": "scope-2f71a0c9"
+            }
+          }
+        },
+        {
+          "id": "page-start-duplicate-state",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "EngineState",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "ack_request_seq": 1,
+            "revision": 0,
+            "handled": true,
+            "preedit": "",
+            "caret_utf16": 0,
+            "segments": [],
+            "candidates": [],
+            "page": {"page_index": 0, "page_size": 2, "has_previous_page": false, "has_next_page": false},
+            "composition_active": false,
+            "mode": "ENGINE_MODE_DIRECT"
+          }
+        },
+        {
+          "id": "page-start-conflicting-reuse",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "StartSessionRequest",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "request_seq": 1,
+            "context": {
+              "platform": "INPUT_PLATFORM_WINDOWS",
+              "field_kind": "INPUT_FIELD_KIND_EMAIL",
+              "action": "INPUT_ACTION_ENTER",
+              "incognito": false,
+              "learning_allowed": true,
+              "clipvault_allowed": true,
+              "app_scope": "scope-2f71a0c9"
+            }
+          }
+        },
+        {
+          "id": "page-start-conflicting-error",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "ErrorResponse",
+          "payload": {
+            "code": "ERROR_CODE_OUT_OF_ORDER_REQUEST",
+            "current_host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "ack_request_seq": 1,
+            "current_revision": 0,
+            "invalidates_session": false
+          }
+        },
+        {
+          "id": "page-process",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "ProcessKeyRequest",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "request_seq": 2,
+            "expected_revision": 0,
+            "event": {"virtual_key": 78, "text": "n", "key_down": true, "repeat": false, "shift": false, "control": false, "alt": false}
+          }
+        },
+        {
+          "id": "page-process-state",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "EngineState",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "ack_request_seq": 2,
+            "revision": 1,
+            "handled": true,
+            "preedit": "ni😀",
+            "caret_utf16": 4,
+            "segments": [
+              {"start_utf16": 0, "end_utf16": 2, "kind": "COMPOSITION_SEGMENT_KIND_RAW"},
+              {"start_utf16": 2, "end_utf16": 4, "kind": "COMPOSITION_SEGMENT_KIND_CONVERTED"}
+            ],
+            "candidates": [
+              {"candidate_id": "c_7f2a9c4e10bd6381", "text": "拟😀", "comment": "synthetic-a", "source": "CANDIDATE_SOURCE_ENGINE", "engine_score": 1.0},
+              {"candidate_id": "c_8051bdee6a29f30c", "text": "例😀", "comment": "synthetic-b", "source": "CANDIDATE_SOURCE_ENGINE", "engine_score": 0.9}
+            ],
+            "page": {"page_index": 0, "page_size": 2, "has_previous_page": false, "has_next_page": true},
+            "composition_active": true,
+            "mode": "ENGINE_MODE_SELECTING"
+          }
+        },
+        {
+          "id": "page-next",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "PageCandidatesRequest",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "request_seq": 3,
+            "expected_revision": 1,
+            "direction": "PAGE_DIRECTION_NEXT"
+          }
+        },
+        {
+          "id": "page-next-state",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "EngineState",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "ack_request_seq": 3,
+            "revision": 2,
+            "handled": true,
+            "preedit": "ni😀",
+            "caret_utf16": 4,
+            "segments": [
+              {"start_utf16": 0, "end_utf16": 2, "kind": "COMPOSITION_SEGMENT_KIND_RAW"},
+              {"start_utf16": 2, "end_utf16": 4, "kind": "COMPOSITION_SEGMENT_KIND_CONVERTED"}
+            ],
+            "candidates": [
+              {"candidate_id": "c_390f2abb877ec601", "text": "样例😀", "comment": "synthetic-c", "source": "CANDIDATE_SOURCE_ENGINE", "engine_score": 0.8},
+              {"candidate_id": "c_e2c119a60b4d7f35", "text": "演示😀", "comment": "synthetic-d", "source": "CANDIDATE_SOURCE_ENGINE", "engine_score": 0.7}
+            ],
+            "page": {"page_index": 1, "page_size": 2, "has_previous_page": true, "has_next_page": false},
+            "composition_active": true,
+            "mode": "ENGINE_MODE_SELECTING"
+          }
+        },
+        {
+          "id": "page-previous",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "PageCandidatesRequest",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "request_seq": 4,
+            "expected_revision": 2,
+            "direction": "PAGE_DIRECTION_PREVIOUS"
+          }
+        },
+        {
+          "id": "page-previous-state",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "EngineState",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "ack_request_seq": 4,
+            "revision": 3,
+            "handled": true,
+            "preedit": "ni😀",
+            "caret_utf16": 4,
+            "segments": [
+              {"start_utf16": 0, "end_utf16": 2, "kind": "COMPOSITION_SEGMENT_KIND_RAW"},
+              {"start_utf16": 2, "end_utf16": 4, "kind": "COMPOSITION_SEGMENT_KIND_CONVERTED"}
+            ],
+            "candidates": [
+              {"candidate_id": "c_7f2a9c4e10bd6381", "text": "拟😀", "comment": "synthetic-a", "source": "CANDIDATE_SOURCE_ENGINE", "engine_score": 1.0},
+              {"candidate_id": "c_8051bdee6a29f30c", "text": "例😀", "comment": "synthetic-b", "source": "CANDIDATE_SOURCE_ENGINE", "engine_score": 0.9}
+            ],
+            "page": {"page_index": 0, "page_size": 2, "has_previous_page": false, "has_next_page": true},
+            "composition_active": true,
+            "mode": "ENGINE_MODE_SELECTING"
+          }
+        },
+        {
+          "id": "page-select",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "SelectCandidateRequest",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "request_seq": 5,
+            "expected_revision": 3,
+            "candidate_id": "c_7f2a9c4e10bd6381"
+          }
+        },
+        {
+          "id": "page-select-state",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "EngineState",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "ack_request_seq": 5,
+            "revision": 4,
+            "handled": true,
+            "preedit": "",
+            "caret_utf16": 0,
+            "segments": [],
+            "candidates": [],
+            "page": {"page_index": 0, "page_size": 2, "has_previous_page": false, "has_next_page": false},
+            "commit_text": "拟😀",
+            "composition_active": false,
+            "mode": "ENGINE_MODE_DIRECT"
+          }
+        },
+        {
+          "id": "page-select-duplicate",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "SelectCandidateRequest",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "request_seq": 5,
+            "expected_revision": 3,
+            "candidate_id": "c_7f2a9c4e10bd6381"
+          }
+        },
+        {
+          "id": "page-select-duplicate-state",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "EngineState",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "ack_request_seq": 5,
+            "revision": 4,
+            "handled": true,
+            "preedit": "",
+            "caret_utf16": 0,
+            "segments": [],
+            "candidates": [],
+            "page": {"page_index": 0, "page_size": 2, "has_previous_page": false, "has_next_page": false},
+            "commit_text": "拟😀",
+            "composition_active": false,
+            "mode": "ENGINE_MODE_DIRECT"
+          }
+        },
+        {
+          "id": "page-select-stale-candidate",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "SelectCandidateRequest",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "request_seq": 6,
+            "expected_revision": 4,
+            "candidate_id": "c_7f2a9c4e10bd6381"
+          }
+        },
+        {
+          "id": "page-select-stale-candidate-error",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "ErrorResponse",
+          "payload": {
+            "code": "ERROR_CODE_INVALID_CANDIDATE",
+            "current_host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "ack_request_seq": 6,
+            "current_revision": 4,
+            "invalidates_session": false
+          }
+        },
+        {
+          "id": "page-second-process",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "ProcessKeyRequest",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "request_seq": 7,
+            "expected_revision": 4,
+            "event": {"virtual_key": 90, "text": "z", "key_down": true, "repeat": false, "shift": false, "control": false, "alt": false}
+          }
+        },
+        {
+          "id": "page-second-process-state",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "EngineState",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "ack_request_seq": 7,
+            "revision": 5,
+            "handled": true,
+            "preedit": "z",
+            "caret_utf16": 1,
+            "segments": [{"start_utf16": 0, "end_utf16": 1, "kind": "COMPOSITION_SEGMENT_KIND_RAW"}],
+            "candidates": [{"candidate_id": "c_b1d03f8a7c429e65", "text": "z", "comment": "synthetic-second", "source": "CANDIDATE_SOURCE_ENGINE", "engine_score": 1.0}],
+            "page": {"page_index": 0, "page_size": 2, "has_previous_page": false, "has_next_page": false},
+            "composition_active": true,
+            "mode": "ENGINE_MODE_SELECTING"
+          }
+        },
+        {
+          "id": "page-second-commit",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "CommitCompositionRequest",
+          "payload": {"host_instance_id": "epoch-page-a", "session_id": "session-page", "request_seq": 8, "expected_revision": 5}
+        },
+        {
+          "id": "page-second-commit-state",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "EngineState",
+          "payload": {
+            "host_instance_id": "epoch-page-a",
+            "session_id": "session-page",
+            "ack_request_seq": 8,
+            "revision": 6,
+            "handled": true,
+            "preedit": "",
+            "caret_utf16": 0,
+            "segments": [],
+            "candidates": [],
+            "page": {"page_index": 0, "page_size": 2, "has_previous_page": false, "has_next_page": false},
+            "commit_text": "z",
+            "composition_active": false,
+            "mode": "ENGINE_MODE_DIRECT"
+          }
+        },
+        {
+          "id": "page-end",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "EndSessionRequest",
+          "payload": {"host_instance_id": "epoch-page-a", "session_id": "session-page", "request_seq": 9}
+        },
+        {
+          "id": "page-ended",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "SessionEnded",
+          "payload": {"host_instance_id": "epoch-page-a", "session_id": "session-page", "ack_request_seq": 9}
+        }
+      ]
+    },
+    {
+      "id": "explicit-commit-and-option",
+      "expected_editor_commits": ["abc😀"],
+      "connection_boundaries": [
+        {"before_frame": "commit-client-hello", "connection_id": "pipe-commit-1"}
+      ],
+      "frames": [
+        {
+          "id": "commit-client-hello",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "ClientHello",
+          "payload": {"client_instance_id": "client-commit", "supported_protocol_versions": [2], "platform": "INPUT_PLATFORM_WINDOWS", "architecture": "x64", "build_id": "synthetic-client-v2"}
+        },
+        {
+          "id": "commit-host-hello",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "HostHello",
+          "payload": {"host_instance_id": "epoch-commit-a", "selected_protocol_version": 2, "engine_build_id": "synthetic-engine-v2", "capabilities": ["engine-v2", "set-option"]}
+        },
+        {
+          "id": "commit-start",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "StartSessionRequest",
+          "payload": {
+            "host_instance_id": "epoch-commit-a",
+            "session_id": "session-commit",
+            "request_seq": 1,
+            "context": {"platform": "INPUT_PLATFORM_WINDOWS", "field_kind": "INPUT_FIELD_KIND_TEXT", "action": "INPUT_ACTION_DONE", "incognito": false, "learning_allowed": true, "clipvault_allowed": true}
+          }
+        },
+        {
+          "id": "commit-start-state",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "EngineState",
+          "payload": {"host_instance_id": "epoch-commit-a", "session_id": "session-commit", "ack_request_seq": 1, "revision": 0, "handled": true, "preedit": "", "caret_utf16": 0, "segments": [], "candidates": [], "page": {"page_index": 0, "page_size": 5, "has_previous_page": false, "has_next_page": false}, "composition_active": false, "mode": "ENGINE_MODE_DIRECT"}
+        },
+        {
+          "id": "commit-set-option",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "SetOptionRequest",
+          "payload": {"host_instance_id": "epoch-commit-a", "session_id": "session-commit", "request_seq": 2, "expected_revision": 0, "option": "full_shape", "enabled": true}
+        },
+        {
+          "id": "commit-set-option-state",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "EngineState",
+          "payload": {"host_instance_id": "epoch-commit-a", "session_id": "session-commit", "ack_request_seq": 2, "revision": 1, "handled": true, "preedit": "", "caret_utf16": 0, "segments": [], "candidates": [], "page": {"page_index": 0, "page_size": 5, "has_previous_page": false, "has_next_page": false}, "composition_active": false, "mode": "ENGINE_MODE_DIRECT"}
+        },
+        {
+          "id": "commit-process",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "ProcessKeyRequest",
+          "payload": {"host_instance_id": "epoch-commit-a", "session_id": "session-commit", "request_seq": 3, "expected_revision": 1, "event": {"virtual_key": 65, "text": "a", "key_down": true, "repeat": false, "shift": false, "control": false, "alt": false}}
+        },
+        {
+          "id": "commit-process-state",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "EngineState",
+          "payload": {
+            "host_instance_id": "epoch-commit-a", "session_id": "session-commit", "ack_request_seq": 3, "revision": 2, "handled": true,
+            "preedit": "abc😀", "caret_utf16": 5,
+            "segments": [{"start_utf16": 0, "end_utf16": 5, "kind": "COMPOSITION_SEGMENT_KIND_RAW"}],
+            "candidates": [{"candidate_id": "c_187d61af35b940ce", "text": "abc😀", "comment": "synthetic", "source": "CANDIDATE_SOURCE_ENGINE", "engine_score": 1.0}],
+            "page": {"page_index": 0, "page_size": 5, "has_previous_page": false, "has_next_page": false}, "composition_active": true, "mode": "ENGINE_MODE_SELECTING"
+          }
+        },
+        {
+          "id": "commit-request",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "CommitCompositionRequest",
+          "payload": {"host_instance_id": "epoch-commit-a", "session_id": "session-commit", "request_seq": 4, "expected_revision": 2}
+        },
+        {
+          "id": "commit-state",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "EngineState",
+          "payload": {"host_instance_id": "epoch-commit-a", "session_id": "session-commit", "ack_request_seq": 4, "revision": 3, "handled": true, "preedit": "", "caret_utf16": 0, "segments": [], "candidates": [], "page": {"page_index": 0, "page_size": 5, "has_previous_page": false, "has_next_page": false}, "commit_text": "abc😀", "composition_active": false, "mode": "ENGINE_MODE_DIRECT"}
+        },
+        {
+          "id": "commit-end",
+          "protocol_version": 2,
+          "direction": "client_to_host",
+          "type": "EndSessionRequest",
+          "payload": {"host_instance_id": "epoch-commit-a", "session_id": "session-commit", "request_seq": 5}
+        },
+        {
+          "id": "commit-ended",
+          "protocol_version": 2,
+          "direction": "host_to_client",
+          "type": "SessionEnded",
+          "payload": {"host_instance_id": "epoch-commit-a", "session_id": "session-commit", "ack_request_seq": 5}
+        }
+      ]
+    },
+    {
+      "id": "cancel-composition",
+      "expected_editor_commits": [],
+      "connection_boundaries": [
+        {"before_frame": "cancel-client-hello", "connection_id": "pipe-cancel-1"}
+      ],
+      "frames": [
+        {
+          "id": "cancel-client-hello", "protocol_version": 2, "direction": "client_to_host", "type": "ClientHello",
+          "payload": {"client_instance_id": "client-cancel", "supported_protocol_versions": [2], "platform": "INPUT_PLATFORM_WINDOWS", "architecture": "x64", "build_id": "synthetic-client-v2"}
+        },
+        {
+          "id": "cancel-host-hello", "protocol_version": 2, "direction": "host_to_client", "type": "HostHello",
+          "payload": {"host_instance_id": "epoch-cancel-a", "selected_protocol_version": 2, "engine_build_id": "synthetic-engine-v2", "capabilities": ["engine-v2"]}
+        },
+        {
+          "id": "cancel-start", "protocol_version": 2, "direction": "client_to_host", "type": "StartSessionRequest",
+          "payload": {"host_instance_id": "epoch-cancel-a", "session_id": "session-cancel", "request_seq": 1, "context": {"platform": "INPUT_PLATFORM_WINDOWS", "field_kind": "INPUT_FIELD_KIND_MULTILINE", "action": "INPUT_ACTION_ENTER", "incognito": false, "learning_allowed": true, "clipvault_allowed": true}}
+        },
+        {
+          "id": "cancel-start-state", "protocol_version": 2, "direction": "host_to_client", "type": "EngineState",
+          "payload": {"host_instance_id": "epoch-cancel-a", "session_id": "session-cancel", "ack_request_seq": 1, "revision": 0, "handled": true, "preedit": "", "caret_utf16": 0, "segments": [], "candidates": [], "page": {"page_index": 0, "page_size": 5, "has_previous_page": false, "has_next_page": false}, "composition_active": false, "mode": "ENGINE_MODE_DIRECT"}
+        },
+        {
+          "id": "cancel-process", "protocol_version": 2, "direction": "client_to_host", "type": "ProcessKeyRequest",
+          "payload": {"host_instance_id": "epoch-cancel-a", "session_id": "session-cancel", "request_seq": 2, "expected_revision": 0, "event": {"virtual_key": 88, "text": "x", "key_down": true, "repeat": false, "shift": false, "control": false, "alt": false}}
+        },
+        {
+          "id": "cancel-process-state", "protocol_version": 2, "direction": "host_to_client", "type": "EngineState",
+          "payload": {"host_instance_id": "epoch-cancel-a", "session_id": "session-cancel", "ack_request_seq": 2, "revision": 1, "handled": true, "preedit": "cancel", "caret_utf16": 6, "segments": [{"start_utf16": 0, "end_utf16": 6, "kind": "COMPOSITION_SEGMENT_KIND_RAW"}], "candidates": [], "page": {"page_index": 0, "page_size": 5, "has_previous_page": false, "has_next_page": false}, "composition_active": true, "mode": "ENGINE_MODE_COMPOSING"}
+        },
+        {
+          "id": "cancel-request", "protocol_version": 2, "direction": "client_to_host", "type": "CancelCompositionRequest",
+          "payload": {"host_instance_id": "epoch-cancel-a", "session_id": "session-cancel", "request_seq": 3, "expected_revision": 1}
+        },
+        {
+          "id": "cancel-state", "protocol_version": 2, "direction": "host_to_client", "type": "EngineState",
+          "payload": {"host_instance_id": "epoch-cancel-a", "session_id": "session-cancel", "ack_request_seq": 3, "revision": 2, "handled": true, "preedit": "", "caret_utf16": 0, "segments": [], "candidates": [], "page": {"page_index": 0, "page_size": 5, "has_previous_page": false, "has_next_page": false}, "composition_active": false, "mode": "ENGINE_MODE_DIRECT"}
+        },
+        {
+          "id": "cancel-end", "protocol_version": 2, "direction": "client_to_host", "type": "EndSessionRequest",
+          "payload": {"host_instance_id": "epoch-cancel-a", "session_id": "session-cancel", "request_seq": 4}
+        },
+        {
+          "id": "cancel-ended", "protocol_version": 2, "direction": "host_to_client", "type": "SessionEnded",
+          "payload": {"host_instance_id": "epoch-cancel-a", "session_id": "session-cancel", "ack_request_seq": 4}
+        },
+        {
+          "id": "cancel-end-duplicate", "protocol_version": 2, "direction": "client_to_host", "type": "EndSessionRequest",
+          "payload": {"host_instance_id": "epoch-cancel-a", "session_id": "session-cancel", "request_seq": 4}
+        },
+        {
+          "id": "cancel-ended-duplicate", "protocol_version": 2, "direction": "host_to_client", "type": "SessionEnded",
+          "payload": {"host_instance_id": "epoch-cancel-a", "session_id": "session-cancel", "ack_request_seq": 4}
+        }
+      ]
+    },
+    {
+      "id": "error-contracts",
+      "expected_editor_commits": [],
+      "connection_boundaries": [
+        {"before_frame": "errors-client-hello", "connection_id": "pipe-errors-1"}
+      ],
+      "frames": [
+        {
+          "id": "errors-client-hello", "protocol_version": 2, "direction": "client_to_host", "type": "ClientHello",
+          "payload": {"client_instance_id": "client-errors", "supported_protocol_versions": [2], "platform": "INPUT_PLATFORM_WINDOWS", "architecture": "x64", "build_id": "synthetic-client-v2"}
+        },
+        {
+          "id": "errors-host-hello", "protocol_version": 2, "direction": "host_to_client", "type": "HostHello",
+          "payload": {"host_instance_id": "epoch-errors-a", "selected_protocol_version": 2, "engine_build_id": "synthetic-engine-v2", "capabilities": ["engine-v2", "ordered-requests"]}
+        },
+        {
+          "id": "errors-start", "protocol_version": 2, "direction": "client_to_host", "type": "StartSessionRequest",
+          "payload": {"host_instance_id": "epoch-errors-a", "session_id": "session-errors", "request_seq": 1, "context": {"platform": "INPUT_PLATFORM_WINDOWS", "field_kind": "INPUT_FIELD_KIND_TEXT", "action": "INPUT_ACTION_NONE", "incognito": false, "learning_allowed": true, "clipvault_allowed": true}}
+        },
+        {
+          "id": "errors-start-state", "protocol_version": 2, "direction": "host_to_client", "type": "EngineState",
+          "payload": {"host_instance_id": "epoch-errors-a", "session_id": "session-errors", "ack_request_seq": 1, "revision": 0, "handled": true, "preedit": "", "caret_utf16": 0, "segments": [], "candidates": [], "page": {"page_index": 0, "page_size": 5, "has_previous_page": false, "has_next_page": false}, "composition_active": false, "mode": "ENGINE_MODE_DIRECT"}
+        },
+        {
+          "id": "errors-process", "protocol_version": 2, "direction": "client_to_host", "type": "ProcessKeyRequest",
+          "payload": {"host_instance_id": "epoch-errors-a", "session_id": "session-errors", "request_seq": 2, "expected_revision": 0, "event": {"virtual_key": 69, "text": "e", "key_down": true, "repeat": false, "shift": false, "control": false, "alt": false}}
+        },
+        {
+          "id": "errors-process-state", "protocol_version": 2, "direction": "host_to_client", "type": "EngineState",
+          "payload": {"host_instance_id": "epoch-errors-a", "session_id": "session-errors", "ack_request_seq": 2, "revision": 1, "handled": true, "preedit": "err", "caret_utf16": 3, "segments": [{"start_utf16": 0, "end_utf16": 3, "kind": "COMPOSITION_SEGMENT_KIND_RAW"}], "candidates": [{"candidate_id": "c_f31b8d409e6257ac", "text": "error-test", "comment": "synthetic", "source": "CANDIDATE_SOURCE_ENGINE", "engine_score": 1.0}], "page": {"page_index": 0, "page_size": 5, "has_previous_page": false, "has_next_page": false}, "composition_active": true, "mode": "ENGINE_MODE_SELECTING"}
+        },
+        {
+          "id": "errors-stale-revision", "protocol_version": 2, "direction": "client_to_host", "type": "SelectCandidateRequest",
+          "payload": {"host_instance_id": "epoch-errors-a", "session_id": "session-errors", "request_seq": 3, "expected_revision": 0, "candidate_id": "c_f31b8d409e6257ac"}
+        },
+        {
+          "id": "errors-stale-revision-response", "protocol_version": 2, "direction": "host_to_client", "type": "ErrorResponse",
+          "payload": {"code": "ERROR_CODE_STALE_REVISION", "current_host_instance_id": "epoch-errors-a", "session_id": "session-errors", "ack_request_seq": 3, "current_revision": 1, "invalidates_session": false}
+        },
+        {
+          "id": "errors-invalid-candidate", "protocol_version": 2, "direction": "client_to_host", "type": "SelectCandidateRequest",
+          "payload": {"host_instance_id": "epoch-errors-a", "session_id": "session-errors", "request_seq": 4, "expected_revision": 1, "candidate_id": "c_d4e6a20b931f8c75"}
+        },
+        {
+          "id": "errors-invalid-candidate-response", "protocol_version": 2, "direction": "host_to_client", "type": "ErrorResponse",
+          "payload": {"code": "ERROR_CODE_INVALID_CANDIDATE", "current_host_instance_id": "epoch-errors-a", "session_id": "session-errors", "ack_request_seq": 4, "current_revision": 1, "invalidates_session": false}
+        },
+        {
+          "id": "errors-conflicting-duplicate", "protocol_version": 2, "direction": "client_to_host", "type": "ProcessKeyRequest",
+          "payload": {"host_instance_id": "epoch-errors-a", "session_id": "session-errors", "request_seq": 4, "expected_revision": 1, "event": {"virtual_key": 88, "text": "x", "key_down": true, "repeat": false, "shift": false, "control": false, "alt": false}}
+        },
+        {
+          "id": "errors-conflicting-duplicate-response", "protocol_version": 2, "direction": "host_to_client", "type": "ErrorResponse",
+          "payload": {"code": "ERROR_CODE_OUT_OF_ORDER_REQUEST", "current_host_instance_id": "epoch-errors-a", "session_id": "session-errors", "ack_request_seq": 4, "current_revision": 1, "invalidates_session": false}
+        },
+        {
+          "id": "errors-lower-sequence", "protocol_version": 2, "direction": "client_to_host", "type": "CancelCompositionRequest",
+          "payload": {"host_instance_id": "epoch-errors-a", "session_id": "session-errors", "request_seq": 2, "expected_revision": 1}
+        },
+        {
+          "id": "errors-lower-sequence-response", "protocol_version": 2, "direction": "host_to_client", "type": "ErrorResponse",
+          "payload": {"code": "ERROR_CODE_OUT_OF_ORDER_REQUEST", "current_host_instance_id": "epoch-errors-a", "session_id": "session-errors", "ack_request_seq": 2, "current_revision": 1, "invalidates_session": false}
+        },
+        {
+          "id": "errors-cancel", "protocol_version": 2, "direction": "client_to_host", "type": "CancelCompositionRequest",
+          "payload": {"host_instance_id": "epoch-errors-a", "session_id": "session-errors", "request_seq": 5, "expected_revision": 1}
+        },
+        {
+          "id": "errors-cancel-state", "protocol_version": 2, "direction": "host_to_client", "type": "EngineState",
+          "payload": {"host_instance_id": "epoch-errors-a", "session_id": "session-errors", "ack_request_seq": 5, "revision": 2, "handled": true, "preedit": "", "caret_utf16": 0, "segments": [], "candidates": [], "page": {"page_index": 0, "page_size": 5, "has_previous_page": false, "has_next_page": false}, "composition_active": false, "mode": "ENGINE_MODE_DIRECT"}
+        },
+        {
+          "id": "errors-end", "protocol_version": 2, "direction": "client_to_host", "type": "EndSessionRequest",
+          "payload": {"host_instance_id": "epoch-errors-a", "session_id": "session-errors", "request_seq": 6}
+        },
+        {
+          "id": "errors-ended", "protocol_version": 2, "direction": "host_to_client", "type": "SessionEnded",
+          "payload": {"host_instance_id": "epoch-errors-a", "session_id": "session-errors", "ack_request_seq": 6}
+        }
+      ]
+    },
+    {
+      "id": "host-restart-invalidation",
+      "expected_editor_commits": [],
+      "connection_boundaries": [
+        {"before_frame": "restart-client-hello", "connection_id": "pipe-restart-old"},
+        {"before_frame": "restart-client-new-hello", "connection_id": "pipe-restart-new"}
+      ],
+      "frames": [
+        {
+          "id": "restart-client-hello", "protocol_version": 2, "direction": "client_to_host", "type": "ClientHello",
+          "payload": {"client_instance_id": "client-restart", "supported_protocol_versions": [2], "platform": "INPUT_PLATFORM_WINDOWS", "architecture": "x64", "build_id": "synthetic-client-v2"}
+        },
+        {
+          "id": "restart-host-old-hello", "protocol_version": 2, "direction": "host_to_client", "type": "HostHello",
+          "payload": {"host_instance_id": "epoch-restart-old", "selected_protocol_version": 2, "engine_build_id": "synthetic-engine-v2", "capabilities": ["engine-v2"]}
+        },
+        {
+          "id": "restart-old-start", "protocol_version": 2, "direction": "client_to_host", "type": "StartSessionRequest",
+          "payload": {"host_instance_id": "epoch-restart-old", "session_id": "session-before-restart", "request_seq": 1, "context": {"platform": "INPUT_PLATFORM_WINDOWS", "field_kind": "INPUT_FIELD_KIND_TEXT", "action": "INPUT_ACTION_NONE", "incognito": false, "learning_allowed": true, "clipvault_allowed": true}}
+        },
+        {
+          "id": "restart-old-start-state", "protocol_version": 2, "direction": "host_to_client", "type": "EngineState",
+          "payload": {"host_instance_id": "epoch-restart-old", "session_id": "session-before-restart", "ack_request_seq": 1, "revision": 0, "handled": true, "preedit": "", "caret_utf16": 0, "segments": [], "candidates": [], "page": {"page_index": 0, "page_size": 5, "has_previous_page": false, "has_next_page": false}, "composition_active": false, "mode": "ENGINE_MODE_DIRECT"}
+        },
+        {
+          "id": "restart-old-process", "protocol_version": 2, "direction": "client_to_host", "type": "ProcessKeyRequest",
+          "payload": {"host_instance_id": "epoch-restart-old", "session_id": "session-before-restart", "request_seq": 2, "expected_revision": 0, "event": {"virtual_key": 82, "text": "r", "key_down": true, "repeat": false, "shift": false, "control": false, "alt": false}}
+        },
+        {
+          "id": "restart-old-process-state", "protocol_version": 2, "direction": "host_to_client", "type": "EngineState",
+          "payload": {"host_instance_id": "epoch-restart-old", "session_id": "session-before-restart", "ack_request_seq": 2, "revision": 1, "handled": true, "preedit": "restart", "caret_utf16": 7, "segments": [{"start_utf16": 0, "end_utf16": 7, "kind": "COMPOSITION_SEGMENT_KIND_RAW"}], "candidates": [{"candidate_id": "c_a65d4e920b1f783c", "text": "restart-test", "comment": "synthetic", "source": "CANDIDATE_SOURCE_ENGINE", "engine_score": 1.0}], "page": {"page_index": 0, "page_size": 5, "has_previous_page": false, "has_next_page": false}, "composition_active": true, "mode": "ENGINE_MODE_SELECTING"}
+        },
+        {
+          "id": "restart-client-new-hello", "protocol_version": 2, "direction": "client_to_host", "type": "ClientHello",
+          "payload": {"client_instance_id": "client-restart-new-connection", "supported_protocol_versions": [2], "platform": "INPUT_PLATFORM_WINDOWS", "architecture": "x64", "build_id": "synthetic-client-v2"}
+        },
+        {
+          "id": "restart-host-new-hello", "protocol_version": 2, "direction": "host_to_client", "type": "HostHello",
+          "payload": {"host_instance_id": "epoch-restart-new", "selected_protocol_version": 2, "engine_build_id": "synthetic-engine-v2-restarted", "capabilities": ["engine-v2"]}
+        },
+        {
+          "id": "restart-stale-request", "protocol_version": 2, "direction": "client_to_host", "type": "SelectCandidateRequest",
+          "payload": {"host_instance_id": "epoch-restart-old", "session_id": "session-before-restart", "request_seq": 3, "expected_revision": 1, "candidate_id": "c_a65d4e920b1f783c"}
+        },
+        {
+          "id": "restart-stale-error", "protocol_version": 2, "direction": "host_to_client", "type": "ErrorResponse",
+          "payload": {"code": "ERROR_CODE_STALE_SESSION", "current_host_instance_id": "epoch-restart-new", "session_id": "session-before-restart", "ack_request_seq": 3, "current_revision": 0, "invalidates_session": true}
+        },
+        {
+          "id": "restart-new-start", "protocol_version": 2, "direction": "client_to_host", "type": "StartSessionRequest",
+          "payload": {"host_instance_id": "epoch-restart-new", "session_id": "session-after-restart", "request_seq": 1, "context": {"platform": "INPUT_PLATFORM_WINDOWS", "field_kind": "INPUT_FIELD_KIND_TEXT", "action": "INPUT_ACTION_NONE", "incognito": false, "learning_allowed": true, "clipvault_allowed": true}}
+        },
+        {
+          "id": "restart-new-start-state", "protocol_version": 2, "direction": "host_to_client", "type": "EngineState",
+          "payload": {"host_instance_id": "epoch-restart-new", "session_id": "session-after-restart", "ack_request_seq": 1, "revision": 0, "handled": true, "preedit": "", "caret_utf16": 0, "segments": [], "candidates": [], "page": {"page_index": 0, "page_size": 5, "has_previous_page": false, "has_next_page": false}, "composition_active": false, "mode": "ENGINE_MODE_DIRECT"}
+        },
+        {
+          "id": "restart-new-end", "protocol_version": 2, "direction": "client_to_host", "type": "EndSessionRequest",
+          "payload": {"host_instance_id": "epoch-restart-new", "session_id": "session-after-restart", "request_seq": 2}
+        },
+        {
+          "id": "restart-new-ended", "protocol_version": 2, "direction": "host_to_client", "type": "SessionEnded",
+          "payload": {"host_instance_id": "epoch-restart-new", "session_id": "session-after-restart", "ack_request_seq": 2}
+        }
+      ]
+    },
+    {
+      "id": "privacy-contexts",
+      "expected_editor_commits": [],
+      "connection_boundaries": [
+        {"before_frame": "privacy-client-hello", "connection_id": "pipe-privacy-1"}
+      ],
+      "frames": [
+        {
+          "id": "privacy-client-hello", "protocol_version": 2, "direction": "client_to_host", "type": "ClientHello",
+          "payload": {"client_instance_id": "client-privacy", "supported_protocol_versions": [2], "platform": "INPUT_PLATFORM_WINDOWS", "architecture": "x64", "build_id": "synthetic-client-v2"}
+        },
+        {
+          "id": "privacy-host-hello", "protocol_version": 2, "direction": "host_to_client", "type": "HostHello",
+          "payload": {"host_instance_id": "epoch-privacy-a", "selected_protocol_version": 2, "engine_build_id": "synthetic-engine-v2", "capabilities": ["engine-v2"]}
+        },
+        {
+          "id": "privacy-password-start", "protocol_version": 2, "direction": "client_to_host", "type": "StartSessionRequest",
+          "payload": {"host_instance_id": "epoch-privacy-a", "session_id": "session-password", "request_seq": 1, "context": {"platform": "INPUT_PLATFORM_WINDOWS", "field_kind": "INPUT_FIELD_KIND_PASSWORD", "action": "INPUT_ACTION_DONE", "incognito": false, "learning_allowed": false, "clipvault_allowed": false, "app_scope": "scope-8a6d19e4"}}
+        },
+        {
+          "id": "privacy-password-state", "protocol_version": 2, "direction": "host_to_client", "type": "EngineState",
+          "payload": {"host_instance_id": "epoch-privacy-a", "session_id": "session-password", "ack_request_seq": 1, "revision": 0, "handled": true, "preedit": "", "caret_utf16": 0, "segments": [], "candidates": [], "page": {"page_index": 0, "page_size": 5, "has_previous_page": false, "has_next_page": false}, "composition_active": false, "mode": "ENGINE_MODE_DIRECT"}
+        },
+        {
+          "id": "privacy-password-end", "protocol_version": 2, "direction": "client_to_host", "type": "EndSessionRequest",
+          "payload": {"host_instance_id": "epoch-privacy-a", "session_id": "session-password", "request_seq": 2}
+        },
+        {
+          "id": "privacy-password-ended", "protocol_version": 2, "direction": "host_to_client", "type": "SessionEnded",
+          "payload": {"host_instance_id": "epoch-privacy-a", "session_id": "session-password", "ack_request_seq": 2}
+        },
+        {
+          "id": "privacy-incognito-start", "protocol_version": 2, "direction": "client_to_host", "type": "StartSessionRequest",
+          "payload": {"host_instance_id": "epoch-privacy-a", "session_id": "session-incognito", "request_seq": 1, "context": {"platform": "INPUT_PLATFORM_WINDOWS", "field_kind": "INPUT_FIELD_KIND_TEXT", "action": "INPUT_ACTION_NONE", "incognito": true, "learning_allowed": false, "clipvault_allowed": false}}
+        },
+        {
+          "id": "privacy-incognito-state", "protocol_version": 2, "direction": "host_to_client", "type": "EngineState",
+          "payload": {"host_instance_id": "epoch-privacy-a", "session_id": "session-incognito", "ack_request_seq": 1, "revision": 0, "handled": true, "preedit": "", "caret_utf16": 0, "segments": [], "candidates": [], "page": {"page_index": 0, "page_size": 5, "has_previous_page": false, "has_next_page": false}, "composition_active": false, "mode": "ENGINE_MODE_DIRECT"}
+        },
+        {
+          "id": "privacy-incognito-end", "protocol_version": 2, "direction": "client_to_host", "type": "EndSessionRequest",
+          "payload": {"host_instance_id": "epoch-privacy-a", "session_id": "session-incognito", "request_seq": 2}
+        },
+        {
+          "id": "privacy-incognito-ended", "protocol_version": 2, "direction": "host_to_client", "type": "SessionEnded",
+          "payload": {"host_instance_id": "epoch-privacy-a", "session_id": "session-incognito", "ack_request_seq": 2}
+        }
+      ]
+    }
+  ]
+}
