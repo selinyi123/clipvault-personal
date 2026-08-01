@@ -205,6 +205,9 @@ def validate_source_contract(texts: dict[str, str]) -> None:
     required_kotlin_guards = {
         "Thread.currentThread().id",
         "canonicalFile",
+        "data_directories_must_not_overlap",
+        "shared.isDirectory",
+        "user.mkdirs()",
         'System.loadLibrary("clipvault_rime_poc")',
         "private var nativeHandle",
         "override fun close()",
@@ -212,6 +215,15 @@ def validate_source_contract(texts: dict[str, str]) -> None:
     for guard in required_kotlin_guards:
         if guard not in texts["kotlin"]:
             raise ValidationError(f"missing Kotlin lifecycle guard: {guard}")
+
+    for engine_guard in (
+        "g_engine_active",
+        "pending_commit",
+        'traits.log_dir = ""',
+        'select_schema(session_id_, "clipvault_poc")',
+    ):
+        if engine_guard not in texts["engine"]:
+            raise ValidationError(f"missing native lifecycle/privacy guard: {engine_guard}")
 
     cmake = texts["cmake"]
     for requirement in (
