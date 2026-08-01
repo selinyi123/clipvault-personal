@@ -1,10 +1,10 @@
 {
-  "format_version": 1,
-  "captured_at_utc": "2026-07-31T09:04:47Z",
+  "format_version": 2,
+  "captured_at_utc": "2026-08-01T09:27:07Z",
   "clipvault": {
     "repository": "selinyi123/clipvault-personal",
     "base_ref": "main",
-    "base_sha": "531d177b4485a5f32f97229a8d571969f6edf536",
+    "base_sha": "f6785b4db8ed8e4ca1231f53fab369688711ee4a",
     "production_integration_allowed": false,
     "binary_artifact_upload_allowed": false
   },
@@ -37,6 +37,93 @@
         "tag": "1.16.0",
         "sha": "a251145d3aafa33871824a40bbec04c966bd8b56",
         "license": "BSD-3-Clause"
+      },
+      "native_build_profile": {
+        "librime_cmake_flags": {
+          "BUILD_SHARED_LIBS": true,
+          "BUILD_STATIC": true,
+          "BUILD_DATA": false,
+          "BUILD_TEST": false,
+          "ENABLE_LOGGING": false,
+          "ENABLE_TIMESTAMP": false,
+          "ENABLE_EXTERNAL_PLUGINS": false
+        },
+        "direct_dependencies": [
+          {
+            "name": "boost",
+            "role": "headers and Boost.Regex required by librime",
+            "source_kind": "archive",
+            "version": "1.89.0",
+            "source": "https://archives.boost.io/release/1.89.0/source/boost_1_89_0.tar.gz",
+            "archive_sha256": "9de758db755e8330a01d995b0a24d09798048400ac25c03fc5ea9be364b13c93",
+            "spdx": "BSL-1.0",
+            "included_in_poc_binary": true
+          },
+          {
+            "name": "glog",
+            "role": "optional librime logging backend",
+            "source_kind": "git",
+            "repository": "google/glog",
+            "sha": "7b134a5c82c0c0b5698bb6bf7a835b230c5638e4",
+            "spdx": "BSD-3-Clause",
+            "included_in_poc_binary": false,
+            "exclusion": "ENABLE_LOGGING=OFF"
+          },
+          {
+            "name": "leveldb",
+            "role": "librime database backend",
+            "source_kind": "git",
+            "repository": "google/leveldb",
+            "sha": "99b3c03b3284f5886f9ef9a4ef703d57373e61be",
+            "spdx": "BSD-3-Clause",
+            "included_in_poc_binary": true
+          },
+          {
+            "name": "yaml-cpp",
+            "role": "Rime configuration parser",
+            "source_kind": "git",
+            "repository": "jbeder/yaml-cpp",
+            "sha": "2f86d13775d119edbb69af52e5f566fd65c6953b",
+            "spdx": "MIT",
+            "included_in_poc_binary": true
+          },
+          {
+            "name": "googletest",
+            "role": "upstream test-only dependency",
+            "source_kind": "git",
+            "repository": "google/googletest",
+            "sha": "e2239ee6043f73722e7aa812a459f54a28552929",
+            "spdx": "BSD-3-Clause",
+            "included_in_poc_binary": false,
+            "exclusion": "BUILD_TEST=OFF"
+          },
+          {
+            "name": "marisa-trie",
+            "role": "compact trie backend",
+            "source_kind": "git",
+            "repository": "s-yata/marisa-trie",
+            "sha": "0d4e8ab58eec355facf8f65ff11ef811b330e373",
+            "spdx": "BSD-2-Clause OR LGPL-2.1-or-later",
+            "included_in_poc_binary": true
+          },
+          {
+            "name": "opencc",
+            "role": "script conversion backend required by librime build",
+            "source_kind": "git",
+            "repository": "BYVoid/OpenCC",
+            "sha": "556ed22496d650bd0b13b6c163be9814637970ae",
+            "spdx": "Apache-2.0",
+            "included_in_poc_binary": true
+          }
+        ],
+        "transitive_closure_status": "INCOMPLETE_FAIL_CLOSED",
+        "unresolved_native_items": [
+          "OpenCC bundled/generated data and nested build dependencies",
+          "Boost component build and Android linkage manifest",
+          "actual ABI-specific shared-object closure",
+          "license text and NOTICE delivery paths",
+          "two-build reproducibility evidence"
+        ]
       }
     },
     "B_fcitx5_external_addon": {
@@ -87,7 +174,7 @@
   "license_gate": {
     "review_status": "NOT_APPROVED",
     "unresolved_items": [
-      "A track transitive native dependencies",
+      "A track transitive native dependency closure",
       "B track plugin/addon transitive dependencies",
       "project-owned PoC data license approval",
       "NOTICE/source/relink delivery obligations"
