@@ -1,0 +1,42 @@
+{
+  "format_version": 1,
+  "captured_at_utc": "2026-08-01T09:11:37Z",
+  "status": "HOST_CONTRACT_ONLY",
+  "native_librime_linked": false,
+  "production_integration_allowed": false,
+  "language_standard": "c++17",
+  "contract": {
+    "lifecycle": [
+      "initialize",
+      "shutdown"
+    ],
+    "input": [
+      "process_key",
+      "reset"
+    ],
+    "output": [
+      "snapshot",
+      "select_candidate"
+    ],
+    "unhandled_key_is_error": false,
+    "reset_requires_empty_composition_and_candidates": true
+  },
+  "files": [
+    {
+      "path": "bridge/CMakeLists.txt",
+      "content_sha256": "933895bcc308488ef33fb44a21d06108e01b9a8a6f87bd1f974866ad6bb3a364"
+    },
+    {
+      "path": "bridge/include/clipvault/rime_bridge.h",
+      "content_sha256": "a0c4946ce4489896d8a5ebce4582a078e35a2f24322bef9a93c932cc0929a5ff"
+    },
+    {
+      "path": "bridge/src/rime_bridge.cpp",
+      "content_sha256": "4609baa69ebebeeed8acf604cfe1926d685d7320a762b7dda9ca3aa9378e0fa1"
+    },
+    {
+      "path": "bridge/tests/rime_bridge_test.cpp",
+      "content_sha256": "6f9d3de35d9084f85a95d7bb059ac618c3e3cf39cf0cc0424e4f818ff5289bd4"
+    }
+  ]
+}
