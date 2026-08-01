@@ -33,7 +33,9 @@ EXPECTED_BUILD_POLICY = {
     "OpenCC_ENABLE_GTEST": "OFF",
     "OpenCC_ENABLE_BENCHMARK": "OFF",
     "OpenCC_BUILD_PYTHON": "OFF",
-    "OpenCC_LIBRARY_ONLY_PATCH": "REQUIRED",
+    "OpenCC_BUILD_TOOLS": "OFF",
+    "OpenCC_BUILD_DATA": "OFF",
+    "OpenCC_LIBRARY_ONLY_PATCH": "LOCKED_REPLAY_REQUIRED",
 }
 
 
@@ -158,7 +160,7 @@ def validate_source_lock(lock: dict[str, Any], source: dict[str, Any]) -> None:
     if source.get("route") != "A_custom_librime_jni":
         raise ValidationError("A_ROUTE_SOURCE_LOCK.json has the wrong route")
     if source.get("status") != (
-        "SOURCE_CLOSURE_IDENTIFIED_LICENSE_REVIEW_PENDING_BUILD_NOT_PROVEN"
+        "SOURCE_AND_PATCH_CLOSURE_LOCKED_LICENSE_REVIEW_PENDING_BUILD_NOT_PROVEN"
     ):
         raise ValidationError("A source lock must retain license and native-build caveats")
 
@@ -199,6 +201,32 @@ def validate_source_lock(lock: dict[str, Any], source: dict[str, Any]) -> None:
             raise ValidationError(f"excluded dependency {name} needs an exclusion reason")
     if runtime_count == 0:
         raise ValidationError("A source lock must identify runtime dependencies")
+
+    patches = source.get("patches")
+    if not isinstance(patches, list) or not patches:
+        raise ValidationError("A source lock patches must be a non-empty array")
+    patch_names: set[str] = set()
+    for index, patch in enumerate(patches):
+        if not isinstance(patch, dict):
+            raise ValidationError(f"source patch {index} must be an object")
+        name = patch.get("name")
+        if not isinstance(name, str) or not name or name in patch_names:
+            raise ValidationError(f"source patch {index} has an invalid or duplicate name")
+        patch_names.add(name)
+        target_repository = patch.get("target_repository")
+        if not isinstance(target_repository, str) or "/" not in target_repository:
+            raise ValidationError(f"source patch {name} has an invalid target repository")
+        require_sha40(patch.get("target_sha"), f"source_lock.patches[{index}].target_sha")
+        expected = patch.get("content_sha256")
+        require_sha256(expected, f"source_lock.patches[{index}].content_sha256")
+        patch_path = resolve_locked_file(patch.get("path"), f"source_lock.patches[{index}]")
+        actual = hashlib.sha256(patch_path.read_bytes()).hexdigest()
+        if actual != expected:
+            raise ValidationError(
+                f"source patch digest mismatch for {name}: expected {expected}, got {actual}"
+            )
+        if patch.get("upstream_issue") == "UNFILED_POC_ONLY" and name != "opencc-library-only":
+            raise ValidationError("only the isolated OpenCC PoC patch may be temporarily unfiled")
 
     policy = source.get("planned_build_policy")
     if policy != EXPECTED_BUILD_POLICY:
