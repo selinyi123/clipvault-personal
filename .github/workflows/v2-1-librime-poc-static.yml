@@ -20,5 +20,15 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Validate lock and synthetic vectors
+      - name: Validate locks, data, vectors and bridge digests
         run: python spikes/librime-android/tools/validate_poc.py
+      - name: Configure project-owned bridge contract
+        run: >-
+          cmake -S spikes/librime-android/bridge
+          -B build/librime-bridge
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+      - name: Build bridge contract
+        run: cmake --build build/librime-bridge
+      - name: Test bridge contract
+        run: ctest --test-dir build/librime-bridge --output-on-failure
