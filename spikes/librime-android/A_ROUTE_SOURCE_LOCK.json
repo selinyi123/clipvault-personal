@@ -106,7 +106,7 @@
       "target_repository": "BYVoid/OpenCC",
       "target_sha": "556ed22496d650bd0b13b6c163be9814637970ae",
       "path": "patches/opencc-library-only.patch",
-      "content_sha256": "d9eb97e5a71f92db62ed78004a4509342de6548090e02ae76ecfb90c2814ed12",
+      "content_sha256": "d9edd4277a71cac98dd3618a295badb5d969258cc84ef9d59643c68593f7833d",
       "purpose": "add opt-in library-only switches while retaining upstream defaults",
       "upstream_issue": "UNFILED_POC_ONLY"
     }
