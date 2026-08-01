@@ -121,18 +121,23 @@ jstring new_string(JNIEnv* env, const std::string& value) {
   for (const auto unit : utf16) {
     units.push_back(static_cast<jchar>(unit));
   }
-  return env->NewString(units.data(), static_cast<jsize>(units.size()));
+  static constexpr jchar kEmptyStringUnit = 0;
+  const jchar* data = units.empty() ? &kEmptyStringUnit : units.data();
+  return env->NewString(data, static_cast<jsize>(units.size()));
 }
 
 jobjectArray encode_snapshot(JNIEnv* env,
                              bool handled,
                              const Snapshot& snapshot) {
   constexpr jsize kHeaderEntries = 3;
-  const std::size_t entry_count =
-      static_cast<std::size_t>(kHeaderEntries) + snapshot.candidates.size() * 2;
-  if (entry_count > static_cast<std::size_t>(std::numeric_limits<jsize>::max())) {
+  const auto max_entries =
+      static_cast<std::size_t>(std::numeric_limits<jsize>::max());
+  if (snapshot.candidates.size() >
+      (max_entries - static_cast<std::size_t>(kHeaderEntries)) / 2U) {
     throw std::overflow_error("candidate snapshot is too large for a Java array");
   }
+  const std::size_t entry_count =
+      static_cast<std::size_t>(kHeaderEntries) + snapshot.candidates.size() * 2U;
 
   jclass string_class = env->FindClass("java/lang/String");
   if (string_class == nullptr) {
