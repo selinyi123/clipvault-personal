@@ -130,6 +130,14 @@ class RimeEngine::Impl final {
       return false;
     }
     api_->clear_composition(session_id_);
+
+    // A reset must not leave an unread commit that can leak into the next
+    // deterministic vector. get_commit() consumes the pending commit, if any.
+    RimeCommit pending_commit = {};
+    RIME_STRUCT_INIT(RimeCommit, pending_commit);
+    if (api_->get_commit(session_id_, &pending_commit)) {
+      api_->free_commit(&pending_commit);
+    }
     return true;
   }
 
