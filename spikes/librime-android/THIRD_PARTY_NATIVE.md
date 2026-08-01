@@ -7,10 +7,10 @@ row is incomplete or unapproved.
 ## Track A — custom librime JNI
 
 The source identities below are frozen in `A_ROUTE_SOURCE_LOCK.json`. License
-families have been verified against the corresponding upstream source, but that
-verification is not distribution approval. Actual package paths, notices,
-source delivery and modification records still have to be completed from the
-built artifact closure.
+families have been verified where an upstream license was directly available,
+but that verification is not distribution approval. Actual package paths,
+notices, source delivery and modification records still have to be completed
+from the built artifact closure.
 
 | Component | Role | Version/SHA | SPDX | Planned combination | Runtime | Required distribution work | Approval |
 |---|---|---|---|---|---|---|---|
@@ -22,11 +22,23 @@ built artifact closure.
 | googletest | upstream tests | `f8d7d77c06936315286eb55f8de22cd23c188571` | BSD-3-Clause | excluded with `BUILD_TEST=OFF` | no | prove absent from final closure | pending |
 | marisa-trie | trie implementation | `0d4e8ab58eec355facf8f65ff11ef811b330e373` | BSD-2-Clause OR LGPL-2.1-or-later | static; BSD-2-Clause selected | yes | BSD notice/copyright and source identity | pending |
 | OpenCC | script conversion | `556ed22496d650bd0b13b6c163be9814637970ae` | Apache-2.0 | static; reuse locked marisa | yes | Apache license, NOTICE if present, modification notice | pending |
+| OpenCC vendored RapidJSON | OpenCC JSON configuration headers | 1.1.0 inside OpenCC SHA `556ed224…` | MIT | headers compiled into OpenCC | yes | retain RapidJSON license/copyright and record vendored path | pending |
+| OpenCC vendored TCLAP | OpenCC command-line tools | 1.2.5 inside OpenCC SHA `556ed224…` | NOASSERTION | must be excluded by an auditable library-only patch | no | classify license and prove tools/TCLAP absent | blocked |
+| OpenCC vendored darts-clone | optional Darts dictionary | 0.32 inside OpenCC SHA `556ed224…` | NOASSERTION | excluded with `ENABLE_DARTS=OFF` | no | classify license and prove Darts sources/objects absent | blocked |
 | ClipVault bridge/JNI | original adapter | host contract implemented; native backend pending | project license unresolved | JNI shared library | planned | original implementation; do not copy GPL Trime code | pending |
 
-The planned closure disables glog, tests, timestamps and accidental Snappy
-discovery. This is a build policy, not evidence that the resulting Android
-binary has that closure. The final `.so` inventory must prove it.
+The planned closure disables glog, upstream tests, timestamps, Darts, benchmark,
+Python bindings and accidental Snappy discovery. It also reuses the locked
+marisa library. OpenCC's current CMake graph still adds its command-line tools
+unconditionally; therefore the Android PoC requires a small, repository-owned,
+replayable **library-only patch** before any native build result can be accepted.
+The patch must skip `src/tools` rather than merely delete produced executables.
+Until the patched source graph and final object/ELF closure are inspected,
+TCLAP and darts-clone remain unresolved even though they are intended to be
+excluded.
+
+This is a build policy, not evidence that the resulting Android binary has the
+claimed closure. The final `.so` inventory and build trace must prove it.
 
 ## Project-owned deterministic PoC data
 
@@ -62,6 +74,8 @@ lexicon and contains no user data.
 
 - License reviewer: unresolved
 - Project-owned PoC data redistribution license: pending Owner decision
+- OpenCC library-only patch: required, not implemented
+- TCLAP and darts-clone license classification: unresolved
 - Track A approval: not approved
 - Track B approval: not approved
 - Binary artifact upload: prohibited
