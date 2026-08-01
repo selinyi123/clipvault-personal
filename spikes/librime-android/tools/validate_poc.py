@@ -29,6 +29,11 @@ EXPECTED_BUILD_POLICY = {
     "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
     "CMAKE_DISABLE_FIND_PACKAGE_Snappy": "TRUE",
     "OpenCC_USE_SYSTEM_MARISA": "ON",
+    "OpenCC_ENABLE_DARTS": "OFF",
+    "OpenCC_ENABLE_GTEST": "OFF",
+    "OpenCC_ENABLE_BENCHMARK": "OFF",
+    "OpenCC_BUILD_PYTHON": "OFF",
+    "OpenCC_LIBRARY_ONLY_PATCH": "REQUIRED",
 }
 
 
@@ -152,8 +157,10 @@ def validate_source_entry(entry: dict[str, Any], label: str) -> None:
 def validate_source_lock(lock: dict[str, Any], source: dict[str, Any]) -> None:
     if source.get("route") != "A_custom_librime_jni":
         raise ValidationError("A_ROUTE_SOURCE_LOCK.json has the wrong route")
-    if source.get("status") != "SOURCE_CLOSURE_IDENTIFIED_BUILD_NOT_PROVEN":
-        raise ValidationError("A source lock must not claim a native build result")
+    if source.get("status") != (
+        "SOURCE_CLOSURE_IDENTIFIED_LICENSE_REVIEW_PENDING_BUILD_NOT_PROVEN"
+    ):
+        raise ValidationError("A source lock must retain license and native-build caveats")
 
     librime = source.get("librime")
     if not isinstance(librime, dict):
