@@ -19,6 +19,7 @@
     "syntax_check_required": true,
     "java_compile_required": true,
     "linked_runtime_proven": false,
+    "single_active_session": true,
     "snapshot_wire_format": [
       "handled_0_or_1",
       "composition_utf8",
@@ -47,7 +48,9 @@
     "jni_uses_opaque_handles": true,
     "jni_destroy_is_idempotent": true,
     "jni_unicode_conversion_is_strict": true,
-    "jni_rejects_embedded_nul_input": true
+    "jni_rejects_embedded_nul_input": true,
+    "jni_releases_string_chars_on_constructor_failure": true,
+    "jni_serializes_create_and_destroy": true
   },
   "files": [
     {
@@ -80,7 +83,7 @@
     },
     {
       "path": "bridge/src/jni_bridge.cpp",
-      "content_sha256": "f90e3e7b423fdfebe0bf266d93980ecf2553c3bbcd94c9dcb6c3449d077c5bdf"
+      "content_sha256": "ed1fa147806983c3842cf107a50181b79a246981289433fe0998fc027d4ca72b"
     },
     {
       "path": "bridge/tests/rime_bridge_test.cpp",
