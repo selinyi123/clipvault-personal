@@ -22,3 +22,11 @@ jobs:
           python-version: "3.12"
       - name: Validate lock and synthetic vectors
         run: python spikes/librime-android/tools/validate_poc.py
+      - name: Validate native JNI contract
+        run: python spikes/librime-android/tools/validate_native_contract.py
+      - name: Compile PoC validation tools
+        run: |
+          python -m py_compile \
+            spikes/librime-android/tools/validate_poc.py \
+            spikes/librime-android/tools/validate_native_contract.py \
+            spikes/librime-android/tools/check_elf_alignment.py
