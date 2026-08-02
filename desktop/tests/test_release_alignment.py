@@ -103,18 +103,27 @@ def test_version_sync_doc_matches_source_tree():
     assert re.search(r"Owner\s+approval", doc)
 
 
-def test_readme_does_not_overstate_unreleased_v1_6_status():
+def test_readme_tracks_published_v1_6_status_without_overstating_qa():
     readme = _read("README.md")
     status = readme.split("---", 1)[0]
 
-    assert "v1.6.0 二进制尚未发布" in status
-    assert "最新**已发布**二进制仍为 [v1.5.10]" in status
+    assert "当前源码版本与最新正式发布版本均为 **1.6.0**" in status
+    assert "releases/tag/v1.6.0" in status
     assert "Issue #36" in status
-    assert "final Windows artifacts" in status
-    assert "signed Android artifacts" in status
-    assert "signed Windows/Android artifacts" not in status
-    assert "manual device QA" in status
-    assert "v1.7 仅作为稳定化/隐私/同步可靠性规划线推进" in status
+    assert "Owner 明确风险豁免关闭" in status
+    assert "15 pass / 0 fail / 10 blocked" in status
+    assert "不能视为全部 QA 已通过" in status
+    assert "Issue #82" in status
+    assert "没有发布或宣称 `v1.7.0` 稳定版" in status
+    assert "v2.1 librime Android PoC" in status
+    assert "尚未接入生产 IME" in status
+    assert "v1.6.0 二进制尚未发布" not in status
+    assert "最新**已发布**二进制仍为 [v1.5.10]" not in status
+
+    assert "ClipVault-Setup-v1.6.0.exe" in readme
+    assert "ClipVault-Desktop-v1.6.0-portable.exe" in readme
+    assert "ClipVault-Android-v1.6.0-release-signed.apk" in readme
+    assert "不能直接覆盖安装 v1.5.10" in readme
 
     for stale_claim in (
         "桌面端 **166** 项测试",
