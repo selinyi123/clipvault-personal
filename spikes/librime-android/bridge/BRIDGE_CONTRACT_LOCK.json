@@ -1,6 +1,6 @@
 {
   "format_version": 2,
-  "captured_at_utc": "2026-08-01T09:11:37Z",
+  "captured_at_utc": "2026-08-02T09:12:00Z",
   "status": "HOST_CONTRACT_AND_PUBLIC_API_BACKEND_SOURCE",
   "native_librime_linked": false,
   "production_integration_allowed": false,
@@ -26,6 +26,19 @@
       "commit_utf8",
       "candidate_text_comment_pairs"
     ]
+  },
+  "android_object_compile": {
+    "required": true,
+    "toolchain": "Android NDK 28.0.13004108",
+    "abis": [
+      "arm64-v8a",
+      "x86_64"
+    ],
+    "platform": "android-26",
+    "stl": "c++_static",
+    "scope": "compile project-owned bridge and JNI translation units to object files only",
+    "librime_linked": false,
+    "binary_upload_allowed": false
   },
   "contract": {
     "lifecycle": [
@@ -55,7 +68,7 @@
   "files": [
     {
       "path": "bridge/CMakeLists.txt",
-      "content_sha256": "05697707fe461fd61a29c0f1c98a20566fedbc2ab60c1bbc99e2a4392b37c4a5"
+      "content_sha256": "3efa1be6187071c478c4589e053f471fd154ca0b5e5732c39402902456dd6d28"
     },
     {
       "path": "bridge/include/clipvault/rime_bridge.h",
