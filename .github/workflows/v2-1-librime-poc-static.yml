@@ -70,6 +70,30 @@ jobs:
             -include org_clipvault_rime_poc_NativeRimeBridge.h \
             -fsyntax-only \
             spikes/librime-android/bridge/src/jni_bridge.cpp
+      - name: Install locked Android NDK
+        run: yes | sdkmanager "ndk;28.0.13004108" >/dev/null
+      - name: Compile full JNI contract for locked Android ABIs
+        run: |
+          set -euo pipefail
+          toolchain="$ANDROID_SDK_ROOT/ndk/28.0.13004108/build/cmake/android.toolchain.cmake"
+          test -f "$toolchain"
+          for abi in arm64-v8a x86_64; do
+            build_dir="build/librime-android-contract-$abi"
+            cmake -S spikes/librime-android/bridge \
+              -B "$build_dir" \
+              -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_TOOLCHAIN_FILE="$toolchain" \
+              -DANDROID_ABI="$abi" \
+              -DANDROID_PLATFORM=android-26 \
+              -DANDROID_STL=c++_static \
+              -DBUILD_TESTING=OFF \
+              -DCLIPVAULT_BUILD_ANDROID_CONTRACT=ON \
+              -DRIME_API_INCLUDE_DIR="$GITHUB_WORKSPACE/build/librime-src/src" \
+              -DGENERATED_JNI_INCLUDE_DIR="$GITHUB_WORKSPACE/build/jni-headers"
+            cmake --build "$build_dir" --target clipvault_rime_android_contract
+            test -n "$(find "$build_dir" -type f -name '*.o' -print -quit)"
+          done
       - name: Fetch locked OpenCC source
         run: |
           git init build/opencc-src
