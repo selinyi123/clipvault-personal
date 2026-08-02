@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ClipVault PoC <noreply@clipvault.invalid>
+Date: Sat, 1 Aug 2026 17:35:00 +0800
+Subject: [PATCH] cmake: allow library-only OpenCC build
+
+The Android librime PoC does not need OpenCC command-line tools or bundled
+conversion dictionaries. Keep upstream defaults unchanged, but add explicit
+switches so the PoC can build only libopencc and avoid pulling TCLAP and host
+Python/tool targets into the native build graph.
+---
+ CMakeLists.txt     |  8 ++++++--
+ src/CMakeLists.txt | 10 ++++++----
+ 2 files changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1d8c8e6..0000000 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -25,4 +25,6 @@ option(BUILD_DOCUMENTATION "Use Doxygen to create the HTML based API documentation" OFF)
+ option(BUILD_SHARED_LIBS "Build opencc as shared library" ON)
++option(BUILD_TOOLS "Build OpenCC command-line tools" ON)
++option(BUILD_DATA "Build and install OpenCC conversion dictionaries" ON)
+ option(ENABLE_GTEST "Build all tests." OFF)
+ option(ENABLE_BENCHMARK "Build benchmark tests." OFF)
+ option(ENABLE_DARTS "Build DartsDict (ocd format)." ON)
+@@ -214,7 +216,9 @@ endif()
+ 
+ add_subdirectory(src)
+ add_subdirectory(doc)
+-add_subdirectory(data)
++if(BUILD_DATA)
++  add_subdirectory(data)
++endif()
+ add_subdirectory(test)
+ 
+ ######## Testing
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 7768c89..0000000 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -7,7 +7,9 @@ if(NOT USE_SYSTEM_MARISA)
+ endif()
+ if(NOT USE_SYSTEM_RAPIDJSON)
+   include_directories(../deps/rapidjson-1.1.0)
+ endif()
+-if(NOT USE_SYSTEM_TCLAP)
+-  include_directories(../deps/tclap-1.2.5)
++if(BUILD_TOOLS)
++  if(NOT USE_SYSTEM_TCLAP)
++    include_directories(../deps/tclap-1.2.5)
++  endif()
+ endif()
+@@ -176,4 +178,6 @@ endif()
+ 
+ # Subdir
+ 
+-add_subdirectory(tools)
++if(BUILD_TOOLS)
++  add_subdirectory(tools)
++endif()
+-- 
+2.51.0

@@ -20,5 +20,122 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Validate lock and synthetic vectors
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Validate locks, data, vectors, patches and bridge digests
         run: python spikes/librime-android/tools/validate_poc.py
+      - name: Configure project-owned bridge contract
+        run: >-
+          cmake -S spikes/librime-android/bridge
+          -B build/librime-bridge
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+      - name: Build bridge contract
+        run: cmake --build build/librime-bridge
+      - name: Test bridge and strict Unicode contract
+        run: ctest --test-dir build/librime-bridge --output-on-failure
+      - name: Fetch locked librime public API
+        run: |
+          git init build/librime-src
+          git -C build/librime-src remote add origin https://github.com/rime/librime.git
+          git -C build/librime-src fetch --depth=1 origin 33e78140250125871856cdc5b42ddc6a5fcd3cd4
+          git -C build/librime-src checkout --detach FETCH_HEAD
+          test "$(git -C build/librime-src rev-parse HEAD)" = "33e78140250125871856cdc5b42ddc6a5fcd3cd4"
+          test "$(git hash-object build/librime-src/src/rime_api.h)" = "2fccde0fb83ead04d0a12ef834c3770d64dff211"
+      - name: Compile Java JNI contract and generated header
+        run: |
+          mkdir -p build/jni-classes build/jni-headers
+          javac -source 8 -target 8 -Xlint:all,-options \
+            -h build/jni-headers \
+            -d build/jni-classes \
+            spikes/librime-android/bridge/java/org/clipvault/rime/poc/NativeRimeBridge.java
+          test -f build/jni-headers/org_clipvault_rime_poc_NativeRimeBridge.h
+      - name: Syntax-check backend and JNI against exact headers
+        run: |
+          c++ -std=c++17 \
+            -Wall -Wextra -Wpedantic -Werror \
+            -Wno-missing-field-initializers \
+            -Ispikes/librime-android/bridge/include \
+            -Ibuild/librime-src/src \
+            -fsyntax-only \
+            spikes/librime-android/bridge/src/librime_backend.cpp
+          c++ -std=c++17 \
+            -Wall -Wextra -Wpedantic -Werror \
+            -Ispikes/librime-android/bridge/include \
+            -Ibuild/jni-headers \
+            -I"$JAVA_HOME/include" \
+            -I"$JAVA_HOME/include/linux" \
+            -include org_clipvault_rime_poc_NativeRimeBridge.h \
+            -fsyntax-only \
+            spikes/librime-android/bridge/src/jni_bridge.cpp
+      - name: Install locked Android NDK
+        run: |
+          set -euo pipefail
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          test -n "$sdk_root"
+          sdkmanager_path="$(find "$sdk_root/cmdline-tools" -type f -name sdkmanager -print | sort -V | tail -n 1)"
+          test -x "$sdkmanager_path"
+          yes | "$sdkmanager_path" "ndk;28.0.13004108" >/dev/null || test "${PIPESTATUS[1]}" -eq 0
+          test -f "$sdk_root/ndk/28.0.13004108/build/cmake/android.toolchain.cmake"
+      - name: Compile full JNI contract for locked Android ABIs
+        run: |
+          set -euo pipefail
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          toolchain="$sdk_root/ndk/28.0.13004108/build/cmake/android.toolchain.cmake"
+          test -f "$toolchain"
+          for abi in arm64-v8a x86_64; do
+            build_dir="build/librime-android-contract-$abi"
+            cmake -S spikes/librime-android/bridge \
+              -B "$build_dir" \
+              -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_TOOLCHAIN_FILE="$toolchain" \
+              -DANDROID_ABI="$abi" \
+              -DANDROID_PLATFORM=android-26 \
+              -DANDROID_STL=c++_static \
+              -DBUILD_TESTING=OFF \
+              -DCLIPVAULT_BUILD_ANDROID_CONTRACT=ON \
+              -DRIME_API_INCLUDE_DIR="$GITHUB_WORKSPACE/build/librime-src/src" \
+              -DGENERATED_JNI_INCLUDE_DIR="$GITHUB_WORKSPACE/build/jni-headers"
+            cmake --build "$build_dir" --target clipvault_rime_android_contract
+            test -n "$(find "$build_dir" -type f -name '*.o' -print -quit)"
+          done
+      - name: Fetch locked OpenCC source
+        run: |
+          git init build/opencc-src
+          git -C build/opencc-src remote add origin https://github.com/BYVoid/OpenCC.git
+          git -C build/opencc-src fetch --depth=1 origin 556ed22496d650bd0b13b6c163be9814637970ae
+          git -C build/opencc-src checkout --detach FETCH_HEAD
+          test "$(git -C build/opencc-src rev-parse HEAD)" = "556ed22496d650bd0b13b6c163be9814637970ae"
+      - name: Apply locked OpenCC library-only patch
+        run: |
+          git -C build/opencc-src apply --check \
+            "$GITHUB_WORKSPACE/spikes/librime-android/patches/opencc-library-only.patch"
+          git -C build/opencc-src apply \
+            "$GITHUB_WORKSPACE/spikes/librime-android/patches/opencc-library-only.patch"
+      - name: Configure OpenCC library-only host proof
+        run: >-
+          cmake -S build/opencc-src
+          -B build/opencc-host
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_SHARED_LIBS=OFF
+          -DBUILD_DOCUMENTATION=OFF
+          -DBUILD_TOOLS=OFF
+          -DBUILD_DATA=OFF
+          -DENABLE_GTEST=OFF
+          -DENABLE_BENCHMARK=OFF
+          -DENABLE_DARTS=OFF
+          -DBUILD_PYTHON=OFF
+          -DUSE_SYSTEM_MARISA=OFF
+      - name: Build only libopencc and reject excluded targets
+        run: |
+          cmake --build build/opencc-host --target libopencc
+          cmake --build build/opencc-host --target help > build/opencc-targets.txt
+          if grep -E '(^|[/[:space:]])(opencc|opencc_dict|opencc_phrase_extract|Dictionaries)(:|$)' \
+            build/opencc-targets.txt; then
+            echo "Excluded OpenCC tool or data target is still present" >&2
+            exit 1
+          fi
