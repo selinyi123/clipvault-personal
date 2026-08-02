@@ -71,11 +71,19 @@ jobs:
             -fsyntax-only \
             spikes/librime-android/bridge/src/jni_bridge.cpp
       - name: Install locked Android NDK
-        run: yes | sdkmanager "ndk;28.0.13004108" >/dev/null
+        run: |
+          set -euo pipefail
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          test -n "$sdk_root"
+          sdkmanager_path="$(find "$sdk_root/cmdline-tools" -type f -name sdkmanager -print | sort -V | tail -n 1)"
+          test -x "$sdkmanager_path"
+          yes | "$sdkmanager_path" "ndk;28.0.13004108" >/dev/null || test "${PIPESTATUS[1]}" -eq 0
+          test -f "$sdk_root/ndk/28.0.13004108/build/cmake/android.toolchain.cmake"
       - name: Compile full JNI contract for locked Android ABIs
         run: |
           set -euo pipefail
-          toolchain="$ANDROID_SDK_ROOT/ndk/28.0.13004108/build/cmake/android.toolchain.cmake"
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          toolchain="$sdk_root/ndk/28.0.13004108/build/cmake/android.toolchain.cmake"
           test -f "$toolchain"
           for abi in arm64-v8a x86_64; do
             build_dir="build/librime-android-contract-$abi"
