@@ -2,7 +2,9 @@
 
 Minimal instructions for coding agents working on ClipVault Personal.
 
-For task flow and role split, read docs/AGENT_WORKFLOWS.md.
+For task flow and role split, read docs/AGENT_WORKFLOWS.md. For the active
+multi-agent, multi-branch v2 daily-use program, also read
+docs/V2_DAILY_EXECUTION_CHARTER.md before changing implementation code.
 
 ## Product boundary
 
@@ -34,6 +36,11 @@ The active next-stage design is documented in
 docs/NEXT_PHASE_V2_INPUT_FOUNDATION.md. Android engine, Windows TSF/Host, and
 OTP work remain isolated PoCs until their respective gates pass; a compiled or
 synthetic scaffold is not production integration evidence.
+
+`v2 Daily Candidate` is the cross-milestone internal integration target. It is
+not automatically a stable semantic version. Branch ownership, anti-drift
+checks, merge order, evidence language, and the current execution sequence are
+defined in docs/V2_DAILY_EXECUTION_CHARTER.md.
 
 ## Test commands
 

@@ -5,6 +5,8 @@
 > 跨 v2.1-v2.5 的日用验收合同与当前执行快照见
 > [V2_DAILY_USE_ACCEPTANCE.md](V2_DAILY_USE_ACCEPTANCE.md)。
 > OTP 的 Android restricted-permission 发布证据见 [PLAY_SMS_PERMISSION.md](PLAY_SMS_PERMISSION.md)。
+> 多智能体、多分支的当前任务所有权、漂移检查、合流和证据规范见
+> [V2_DAILY_EXECUTION_CHARTER.md](V2_DAILY_EXECUTION_CHARTER.md)。
 
 ## 1. 产品目标
 
