@@ -1019,7 +1019,9 @@ def pull_blocked_summary(conn, max_bytes: int = SYNC_PULL_RESPONSE_BYTES) -> dic
     This is for local status/UI diagnostics only. It must not expose clip text,
     payload fields, bearer tokens, hostnames, or device identifiers.
     """
-    peer_rows = conn.execute("SELECT my_acked_seq FROM sync_peers").fetchall()
+    peer_rows = conn.execute(
+        "SELECT my_acked_seq FROM sync_peers WHERE revoked = 0"
+    ).fetchall()
     if not peer_rows:
         return None
 

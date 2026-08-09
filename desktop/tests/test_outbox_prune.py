@@ -132,7 +132,8 @@ def test_i1_min_ack_fails_closed_if_any_peer_is_ahead(conn):
 
     # Removing the legitimate low-water peer must not turn the poisoned value
     # into a pruning cursor.
-    assert peers.unpair("lagging") is True
+    assert peers.revoke("lagging") is True
+    assert peers.finalize_unpair("lagging") is True
     with pytest.raises(InvalidPeerAckState, match="outside outbox history"):
         peers.min_my_acked(high_water=high_water)
     assert outbox.list_since(0)[0]["seq"] == high_water

@@ -188,6 +188,9 @@ expired nonce.
   for plaintext.
 - Any ClipVault plaintext capture lives in the Companion Runtime and exposes only the minimum OTP object
   to the IME/relay.
+- Platform capture grants are content-free, process-local capabilities. Revoke/rotation increments their
+  generation; copied authorizations are rechecked before capture, key reservation, encryption and the final
+  transport call. A transport call that has already started is an in-flight terminal operation.
 - Windows uses a non-activating prompt and explicit TSF insertion by default.
 - “Armed auto-fill” requires a short-lived prior user claim bound to process, window and text context.
   Focus alone is insufficient. ClipVault never simulates Enter or submits the form.

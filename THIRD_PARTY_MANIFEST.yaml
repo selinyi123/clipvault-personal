@@ -120,7 +120,7 @@
       ],
       "license_assets": {
         "repository": "third_party/licenses/OpenCC-Apache-2.0.txt",
-        "repository_sha256": "b534e465949558eec2597b04f5092b5e161236a68dfbfd04d547592ac3964308",
+        "repository_sha256": "fb531487f666909d487239da6130e2256d8c86f26ec2674ce6aa5763bc7f8c56",
         "android_package": "assets/rime/third_party/opencc-Apache-2.0.txt"
       },
       "distribution_status": "android_exact_archive_source_and_notice_review_required"

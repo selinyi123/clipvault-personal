@@ -607,6 +607,29 @@ def test_d8_rejects_foreign_referer(cfg):
         c.close()
 
 
+def test_d8_rejects_cross_site_fetch_metadata_without_referer(cfg):
+    cfg.db_path = os.path.join(tempfile.mkdtemp(), "cv.db")
+    cfg.port = _free_port()
+    with _running_config_server(cfg):
+        c = http.client.HTTPConnection("127.0.0.1", cfg.port, timeout=5)
+        c.request(
+            "GET",
+            "/api/pair/code",
+            headers={"Sec-Fetch-Site": "cross-site"},
+        )
+        assert c.getresponse().status == 403
+        c.close()
+
+        c = http.client.HTTPConnection("127.0.0.1", cfg.port, timeout=5)
+        c.request(
+            "GET",
+            "/api/pair/code",
+            headers={"Sec-Fetch-Site": "same-origin"},
+        )
+        assert c.getresponse().status == 200
+        c.close()
+
+
 def test_d9_api_logs_no_content(api, caplog):
     with caplog.at_level(logging.INFO, logger="clipvault"):
         api.create_clip({"content": "topsecretwords in content"})

@@ -210,6 +210,17 @@ def test_h1_pairing_persistence_failure_does_not_revive_expired_code():
     assert pairing.redeem(code) is None
 
 
+def test_h1_pairing_evicts_oldest_code_at_active_limit():
+    pairing = Pairing(clock=lambda: 0.0, max_active_codes=2)
+    oldest = pairing.mint_code()
+    middle = pairing.mint_code()
+    newest = pairing.mint_code()
+
+    assert pairing.redeem(oldest) is None
+    assert pairing.redeem(middle)
+    assert pairing.redeem(newest)
+
+
 def test_h1_concurrent_pairing_runs_one_persistence_callback():
     pairing = Pairing(clock=lambda: 0.0, max_failures=1)
     code = pairing.mint_code()
@@ -2052,6 +2063,33 @@ def test_unpair_revokes_device_access(api):
 
 def test_unpair_unknown_device_returns_404(api):
     assert api.unpair("not-a-device")[0] == 404
+
+
+def test_revoked_peer_tombstone_is_not_an_active_sync_peer(api):
+    token = _pair(api)
+    assert api.peers.revoke(PEER) is True
+
+    assert api.auth_ok(token) is False
+    assert api.peers.get(PEER) is None
+    assert api.peers.summary()["paired_devices"] == 0
+    assert api.peers.min_my_acked(high_water=0) is None
+    assert sync_engine.pull_blocked_summary(api.conn) is None
+    tombstone = api.list_peers()[1]["peers"]
+    assert len(tombstone) == 1
+    assert tombstone[0]["device_id"] == PEER
+    assert tombstone[0]["cleanup_pending"] is True
+
+
+def test_peer_revocation_rejects_outer_transaction_without_committing(api, conn):
+    token = _pair(api)
+    conn.execute("BEGIN")
+
+    with pytest.raises(RuntimeError, match="idle connection"):
+        api.peers.revoke(PEER)
+
+    assert conn.in_transaction is True
+    conn.rollback()
+    assert api.auth_ok(token) is True
 
 
 def test_h2_socket_auth_end_to_end(cfg):

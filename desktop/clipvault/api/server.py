@@ -3,7 +3,8 @@
 Two trust zones, enforced at the handler regardless of bind address:
   - management + Web UI routes: loopback-only (127.0.0.1), no auth.
   - /api/pair, /api/sync/*, and exact OTP routes: bearer/code protected;
-    OTP pair creation additionally requires loopback or a Tailscale source.
+    OTP routes additionally require loopback or a matching Tailnet local target
+    on the accepted socket.
 Plain single-threaded HTTPServer: the SQLite connection lives on the serving
 thread and is never crossed (S004 lesson).
 """
@@ -266,6 +267,20 @@ class _SafeHTTPServer(HTTPServer):
                 callback()
 
 
+class _SafeHTTPServerV6(_SafeHTTPServer):
+    """IPv6 counterpart selected for an explicit IPv6 bind literal."""
+
+    address_family = socket.AF_INET6
+
+
+def _safe_http_server_type(host: str):
+    try:
+        parsed = ipaddress.ip_address(host.split("%", 1)[0])
+    except (AttributeError, ValueError):
+        return _SafeHTTPServer
+    return _SafeHTTPServerV6 if parsed.version == 6 else _SafeHTTPServer
+
+
 def _remote_allowed(route: str) -> bool:
     """Routes a paired LAN device may reach (auth enforced in the handler)."""
     return (
@@ -280,19 +295,58 @@ _TAILSCALE_V4 = ipaddress.ip_network("100.64.0.0/10")
 _TAILSCALE_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 
 
-def _otp_pair_source_allowed(address: str) -> bool:
-    """Accept only local or Tailscale transport for verifier bootstrap."""
-
+def _canonical_ip(address: str | None):
     if not isinstance(address, str):
-        return False
+        return None
     try:
         parsed = ipaddress.ip_address(address.split("%", 1)[0])
     except ValueError:
-        return False
+        return None
     if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped:
         parsed = parsed.ipv4_mapped
-    return parsed.is_loopback or parsed in (
-        _TAILSCALE_V4 if parsed.version == 4 else _TAILSCALE_V6
+    return parsed
+
+
+def _is_tailscale_address(address) -> bool:
+    return address in (
+        _TAILSCALE_V4 if address.version == 4 else _TAILSCALE_V6
+    )
+
+
+def _otp_pair_source_allowed(
+    address: str,
+    *,
+    bound_address: str | None = None,
+    local_address: str | None = None,
+) -> bool:
+    """Require minimum local/Tailscale binding evidence for OTP HTTP routes.
+
+    A remote address in CGNAT or Tailscale's ULA range is not evidence that
+    the socket was reached through a Tailscale interface. Loopback remains
+    valid. A remote Tailscale address is accepted only when the accepted
+    socket's local target is a same-family Tailscale address and the listener
+    was either explicitly bound to that address or to that family's wildcard.
+    This lets one wildcard listener serve loopback management plus Tailnet OTP
+    without accepting an OTP connection that actually landed on a LAN address.
+    It remains a short-term boundary until the HTTP channel has an
+    application-layer authenticated transport.
+    """
+
+    remote = _canonical_ip(address)
+    if remote is None:
+        return False
+    if remote.is_loopback:
+        return True
+    bound = _canonical_ip(bound_address)
+    local = _canonical_ip(local_address)
+    return (
+        _is_tailscale_address(remote)
+        and bound is not None
+        and local is not None
+        and bound.version == remote.version
+        and local.version == remote.version
+        and _is_tailscale_address(local)
+        and (bound.is_unspecified or local == bound)
     )
 
 
@@ -390,6 +444,23 @@ def make_handler(
         def _is_loopback(self) -> bool:
             return self.client_address[0] in _LOOPBACK
 
+        def _otp_transport_allowed(self) -> bool:
+            bound_address = None
+            local_address = None
+            try:
+                bound_address = self.server.server_address[0]
+            except (AttributeError, IndexError, TypeError):
+                pass
+            try:
+                local_address = self.connection.getsockname()[0]
+            except (AttributeError, IndexError, OSError, TypeError):
+                pass
+            return _otp_pair_source_allowed(
+                self.client_address[0],
+                bound_address=bound_address,
+                local_address=local_address,
+            )
+
         def _host_is_local(self) -> bool:
             """DNS-rebinding guard: a site that rebinds its name to 127.0.0.1
             reaches us with a loopback source IP but a foreign Host header.
@@ -404,10 +475,23 @@ def make_handler(
             return name.lower() in ("127.0.0.1", "localhost", "::1")
 
         def _referer_ok(self) -> bool:
-            """Second DNS-rebinding layer: if a Referer is present it must be
-            loopback (a rebinding page's requests carry the attacker's origin).
-            Absent is allowed — many legitimate navigations omit Referer, and the
-            Host check above is the primary guard."""
+            """Reject cross-site browser requests before they reach management.
+
+            Direct local clients may omit browser headers. Modern browsers send
+            ``Sec-Fetch-Site`` even when a page suppresses ``Referer``, so a
+            hostile site cannot mint pairing codes by using a no-referrer image
+            or fetch. When Origin/Referer are present they must also be local.
+            """
+            fetch_site = self.headers.get("Sec-Fetch-Site", "").strip().lower()
+            if fetch_site and fetch_site not in ("same-origin", "none"):
+                return False
+            origin = self.headers.get("Origin", "").strip()
+            if origin and (urlparse(origin).hostname or "").lower() not in (
+                "127.0.0.1",
+                "localhost",
+                "::1",
+            ):
+                return False
             ref = self.headers.get("Referer", "")
             if not ref:
                 return True
@@ -894,6 +978,23 @@ def make_handler(
             if not self._guard(route):
                 return
             if route == OTP_PAIR_ROUTE:
+                if not self._otp_transport_allowed():
+                    log_otp_security_event(
+                        logging.WARNING,
+                        "otp_pair_transport_rejected",
+                        "OtpPairTransportRejected",
+                    )
+                    self.close_connection = True
+                    self._send_json(403, {
+                        "error": {
+                            "code": "otp_pair_transport_rejected",
+                            "message": "secure local transport required",
+                        }
+                    })
+                    self._best_effort_drain_rejected_body(
+                        OTP_PAIR_MAX_BODY_BYTES
+                    )
+                    return
                 token = self._bearer()
                 if not api.auth_ok(token):
                     log_otp_security_event(
@@ -912,23 +1013,6 @@ def make_handler(
                         OTP_PAIR_MAX_BODY_BYTES
                     )
                     return
-                if not _otp_pair_source_allowed(self.client_address[0]):
-                    log_otp_security_event(
-                        logging.WARNING,
-                        "otp_pair_transport_rejected",
-                        "OtpPairTransportRejected",
-                    )
-                    self.close_connection = True
-                    self._send_json(403, {
-                        "error": {
-                            "code": "otp_pair_transport_rejected",
-                            "message": "secure local transport required",
-                        }
-                    })
-                    self._best_effort_drain_rejected_body(
-                        OTP_PAIR_MAX_BODY_BYTES
-                    )
-                    return
                 body = self._body(
                     OTP_PAIR_MAX_BODY_BYTES,
                     unique_keys=True,
@@ -938,7 +1022,7 @@ def make_handler(
                 self._send_json(*api.otp_pair(token, body))
                 return
             if route == OTP_RELAY_ROUTE:
-                if not _otp_pair_source_allowed(self.client_address[0]):
+                if not self._otp_transport_allowed():
                     log_otp_security_event(
                         logging.WARNING,
                         "otp_relay_transport_rejected",
@@ -1083,7 +1167,7 @@ def build_server(
     # exposing the socket does not expose the unauthenticated endpoints.
     if read_timeout_s <= 0:
         raise ValueError("read_timeout_s must be positive")
-    httpd = _SafeHTTPServer(
+    httpd = _safe_http_server_type(host)(
         (host, port),
         make_handler(api, read_timeout_s, stop_event=stop_event),
     )

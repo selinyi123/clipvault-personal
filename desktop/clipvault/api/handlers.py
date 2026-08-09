@@ -29,7 +29,11 @@ from clipvault.store.memory_repo import (
     SecretMemoryError,
 )
 from clipvault.store.outbox_repo import OutboxRepo
-from clipvault.store.peers_repo import SQLITE_INT_MAX, PeersRepo
+from clipvault.store.peers_repo import (
+    SQLITE_INT_MAX,
+    PeerRevocationPending,
+    PeersRepo,
+)
 from clipvault.store.unit_of_work import unit_of_work
 from clipvault.sync import engine as sync_engine
 from clipvault.sync.pairing import Pairing, hash_token
@@ -581,24 +585,28 @@ class Api:
     # --- pairing + sync (S006, SYNC-2) ---
 
     def list_peers(self) -> tuple[int, dict]:
-        """Management (loopback-only): paired devices, without token hashes."""
+        """Management peers/cleanup tombstones, without token hashes."""
         return 200, {"peers": self.peers.list_peers()}
 
     def unpair(self, device_id: str) -> tuple[int, dict]:
         """Management (loopback-only): revoke a paired device. Its bearer token
         stops authenticating immediately (lost/compromised-device recovery)."""
-        if self.peers.get(device_id) is None:
+        if self.peers.get_for_cleanup(device_id) is None:
+            return 404, {"error": {"code": "not_found", "message": device_id}}
+        # This commit is the security boundary: once it returns, the old
+        # bearer cannot authenticate even if external OTP cleanup is offline.
+        if not self.peers.revoke(device_id):
             return 404, {"error": {"code": "not_found", "message": device_id}}
         try:
             self.otp_pairing_authority.revoke(device_id)
         except OtpPairingError as exc:
-            return exc.http_status, {
-                "error": {
-                    "code": exc.security_code,
-                    "message": "OTP pair revocation failed",
-                }
+            return 202, {
+                "device_id": device_id,
+                "unpaired": True,
+                "cleanup_pending": True,
+                "cleanup_code": exc.security_code,
             }
-        if not self.peers.unpair(device_id):
+        if not self.peers.finalize_unpair(device_id):
             return 404, {"error": {"code": "not_found", "message": device_id}}
         return 200, {"device_id": device_id, "unpaired": True}
 
@@ -666,7 +674,13 @@ class Api:
                     commit=False,
                 )
 
-        token = self.pairing.redeem(code, persist_token=persist_token)
+        try:
+            token = self.pairing.redeem(code, persist_token=persist_token)
+        except PeerRevocationPending:
+            return 409, {"error": {
+                "code": "peer_revocation_pending",
+                "message": "finish pending device cleanup before re-pairing",
+            }}
         if token is None:
             return 403, {"error": {"code": "bad_code", "message": "invalid or expired code"}}
         response = {"token": token, "server_device": self.service.config.device_id}

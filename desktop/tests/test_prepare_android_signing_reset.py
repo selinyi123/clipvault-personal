@@ -208,6 +208,22 @@ def test_nonzero_peer_rejects_new_apply_without_any_write(conn):
     assert conn.execute("SELECT COUNT(*) FROM memory_meta_ts").fetchone()[0] == 0
 
 
+def test_revoked_cleanup_tombstone_is_not_a_paired_signing_reset_peer(conn):
+    _seed_safe_snapshot(conn)
+    peers = PeersRepo(conn)
+    peers.upsert_pair(
+        "old-phone", "Old phone", "token-hash", "2026-07-22T11:00:00Z"
+    )
+    assert peers.revoke("old-phone") is True
+
+    result = reset_tool.prepare_snapshot(conn, apply=True, run_id=RUN_ID)
+
+    assert result.paired_devices == 0
+    assert result.events_appended == 4
+    assert peers.get("old-phone") is None
+    assert peers.get_for_cleanup("old-phone")["revoked"] is True
+
+
 def test_same_retained_run_is_a_proven_noop(conn):
     _seed_safe_snapshot(conn)
     first = reset_tool.prepare_snapshot(conn, apply=True, run_id=RUN_ID)

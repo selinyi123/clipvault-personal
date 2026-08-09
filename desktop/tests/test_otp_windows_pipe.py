@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import struct
+import sys
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 import uuid
 
@@ -14,6 +16,10 @@ from clipvault.otp.ingress import (
     DisabledOtpOpaqueIngressPort,
     OtpOpaqueBrokerUnavailable,
     OtpOpaqueEnvelope,
+)
+from clipvault.otp.pairing import (
+    SqliteOtpPairingAuthority,
+    WindowsNamedPipeOtpBrokerRevocationPort,
 )
 from clipvault.otp import windows_pipe
 from clipvault.runtime.app import ClipVaultRuntime, RuntimeAdapters
@@ -86,9 +92,10 @@ def test_offer_encoder_rejects_noncanonical_uuid():
         bytearray(b"CVOB" + bytes((1, 1, 0, 0, 1)) + bytes(17)),
         bytearray(b"CVOB" + bytes((1, 128, 1, 0, 1)) + bytes(17)),
         _response(0),
-        _response(9),
+        _response(10),
         _response(1) + b"x",
         _response(1, secret=b"1234"),
+        _response(7),
         _response(7, secret=b"123"),
     ],
 )
@@ -101,6 +108,7 @@ def test_response_decoder_accepts_all_strict_status_shapes():
     assert windows_pipe._decode_response(_response(1)) == 1
     assert windows_pipe._decode_response(_response(2)) == 2
     assert windows_pipe._decode_response(_response(7, secret=b"1234")) == 7
+    assert windows_pipe._decode_response(_response(9)) == 9
 
 
 @pytest.mark.parametrize("size", [0, 513, -1, True])
@@ -118,9 +126,10 @@ def test_frame_length_is_unsigned_big_endian():
 
 
 class _FakeKernel:
-    def __init__(self, response=None, *, read_error=None):
+    def __init__(self, response=None, *, read_error=None, trusted=True):
         self.response = response if response is not None else _response()
         self.read_error = read_error
+        self.trusted = trusted
         self.handle = object()
         self.calls = []
         self.closed = []
@@ -134,6 +143,25 @@ class _FakeKernel:
         assert cancel_requested.is_set() is False
         assert pipe_name == r"\\.\pipe\ClipVaultOtpBrokerV1-42-test_1"
         return self.handle
+
+    def verify_server(
+        self,
+        handle,
+        *,
+        expected_broker_path,
+        expected_desktop_path,
+        allow_unsigned,
+    ):
+        assert handle is self.handle
+        self.calls.append(("verify", allow_unsigned))
+        assert expected_desktop_path == Path(sys.executable).resolve()
+        assert expected_broker_path == (
+            expected_desktop_path.parent
+            / "ime"
+            / "otp-broker"
+            / "ClipVaultOtpBroker.exe"
+        )
+        return self.trusted
 
     def write_frame(self, handle, request, deadline):
         assert handle is self.handle
@@ -150,6 +178,9 @@ class _FakeKernel:
     def cancel_and_close(self, handle):
         self.closed.append(handle)
 
+    def cancel(self, handle):
+        self.calls.append(("cancel", handle))
+
 
 def _port(kernel, *, enabled=True):
     return windows_pipe.WindowsNamedPipeOtpOpaqueIngressPort(
@@ -157,6 +188,7 @@ def _port(kernel, *, enabled=True):
         test_namespace="test_1",
         _kernel=kernel,
         _monotonic=lambda: 10.0,
+        _test_install_executable_path=Path(sys.executable).resolve(),
     )
 
 
@@ -165,9 +197,25 @@ def test_port_uses_one_capped_absolute_deadline_and_accepts_only_status_one():
     port = _port(kernel)
     port.forward(_envelope(), deadline_monotonic=99.0)
 
-    assert [call[0] for call in kernel.calls] == ["connect", "write", "read"]
-    assert {call[1] for call in kernel.calls} == {10.25}
+    assert [call[0] for call in kernel.calls] == [
+        "connect",
+        "verify",
+        "write",
+        "read",
+    ]
+    assert {call[1] for call in kernel.calls if call[0] != "verify"} == {10.25}
+    assert ("verify", False) in kernel.calls
     assert kernel.request is not None
+    assert kernel.closed == [kernel.handle]
+
+
+def test_port_rejects_untrusted_server_before_writing_any_offer_byte():
+    kernel = _FakeKernel(trusted=False)
+    with pytest.raises(OtpOpaqueBrokerUnavailable) as exc:
+        _port(kernel).forward(_envelope(), deadline_monotonic=10.2)
+    assert exc.value.security_code == "otp_broker_unavailable"
+    assert [call[0] for call in kernel.calls] == ["connect", "verify"]
+    assert kernel.request is None
     assert kernel.closed == [kernel.handle]
 
 
@@ -176,6 +224,14 @@ def test_port_maps_valid_nonaccepted_status_to_content_free_rejection():
     with pytest.raises(OtpOpaqueBrokerUnavailable) as exc:
         _port(kernel).forward(_envelope(), deadline_monotonic=10.2)
     assert exc.value.security_code == "otp_broker_rejected"
+    assert kernel.closed == [kernel.handle]
+
+
+def test_port_maps_rotation_status_to_explicit_repair_code():
+    kernel = _FakeKernel(_response(9))
+    with pytest.raises(OtpOpaqueBrokerUnavailable) as exc:
+        _port(kernel).forward(_envelope(), deadline_monotonic=10.2)
+    assert exc.value.security_code == "otp_pair_rotation_required"
     assert kernel.closed == [kernel.handle]
 
 
@@ -208,6 +264,44 @@ def test_disabled_port_fails_closed_without_touching_kernel():
     assert kernel.closed == []
 
 
+def test_private_namespace_and_unsigned_trust_switch_are_independent(monkeypatch):
+    monkeypatch.setenv("CLIPVAULT_INSECURE_TEST_PIPE_TRUST", "1")
+    assert windows_pipe._explicit_unsigned_trust_enabled("") is False
+    assert windows_pipe._explicit_unsigned_trust_enabled("test_1") is True
+    monkeypatch.delenv("CLIPVAULT_INSECURE_TEST_PIPE_TRUST")
+    assert windows_pipe._explicit_unsigned_trust_enabled("test_1") is False
+
+
+def test_publisher_sets_compare_spki_across_certificate_rotation():
+    publisher = b"p" * 32
+    unrelated = b"u" * 32
+    assert windows_pipe._publisher_sets_intersect(
+        (b"o" * 32, publisher),
+        (publisher, b"n" * 32),
+    ) is True
+    assert windows_pipe._publisher_sets_intersect(
+        (publisher,),
+        (unrelated,),
+    ) is False
+    assert windows_pipe._publisher_sets_intersect(
+        (b"short",),
+        (b"short",),
+    ) is False
+
+
+def test_production_trust_path_rejects_nonfrozen_source_runtime(monkeypatch):
+    monkeypatch.delattr(windows_pipe.sys, "frozen", raising=False)
+    with pytest.raises(windows_pipe._PipeUnavailable):
+        windows_pipe._production_trust_paths()
+
+
+@pytest.mark.parametrize("namespace", ["contains space", "../escape", "a" * 65])
+def test_invalid_environment_test_namespace_fails_closed(monkeypatch, namespace):
+    monkeypatch.setenv("CLIPVAULT_OTP_TEST_NAMESPACE", namespace)
+    with pytest.raises(ValueError, match="invalid OTP broker test namespace"):
+        windows_pipe.WindowsNamedPipeOtpOpaqueIngressPort(enabled=True)
+
+
 def test_enabled_port_fails_closed_off_windows(monkeypatch):
     monkeypatch.setattr(
         windows_pipe,
@@ -228,6 +322,7 @@ class _BlockingKernel(_FakeKernel):
         super().__init__()
         self.read_started = threading.Event()
         self.cancelled = threading.Event()
+        self.before_cancel = None
 
     def read_frame(self, handle, deadline):
         self.calls.append(("read", deadline))
@@ -235,8 +330,10 @@ class _BlockingKernel(_FakeKernel):
         assert self.cancelled.wait(2)
         raise windows_pipe._PipeUnavailable("cancelled")
 
-    def cancel_and_close(self, handle):
-        super().cancel_and_close(handle)
+    def cancel(self, handle):
+        if self.before_cancel is not None:
+            self.before_cancel()
+        super().cancel(handle)
         self.cancelled.set()
 
 
@@ -244,6 +341,15 @@ def test_concurrent_close_cancels_active_handle_once():
     kernel = _BlockingKernel()
     port = _port(kernel)
     failures = []
+    cancel_lock_observations = []
+
+    def record_whether_cancel_holds_state_lock():
+        acquired = port._lock.acquire(blocking=False)
+        if acquired:
+            port._lock.release()
+        cancel_lock_observations.append(not acquired)
+
+    kernel.before_cancel = record_whether_cancel_holds_state_lock
 
     def run_forward():
         try:
@@ -260,12 +366,13 @@ def test_concurrent_close_cancels_active_handle_once():
     assert worker.is_alive() is False
     assert len(failures) == 1
     assert isinstance(failures[0], OtpOpaqueBrokerUnavailable)
+    assert cancel_lock_observations == [True]
     assert kernel.closed == [kernel.handle]
     port.close()
     assert kernel.closed == [kernel.handle]
 
 
-def _config(tmp_path, *, enabled=False):
+def _config(tmp_path, *, enabled=False, pairing_enabled=False):
     return Config(
         device_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
         device_name="otp-pipe-test",
@@ -274,13 +381,27 @@ def _config(tmp_path, *, enabled=False):
         poll_ms=500,
         vault_path=str(tmp_path / "vault"),
         otp_windows_broker_enabled=enabled,
+        otp_pairing_enabled=pairing_enabled,
     )
 
 
-def test_runtime_config_defaults_disabled_and_explicit_adapters_still_win(tmp_path):
+def test_runtime_config_defaults_disabled_and_explicit_adapters_still_win(
+    tmp_path,
+    conn,
+):
     disabled_runtime = ClipVaultRuntime(_config(tmp_path))
     disabled_port = disabled_runtime.adapters.otp_ingress_port_factory()
     assert isinstance(disabled_port, DisabledOtpOpaqueIngressPort)
+    disabled_authority = (
+        disabled_runtime.adapters.otp_pairing_authority_factory(conn)
+    )
+    assert isinstance(disabled_authority, SqliteOtpPairingAuthority)
+    assert isinstance(
+        disabled_authority._broker_revocation_port,
+        WindowsNamedPipeOtpBrokerRevocationPort,
+    )
+    assert disabled_authority._broker_revocation_port._enabled is True
+    disabled_authority.close()
 
     enabled_runtime = ClipVaultRuntime(_config(tmp_path, enabled=True))
     enabled_port = enabled_runtime.adapters.otp_ingress_port_factory()
@@ -301,12 +422,31 @@ def test_runtime_config_defaults_disabled_and_explicit_adapters_still_win(tmp_pa
     ).adapters is injected
 
 
+def test_production_runtime_rejects_pairing_without_broker(tmp_path):
+    with pytest.raises(ValueError, match="requires the Windows OTP broker"):
+        ClipVaultRuntime(_config(tmp_path, pairing_enabled=True))
+
+
 def test_adapter_source_has_required_win32_lifecycle_and_no_data_layer_imports():
     source = windows_pipe.__file__
     assert source is not None
     with open(source, encoding="utf-8") as source_file:
         text = source_file.read()
     assert "FILE_FLAG_OVERLAPPED" in text
+    assert "SECURITY_SQOS_PRESENT" in text
+    assert "SECURITY_IDENTIFICATION" in text
+    assert "GetNamedPipeServerProcessId" in text
+    assert "ProcessIdToSessionId" in text
+    assert "OpenProcessToken" in text
+    assert "GetFinalPathNameByHandleW" in text
+    assert "WinVerifyTrust" in text
+    assert "CryptEncodeObjectEx" in text
+    assert "WSS_GET_SECONDARY_SIG_COUNT" in text
+    assert "_publisher_sets_intersect" in text
+    assert 'desktop.parent / "ime" / "otp-broker"' in text
+    assert text.index("kernel.verify_server(") < text.index(
+        "kernel.write_frame(handle, request"
+    )
     assert "CancelIoEx" in text
     assert "CloseHandle" in text
     for forbidden in (

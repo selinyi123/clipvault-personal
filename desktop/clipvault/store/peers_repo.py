@@ -21,6 +21,10 @@ class InvalidPeerAckState(RuntimeError):
     """A persisted peer ACK cannot refer to this outbox history."""
 
 
+class PeerRevocationPending(RuntimeError):
+    """A device id is retained only to finish fail-closed cleanup."""
+
+
 class PeersRepo:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
@@ -56,7 +60,8 @@ class PeersRepo:
                 "ON CONFLICT(device_id) DO UPDATE SET device_name=excluded.device_name, "
                 "token_hash=excluded.token_hash, paired_at=excluded.paired_at, "
                 "peer_cursor=CASE WHEN sync_peers.peer_cursor = 0 THEN ? "
-                "ELSE sync_peers.peer_cursor END",
+                "ELSE sync_peers.peer_cursor END "
+                "WHERE sync_peers.revoked = 0",
                 (
                     device_id,
                     device_name,
@@ -77,8 +82,19 @@ class PeersRepo:
                 "VALUES (?,?,?,?,?) "
                 "ON CONFLICT(device_id) DO UPDATE SET device_name=excluded.device_name, "
                 "token_hash=excluded.token_hash, paired_at=excluded.paired_at, "
-                "peer_cursor=excluded.peer_cursor",
+                "peer_cursor=excluded.peer_cursor "
+                "WHERE sync_peers.revoked = 0",
                 (device_id, device_name, token_hash, when, peer_cursor),
+            )
+        state = self.conn.execute(
+            "SELECT revoked FROM sync_peers WHERE device_id = ?",
+            (device_id,),
+        ).fetchone()
+        if state is None or state[0] != 0:
+            if commit:
+                self.conn.rollback()
+            raise PeerRevocationPending(
+                "peer revocation cleanup must finish before re-pairing"
             )
         if commit:
             self.conn.commit()
@@ -86,20 +102,34 @@ class PeersRepo:
     def by_token_hash(self, token_hash: str) -> dict | None:
         r = self.conn.execute(
             "SELECT device_id, device_name, my_acked_seq, peer_cursor "
-            "FROM sync_peers WHERE token_hash = ?", (token_hash,),
+            "FROM sync_peers WHERE token_hash = ? AND revoked = 0", (token_hash,),
         ).fetchone()
         return dict(r) if r else None
 
     def get(self, device_id: str) -> dict | None:
         r = self.conn.execute(
             "SELECT device_id, device_name, my_acked_seq, peer_cursor "
-            "FROM sync_peers WHERE device_id = ?", (device_id,),
+            "FROM sync_peers WHERE device_id = ? AND revoked = 0", (device_id,),
         ).fetchone()
         return dict(r) if r else None
 
+    def get_for_cleanup(self, device_id: str) -> dict | None:
+        """Return active or revoked metadata without exposing the token hash."""
+        r = self.conn.execute(
+            "SELECT device_id, device_name, my_acked_seq, peer_cursor, revoked "
+            "FROM sync_peers WHERE device_id = ?",
+            (device_id,),
+        ).fetchone()
+        if r is None:
+            return None
+        result = dict(r)
+        result["revoked"] = result["revoked"] == 1
+        return result
+
     def set_peer_cursor(self, device_id: str, cursor: int) -> None:
         self.conn.execute(
-            "UPDATE sync_peers SET peer_cursor = ? WHERE device_id = ?",
+            "UPDATE sync_peers SET peer_cursor = ? "
+            "WHERE device_id = ? AND revoked = 0",
             (cursor, device_id),
         )
         self.conn.commit()
@@ -119,7 +149,8 @@ class PeersRepo:
         self.conn.execute(
             "UPDATE sync_peers SET my_acked_seq = CASE "
             "WHEN my_acked_seq < 0 OR my_acked_seq > ? THEN ? "
-            "ELSE MAX(my_acked_seq, ?) END WHERE device_id = ?",
+            "ELSE MAX(my_acked_seq, ?) END "
+            "WHERE device_id = ? AND revoked = 0",
             (high_water, seq, seq, device_id),
         )
         self.conn.commit()
@@ -141,7 +172,8 @@ class PeersRepo:
                 "sync ack high_water must be an integer within SQLite range"
             )
         row = self.conn.execute(
-            "SELECT MIN(my_acked_seq), MAX(my_acked_seq) FROM sync_peers"
+            "SELECT MIN(my_acked_seq), MAX(my_acked_seq) "
+            "FROM sync_peers WHERE revoked = 0"
         ).fetchone()
         if row[0] is None:
             return None
@@ -160,7 +192,8 @@ class PeersRepo:
 
     def touch_last_seen(self, device_id: str, when: str) -> None:
         self.conn.execute(
-            "UPDATE sync_peers SET last_seen_at = ? WHERE device_id = ?",
+            "UPDATE sync_peers SET last_seen_at = ? "
+            "WHERE device_id = ? AND revoked = 0",
             (when, device_id),
         )
         self.conn.commit()
@@ -169,23 +202,52 @@ class PeersRepo:
         """Paired-device count and the most recent peer contact, for status
         display. No tokens or device identifiers are exposed."""
         row = self.conn.execute(
-            "SELECT COUNT(*) AS n, MAX(last_seen_at) AS last FROM sync_peers"
+            "SELECT COUNT(*) AS n, MAX(last_seen_at) AS last "
+            "FROM sync_peers WHERE revoked = 0"
         ).fetchone()
         return {"paired_devices": int(row["n"]), "last_peer_sync_at": row["last"]}
 
     def list_peers(self) -> list[dict]:
-        """Paired devices for the management UI. The token hash is never exposed."""
+        """Active peers plus retryable cleanup tombstones for management."""
         rows = self.conn.execute(
-            "SELECT device_id, device_name, paired_at, last_seen_at "
+            "SELECT device_id, device_name, paired_at, last_seen_at, revoked "
             "FROM sync_peers ORDER BY paired_at"
         ).fetchall()
-        return [dict(r) for r in rows]
+        peers = []
+        for row in rows:
+            peer = dict(row)
+            revoked = peer.pop("revoked") == 1
+            if revoked:
+                peer["cleanup_pending"] = True
+            peers.append(peer)
+        return peers
 
-    def unpair(self, device_id: str) -> bool:
-        """Revoke a device: delete its row so the bearer token it holds no longer
-        authenticates (by_token_hash will miss). Returns whether a row was removed."""
-        cur = self.conn.execute(
-            "DELETE FROM sync_peers WHERE device_id = ?", (device_id,)
-        )
-        self.conn.commit()
-        return cur.rowcount > 0
+    def revoke(self, device_id: str) -> bool:
+        """Durably reject a peer bearer while retaining FK cleanup metadata."""
+        if self.conn.in_transaction:
+            raise RuntimeError("peer revocation requires an idle connection")
+        try:
+            cursor = self.conn.execute(
+                "UPDATE sync_peers SET revoked = 1 WHERE device_id = ?",
+                (device_id,),
+            )
+            self.conn.commit()
+        except BaseException:
+            self.conn.rollback()
+            raise
+        return cursor.rowcount > 0
+
+    def finalize_unpair(self, device_id: str) -> bool:
+        """Delete only an already-revoked tombstone after OTP cleanup."""
+        if self.conn.in_transaction:
+            raise RuntimeError("peer cleanup requires an idle connection")
+        try:
+            cursor = self.conn.execute(
+                "DELETE FROM sync_peers WHERE device_id = ? AND revoked = 1",
+                (device_id,),
+            )
+            self.conn.commit()
+        except BaseException:
+            self.conn.rollback()
+            raise
+        return cursor.rowcount > 0

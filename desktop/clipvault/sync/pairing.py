@@ -23,12 +23,16 @@ def hash_token(token: str) -> str:
 
 class Pairing:
     def __init__(self, ttl_seconds: int = 300, clock=time.monotonic,
-                 max_failures: int = 10, lockout_seconds: int = 60):
+                 max_failures: int = 10, lockout_seconds: int = 60,
+                 max_active_codes: int = 4):
+        if type(max_active_codes) is not int or max_active_codes <= 0:
+            raise ValueError("max_active_codes must be a positive integer")
         self._codes: dict[str, float] = {}  # code -> expiry (monotonic)
         self.ttl = ttl_seconds
         self._clock = clock
         self._max_failures = max_failures
         self._lockout = lockout_seconds
+        self._max_active_codes = max_active_codes
         self._failures: list[float] = []  # monotonic times of recent bad attempts
         self._lock = threading.Lock()
         # A valid code moves out of _codes while its token is being persisted.
@@ -45,6 +49,9 @@ class Pairing:
             # extremely unlikely collision with either an active or currently
             # persisting code instead of silently replacing it.
             self._sweep_codes_locked()
+            while len(self._codes) >= self._max_active_codes:
+                oldest = min(self._codes, key=self._codes.__getitem__)
+                del self._codes[oldest]
             while True:
                 code = f"{secrets.randbelow(10**8):08d}"
                 if code not in self._codes and code not in self._inflight:

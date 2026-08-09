@@ -20,7 +20,7 @@ EXPECTED_TABLES = {
 
 
 def test_a1_migration_from_zero(conn):
-    assert db.schema_version(conn) == 10
+    assert db.schema_version(conn) == 11
     names = {
         r[0]
         for r in conn.execute(
@@ -31,10 +31,16 @@ def test_a1_migration_from_zero(conn):
     assert "clips_fts" in names  # fts5 virtual table
     assert "clip_meta_ts" in names  # added by 0002 (SYNC-2)
     assert "memory_meta_ts" in names  # added by 0003 (SYNC-2 memory LWW)
+    peer_columns = {
+        row["name"]: row
+        for row in conn.execute("PRAGMA table_info('sync_peers')").fetchall()
+    }
+    assert peer_columns["revoked"]["notnull"] == 1
+    assert peer_columns["revoked"]["dflt_value"] == "0"
 
 
 def test_a1_migration_idempotent(conn):
-    assert db.migrate(conn) == 10  # second run is a no-op, returns current version
+    assert db.migrate(conn) == 11  # second run is a no-op, returns current version
 
 
 def test_a1_v5_to_v6_backfills_only_eligible_obsidian_rows(tmp_path):

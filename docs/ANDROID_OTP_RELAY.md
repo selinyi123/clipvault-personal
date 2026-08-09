@@ -37,8 +37,12 @@ The Runtime main screen opens the OTP settings screen. The user must complete:
 
 Capture remains off in a new process even if the previous process stopped unexpectedly. `SCREEN_OFF`,
 shutdown, explicit revoke, deadline expiry and severe process memory pressure erase the in-memory grant
-and reset `captureOptIn=false`. Forgetting a pair additionally deletes its Keystore key, sealed verifier,
-monotonic sequence and nonce history. Desktop device revocation is still required before re-pairing.
+and reset `captureOptIn=false`. The grant also carries a process-local generation: copied authorizations are
+rejected after revoke/rotation, and the producer rechecks the live grant before capture, key reservation,
+encryption and the final transport call. A transport call that has already started is an in-flight terminal
+operation and cannot be recalled from the remote broker. Forgetting a pair additionally deletes its Keystore
+key, sealed verifier, monotonic sequence and nonce history. Desktop device revocation is still required
+before re-pairing.
 
 The default Runtime also includes a separate per-message SMS User Consent fallback. It uses the exact
 official `com.google.android.gms:play-services-auth-api-phone:18.2.0` client frozen in

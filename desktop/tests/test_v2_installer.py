@@ -96,6 +96,7 @@ def test_install_binds_original_user_before_machine_registration_then_activation
     assert "Deploy-RimeData.ps1" in deploy_original
     assert "-ExpectedOwnerSid" in deploy_original
     assert "PowerShellScript('Deploy-RimeData.ps1'" not in script
+    assert "-AllowBuiltInAdministratorOwner" in deploy_original
     assert "-AllowMachineWideRegistration" in install
     assert "-AllowSystemWideTsfRegistration" not in install
 
@@ -118,7 +119,34 @@ def test_admin_installer_has_no_direct_per_user_mutation_or_elevated_launch():
     assert "Flags: unchecked" in task
 
 
-def test_rime_deployment_rejects_elevation_cross_account_and_foreign_user_data():
+def test_installer_uses_file_compatible_noninteractive_switches():
+    script = _read(V2_INSTALLER)
+
+    assert "-Confirm:$false" not in script
+    assert script.count("-NoConfirm") == 7
+    for relative in (
+        "windows/ime/scripts/Register-ClipVaultIme.ps1",
+        "windows/ime/scripts/Unregister-ClipVaultIme.ps1",
+        "windows/ime/scripts/Stop-ClipVaultImeOwnerProcesses.ps1",
+        "windows/ime/scripts/Configure-ClipVaultImeUser.ps1",
+        "windows/ime/scripts/Deploy-RimeData.ps1",
+    ):
+        helper = _read(ROOT / relative)
+        assert "[switch]$NoConfirm" in helper
+        assert "$ConfirmPreference = 'None'" in helper
+
+
+def test_owner_nonce_avoids_pascal_integer_coercion():
+    script = _read(V2_INSTALLER)
+
+    assert "GetDateTimeString('yyyymmddhhnnsszzz', '-', ':')" in script
+    assert "GetDateTimeString('yyyymmddhhnnsszzz', '', '')" not in script
+    assert "c11f5a017e1a5e7" in script
+    assert "GetMD5OfString" not in script
+    assert "Random(" not in script
+
+
+def test_rime_deployment_rejects_cross_account_and_limits_elevated_owner_exception():
     deploy = _read(
         ROOT / "windows" / "ime" / "scripts" / "Deploy-RimeData.ps1"
     )
@@ -128,6 +156,8 @@ def test_rime_deployment_rejects_elevation_cross_account_and_foreign_user_data()
         "WindowsIdentity]::GetCurrent()",
         "actualOwnerSid",
         "WindowsBuiltInRole]::Administrator",
+        "AllowBuiltInAdministratorOwner",
+        "EndsWith('-500'",
         "ownerLocalAppData",
         "userDataDirectory.StartsWith",
     ):
@@ -178,6 +208,102 @@ def test_post_registration_failure_is_disabled_repair_required_not_file_deletion
     assert "deleteafterinstall" in script
 
 
+def test_upgrade_disables_existing_stack_before_restart_manager_file_replacement():
+    script = _read(V2_INSTALLER)
+    prepare = _procedure_body(
+        script,
+        "function PrepareToInstall",
+        "procedure InstallV2Stack",
+    )
+
+    assert "RegistrationPresent" in prepare
+    assert "MachineStateExists := RegKeyExists" in prepare
+    assert "PhysicalImeRegistrationPresent()" in prepare
+    assert "registration state is missing or invalid" in prepare
+    assert "ExistingRegistrationState > 2" in prepare
+    assert "ExistingRegistrationSchema <> 2" in prepare
+    assert "state says clean while the TSF class remains registered" in prepare
+    assert "PackageDirectory" in prepare
+    assert "CompareText(RecordedPackageDirectory" in prepare
+    assert "OwnerSid" in prepare
+    bind = prepare.index("CaptureOriginalUser()")
+    remember = prepare.index("PreparedUpgradeOwnerSid := OwnerSid")
+    remove = prepare.index("RemoveOwnerAutostart()", remember)
+    stop = prepare.index("StopOwnerProcesses()", remove)
+    unregister = prepare.index("RollbackImeRegistration()", stop)
+    outcome = prepare.index("if not (UserClean and MachineClean)", unregister)
+    assert bind < remember < remove < stop < unregister < outcome
+    assert "WriteRepairMarker('UPGRADE_IN_PROGRESS', 0)" in prepare
+    assert "UPGRADE_PREPARE_CLEANUP_INCOMPLETE" in prepare
+    missing_owner = prepare.index("UPGRADE_OWNER_STATE_MISSING")
+    owner_error = prepare.index("ClipVault owner state is missing")
+    missing_owner_rollback = prepare.rfind(
+        "MachineClean := RollbackImeRegistration()", 0, missing_owner
+    )
+    assert missing_owner_rollback != -1
+    assert missing_owner_rollback < missing_owner < owner_error
+    assert "WriteRepairMarker('UPGRADE_OWNER_STATE_MISSING', 2)" in prepare
+    assert "UPGRADE_OWNER_STATE_MISSING_CLEANUP_INCOMPLETE" in prepare
+    bind_failure = prepare.index("Capture can fail before any upgrade cleanup")
+    assert prepare.index("OwnerSid := RecordedOwnerSid", bind_failure) < bind_failure + 500
+    assert prepare.index("RemoveOwnerAutostart()", bind_failure) > bind_failure
+    assert prepare.index("StopOwnerProcesses()", bind_failure) > bind_failure
+    assert prepare.index("RollbackImeRegistration()", bind_failure) > bind_failure
+    assert "UPGRADE_OWNER_BIND_FAILED_CLEANUP_INCOMPLETE" in prepare
+    assert "Restart Manager" in prepare
+    install = _procedure_body(
+        script,
+        "procedure InstallV2Stack",
+        "function InitializeUninstall",
+    )
+    assert "PreparedUpgradeOwnerSid <> ''" in install
+    assert "OwnerSid := PreparedUpgradeOwnerSid" in install
+    assert "(PreparedUpgradeOwnerSid = '') and not CaptureOriginalUser()" in install
+
+
+def test_pre_registration_failures_use_custom_nonzero_exit_and_repair_state():
+    script = _read(V2_INSTALLER)
+    failure = _procedure_body(
+        script,
+        "procedure FailClosedBeforeMachineMutation",
+        "procedure ClearRepairMarker",
+    )
+    install = _procedure_body(
+        script,
+        "procedure InstallV2Stack",
+        "function InitializeUninstall",
+    )
+
+    assert "InstallFailedClosed := True" in failure
+    assert "RegistrationPresent" in failure
+    assert "ExistingRegistrationStateKnown" in failure
+    assert "PhysicalImeRegistrationPresent()" in failure
+    assert "_REGISTRATION_STATE_DRIFT" in failure
+    assert "RecordedOwnerSid" in failure
+    assert "RemoveOwnerAutostart()" in failure
+    assert "StopOwnerProcesses()" in failure
+    assert "RollbackImeRegistration()" in failure
+    assert "ExistingRegistrationState := 0" in failure
+    assert "ExistingRegistrationStateKnown := RegQueryDWordValue" in failure
+    assert "if not RegQueryDWordValue" not in failure
+    assert "RegistrationState := ExistingRegistrationState" not in failure
+    assert "_CLEANUP_INCOMPLETE" in failure
+    assert "WriteRepairMarker(FailureCode, 0)" in failure
+    assert "WriteRepairMarker(FailureCode + '_CLEANUP_INCOMPLETE', 2)" in failure
+    assert "WriteRepairMarker" in failure
+    assert "RaiseException" not in failure
+    remove = failure.index("RemoveOwnerAutostart()")
+    stop = failure.index("StopOwnerProcesses()")
+    rollback = failure.index("RollbackImeRegistration()")
+    outcome = failure.index("if UserClean and MachineClean")
+    assert remove < stop < rollback < outcome
+    assert "OWNER_CAPTURE_FAILED" in install
+    assert "RIME_DEPLOY_FAILED" in install
+    assert "RaiseException" not in install
+    assert install.count("FailClosedBeforeMachineMutation") == 2
+    assert install.count("Exit;") >= 5
+
+
 def test_uninstall_targets_recorded_owner_and_aborts_before_registered_file_removal():
     script = _read(V2_INSTALLER)
     uninstall = _procedure_body(
@@ -194,6 +320,27 @@ def test_uninstall_targets_recorded_owner_and_aborts_before_registered_file_remo
     assert uninstall.count("RaiseException") == 3
     assert "WriteRepairMarker" in uninstall
     assert "OwnerSid" in script
+    initialize = _procedure_body(
+        script,
+        "function InitializeUninstall",
+        "procedure CurUninstallStepChanged",
+    )
+    assert "HasRecordedOwner" in initialize
+    assert "(Trim(OwnerSid) <> '')" in initialize
+    assert "RegistrationSchema" in initialize
+    assert "RegistrationSchema = 2" in initialize
+    assert "PackageDirectory" in initialize
+    assert "CompareText(RecordedPackageDirectory" in initialize
+    assert "ExpandConstant('{app}\\ime')" in initialize
+    assert "RegistrationPresent" in initialize
+    assert "(RegistrationState <= 2)" in initialize
+    assert "Result := HasRecordedOwner and HasValidSchema" in initialize
+    assert "HasValidPackageDirectory and HasKnownRegistrationState" in initialize
+    assert "Result := False" in initialize
+    assert "RegistrationState = 0" not in initialize
+    assert "RepairRequired = 1" not in initialize
+    assert "(OwnerSid <> '') and not RemoveOwnerAutostart()" in uninstall
+    assert "(OwnerSid <> '') and not StopOwnerProcesses()" in uninstall
     assert re.search(r"(?m)^\[UninstallDelete\]$", script) is None
     assert "{localappdata}\\ClipVault" in script
 
@@ -214,8 +361,12 @@ def test_machine_registration_contract_has_unique_x64_profile_owner_and_error_fl
         "KEY_WOW64_32KEY",
         "CLIPVAULT_TSF_PROFILE_OWNER",
         "return result",
+        "EnableLanguageProfile",
     ):
         assert token in registration
+    assert registration.index("AddLanguageProfile") < registration.index(
+        "EnableLanguageProfile"
+    )
     assert "HKEY_CURRENT_USER" not in registration
     assert "CLIPVAULT_TSF_PROFILE_OWNER=1" in cmake
     assert "CLIPVAULT_TSF_PROFILE_OWNER=0" in cmake

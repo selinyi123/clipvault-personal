@@ -55,6 +55,107 @@ def test_bad_poll_interval(tmp_path):
     assert exc.value.field == "watcher.poll_fallback_ms"
 
 
+@pytest.mark.parametrize(
+    ("section", "setting", "field"),
+    [
+        ("server", "port = true", "server.port"),
+        ("storage", "max_clip_bytes = true", "storage.max_clip_bytes"),
+        ("watcher", "poll_fallback_ms = true", "watcher.poll_fallback_ms"),
+        ("log", "retention_days = true", "log.retention_days"),
+        ("suggest", "half_life_days = 0", "suggest.half_life_days"),
+        ("suggest", "w_prefix = nan", "suggest.w_prefix"),
+        ("suggest", "w_app = true", "suggest.w_app"),
+        ("storage", "db_path = 42", "storage.db_path"),
+        ("server", "host = 42", "server.host"),
+    ],
+)
+def test_runtime_settings_reject_implicit_coercion(
+    tmp_path,
+    section,
+    setting,
+    field,
+):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        VALID.format(vault=tmp_path.as_posix())
+        + f"\n[{section}]\n{setting}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(config_mod.ConfigError) as exc:
+        config_mod.load(path)
+
+    assert exc.value.field == field
+
+
+def test_device_id_and_type_dirs_require_exact_strings(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        VALID.replace('device_id   = ""', "device_id = 42").format(
+            vault=tmp_path.as_posix()
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(config_mod.ConfigError) as exc:
+        config_mod.load(path)
+    assert exc.value.field == "device.device_id"
+
+    path.write_text(
+        VALID.format(vault=tmp_path.as_posix()) + "type_dirs = [1, 2]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(config_mod.ConfigError) as exc:
+        config_mod.load(path)
+    assert exc.value.field == "obsidian.type_dirs"
+
+
+@pytest.mark.parametrize(
+    "directory",
+    [
+        "../outside",
+        ".. /outside",
+        "folder./outside",
+        "C:/outside",
+        "/outside",
+        r"\\server\share",
+    ],
+)
+def test_type_dirs_must_remain_inside_vault(tmp_path, directory):
+    path = tmp_path / "config.toml"
+    escaped = directory.replace("\\", "\\\\")
+    path.write_text(
+        VALID.format(vault=tmp_path.as_posix())
+        + f'type_dirs = {{ text = "{escaped}" }}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(config_mod.ConfigError) as exc:
+        config_mod.load(path)
+
+    assert exc.value.field == "obsidian.type_dirs"
+
+
+@pytest.mark.parametrize(
+    ("setting", "field"),
+    [
+        ('enabled = "false"', "backup.enabled"),
+        ('interval_minutes = "15"', "backup.interval_minutes"),
+        ("repo_path = 123", "backup.repo_path"),
+    ],
+)
+def test_backup_settings_reject_coercible_wrong_types(tmp_path, setting, field):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        VALID.format(vault=tmp_path.as_posix()) + f"\n[backup]\n{setting}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(config_mod.ConfigError) as exc:
+        config_mod.load(path)
+
+    assert exc.value.field == field
+
+
 def test_device_id_generated_and_persisted(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text(VALID.format(vault=tmp_path.as_posix()), encoding="utf-8")
@@ -116,10 +217,23 @@ def test_otp_pairing_requires_explicit_boolean_and_can_be_enabled(tmp_path):
 
     path.write_text(
         VALID.format(vault=tmp_path.as_posix())
-        + "\n[otp_relay]\npairing_enabled = true\n",
+        + "\n[otp_relay]\nwindows_broker_enabled = true\n"
+        + "pairing_enabled = true\n",
         encoding="utf-8",
     )
     assert config_mod.load(path).otp_pairing_enabled is True
+
+
+def test_otp_pairing_fails_fast_without_windows_broker(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        VALID.format(vault=tmp_path.as_posix())
+        + "\n[otp_relay]\npairing_enabled = true\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(config_mod.ConfigError) as exc:
+        config_mod.load(path)
+    assert exc.value.field == "otp_relay.windows_broker_enabled"
 
 
 @pytest.mark.parametrize(

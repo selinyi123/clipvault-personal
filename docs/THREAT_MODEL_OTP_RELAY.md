@@ -32,7 +32,7 @@ not automatically trusted.
 | Offline delivery becomes durable | No ordinary outbox; expire and erase instead of replaying later |
 | Revoked/lost computer remains trusted | Per-device revocation clears sessions, pending events and transport keys |
 | Capture API exceeds user consent | Feature-specific opt-in, visible state and platform/distribution review |
-| Secret use races with expiry/revoke | No escaping store view; atomic one-use callback lease; wipe store payload before callback and lease in `finally` |
+| Secret use races with expiry/revoke | No escaping store view; atomic one-use callback lease; wipe store payload before callback and lease in `finally`; platform capture grants use a process-local generation and repeat live-grant checks before the final send |
 | Cleanup scheduler or clock fails | Guard every use by monotonic expiry; schedule nearest deadline; clock regression wipes and closes the session store |
 | User content smuggled into metadata | Generate or strictly validate opaque identifiers; forbid message/code text in IDs and structured diagnostics |
 | One target starves other paired devices | Enforce independent per-target live-event and replay-marker quotas in addition to global bounds |

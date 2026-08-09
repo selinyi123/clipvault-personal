@@ -399,7 +399,7 @@ def test_otp_ingress_offline_broker_returns_503_and_destroys_envelope(conn, tmp_
     assert OutboxRepo(conn).max_seq() == 0
 
 
-def test_otp_ingress_deadline_aware_broker_times_out_and_poison_gate(
+def test_otp_ingress_deadline_aware_broker_timeout_does_not_disable_next_offer(
     conn,
     tmp_path,
 ):
@@ -414,6 +414,8 @@ def test_otp_ingress_deadline_aware_broker_times_out_and_poison_gate(
             self.envelope = envelope
             self.deadline = deadline_monotonic
             self.started.set()
+            if self.calls > 1:
+                return
             while time.monotonic() < deadline_monotonic:
                 time.sleep(0.001)
             raise OtpOpaqueBrokerUnavailable("otp_broker_timeout")
@@ -440,15 +442,15 @@ def test_otp_ingress_deadline_aware_broker_times_out_and_poison_gate(
     assert set(broker.envelope.ciphertext) == {0}
     assert set(broker.envelope.authentication_tag) == {0}
 
-    # A timed-out adapter is poisoned. A second request is discarded without
-    # creating another broker worker or any offline retry state.
+    # The timed-out envelope is never retried, but the synchronous port has
+    # already cancelled and released that call, so a later OTP can proceed.
     second_status, second_response = api.otp_relay(
         TOKEN,
         _raw(_envelope(sequence=2)),
     )
-    assert second_status == 503
-    assert second_response["error"]["code"] == "otp_broker_unavailable"
-    assert broker.calls == 1
+    assert second_status == 202
+    assert second_response["status"] == "accepted"
+    assert broker.calls == 2
     api.close()
     assert broker.closed == 1
 
@@ -552,6 +554,46 @@ def test_otp_server_auth_rejection_log_is_content_free_and_rate_limited(
     assert pair_map.resolved == []
 
 
+@pytest.mark.parametrize(
+    ("remote", "bound", "local", "allowed"),
+    [
+        ("127.0.0.1", "0.0.0.0", "127.0.0.1", True),
+        ("100.70.0.2", None, None, False),
+        ("100.70.0.2", "0.0.0.0", "100.70.0.1", True),
+        ("100.70.0.2", "0.0.0.0", "192.168.1.1", False),
+        ("100.70.0.2", "100.70.0.1", "100.70.0.1", True),
+        ("100.70.0.2", "100.70.0.1", "100.70.0.3", False),
+        (
+            "fd7a:115c:a1e0::2",
+            "fd7a:115c:a1e0::1",
+            "fd7a:115c:a1e0::1",
+            True,
+        ),
+        ("192.168.1.2", "192.168.1.1", "192.168.1.1", False),
+    ],
+)
+def test_otp_transport_requires_tailscale_socket_local_target(
+    remote,
+    bound,
+    local,
+    allowed,
+):
+    assert api_server._otp_pair_source_allowed(
+        remote,
+        bound_address=bound,
+        local_address=local,
+    ) is allowed
+
+
+def test_explicit_ipv6_bind_selects_ipv6_http_server_family():
+    assert api_server._safe_http_server_type("127.0.0.1").address_family == socket.AF_INET
+    assert api_server._safe_http_server_type("::1").address_family == socket.AF_INET6
+    assert (
+        api_server._safe_http_server_type("fd7a:115c:a1e0::1").address_family
+        == socket.AF_INET6
+    )
+
+
 def test_otp_server_rejects_non_tailscale_transport_before_auth_or_broker(
     conn,
     tmp_path,
@@ -561,7 +603,7 @@ def test_otp_server_rejects_non_tailscale_transport_before_auth_or_broker(
     monkeypatch.setattr(
         api_server,
         "_otp_pair_source_allowed",
-        lambda _address: False,
+        lambda _address, **_transport: False,
     )
 
     status, payload = _serve_one(api, lambda port: _post(port, _raw()))

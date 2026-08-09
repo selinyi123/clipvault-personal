@@ -448,13 +448,12 @@ class _OtpOpaqueIngressGate:
         self._port = port
         self._lock = threading.Lock()
         self._closed = False
-        self._poisoned = False
         self._in_flight = False
         self._timeout_s = timeout_s
 
     def forward(self, envelope: OtpOpaqueEnvelope) -> None:
         with self._lock:
-            if self._closed or self._poisoned or self._in_flight:
+            if self._closed or self._in_flight:
                 raise OtpOpaqueBrokerUnavailable()
             self._in_flight = True
         deadline = time.monotonic() + self._timeout_s
@@ -464,14 +463,10 @@ class _OtpOpaqueIngressGate:
                 deadline_monotonic=deadline,
             )
             if time.monotonic() > deadline:
-                with self._lock:
-                    self._poisoned = True
+                # The port contract requires a completed call to have cancelled
+                # its I/O and released all envelope views. Reject this one-shot
+                # OTP, but keep the reusable transport available for later OTPs.
                 raise OtpOpaqueBrokerUnavailable("otp_broker_timeout")
-        except OtpOpaqueBrokerUnavailable as exc:
-            if exc.security_code == "otp_broker_timeout":
-                with self._lock:
-                    self._poisoned = True
-            raise
         finally:
             with self._lock:
                 self._in_flight = False

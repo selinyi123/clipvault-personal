@@ -510,7 +510,11 @@ def prepare_snapshot(
                 max_events=max_events,
                 max_payload_bytes=max_payload_bytes,
             )
-            paired = int(conn.execute("SELECT COUNT(*) FROM sync_peers").fetchone()[0])
+            paired = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM sync_peers WHERE revoked = 0"
+                ).fetchone()[0]
+            )
             outbox_before = int(conn.execute("SELECT COUNT(*) FROM sync_outbox").fetchone()[0])
             existing, malformed, marker_start, marker_end = (
                 _existing_run_fingerprints(conn, run_id)
@@ -557,7 +561,11 @@ def prepare_snapshot(
         )
 
     with unit_of_work(conn):
-        paired = int(conn.execute("SELECT COUNT(*) FROM sync_peers").fetchone()[0])
+        paired = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM sync_peers WHERE revoked = 0"
+            ).fetchone()[0]
+        )
         outbox_before = int(conn.execute("SELECT COUNT(*) FROM sync_outbox").fetchone()[0])
         start_seq = OutboxRepo(conn).sequence_high_water()
         plan = build_snapshot_plan(conn, run_id=run_id)
@@ -923,7 +931,8 @@ def _verify_delivery(
             "desktop outbox changed after reseed apply; keep captures frozen and prepare a reviewed replacement run"
         )
     rows = conn.execute(
-        "SELECT my_acked_seq, paired_at, last_seen_at FROM sync_peers"
+        "SELECT my_acked_seq, paired_at, last_seen_at "
+        "FROM sync_peers WHERE revoked = 0"
     ).fetchall()
     if len(rows) != 1:
         raise SigningResetError("delivery verification requires exactly one paired peer")

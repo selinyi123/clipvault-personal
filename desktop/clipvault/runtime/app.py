@@ -26,6 +26,7 @@ from clipvault.otp.pairing import (
     SqliteOtpPairIdentityPort,
     SqliteOtpPairingAuthority,
     WindowsCredentialManagerStore,
+    WindowsNamedPipeOtpBrokerRevocationPort,
     disabled_pair_identity_factory,
     disabled_pairing_authority_factory,
 )
@@ -71,6 +72,10 @@ class RuntimeAdapters:
 
 
 def _production_adapters(config: Config) -> RuntimeAdapters:
+    if config.otp_pairing_enabled and not config.otp_windows_broker_enabled:
+        raise ValueError(
+            "OTP pairing requires the Windows OTP broker to be enabled"
+        )
     otp_ingress_port_factory: Callable = DisabledOtpOpaqueIngressPort
     if config.otp_windows_broker_enabled:
         otp_ingress_port_factory = partial(
@@ -86,6 +91,14 @@ def _production_adapters(config: Config) -> RuntimeAdapters:
             conn,
             WindowsCredentialManagerStore(enabled=True),
             pairing_enabled=config.otp_pairing_enabled,
+            broker_revocation_port=WindowsNamedPipeOtpBrokerRevocationPort(
+                # Revocation must remain available for a route created under a
+                # previous configuration even after new pairing/ingress is
+                # disabled. With no route, authority.revoke() never opens the
+                # pipe; with a route, an offline Broker leaves a retryable
+                # fail-closed tombstone instead of claiming cleanup completed.
+                enabled=True,
+            ),
         )
 
     runtime_snapshot_server_factory = None
