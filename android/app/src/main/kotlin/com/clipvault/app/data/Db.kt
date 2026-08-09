@@ -99,6 +99,17 @@ interface ClipDao {
     @Query("UPDATE clips SET timesSeen = timesSeen + 1, lastSeenAt = :now WHERE id = :id")
     fun touchSeen(id: String, now: String)
 
+    /** Privacy metadata is monotonic: a current local rule or a trusted peer
+     * may quarantine an existing hash, but no sync event can make it public. */
+    @Query(
+        """UPDATE clips SET
+              isSecret = 1,
+              secretLevel = :level,
+              secretReasons = :reasons
+           WHERE contentHash = :hash AND isSecret = 0""",
+    )
+    fun quarantineByHash(hash: String, level: String, reasons: String): Int
+
     @Query("""SELECT * FROM clips WHERE deleted = 0
               AND (:secret = 1 AND isSecret = 1 OR :secret = 0 AND isSecret = 0)
               AND (:q = '' OR content LIKE '%' || :q || '%')

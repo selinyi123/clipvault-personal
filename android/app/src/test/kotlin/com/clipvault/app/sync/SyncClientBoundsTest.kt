@@ -5,14 +5,28 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.IOException
+import javax.crypto.AEADBadTagException
 
 class SyncClientBoundsTest {
+
+    @Test
+    fun secureTokenFailuresDistinguishTerminalCorruptionFromTemporaryProviderErrors() {
+        assertEquals(
+            SecureTokenFailureDisposition.CORRUPT_BLOB,
+            classifySecureTokenFailure(AEADBadTagException("bad tag")),
+        )
+        assertEquals(
+            SecureTokenFailureDisposition.TRANSIENT,
+            classifySecureTokenFailure(IOException("provider temporarily unavailable")),
+        )
+    }
     @Test
     fun syncHostNormalizerAllowsPlainLanAndDnsHosts() {
         assertEquals("192.168.1.5", normalizeSyncHostOrNull(" 192.168.1.5 "))
@@ -59,6 +73,18 @@ class SyncClientBoundsTest {
             fail("expected IOException")
         } catch (e: IOException) {
             assertEquals("response body too large", e.message)
+        }
+    }
+
+    @Test
+    fun boundedReaderRejectsMalformedUtf8InsteadOfReplacingIt() {
+        val malformed = byteArrayOf(0xC3.toByte(), 0x28)
+
+        try {
+            readUtf8BodyBounded(ByteArrayInputStream(malformed))
+            fail("expected IOException")
+        } catch (e: IOException) {
+            assertEquals("response body is not valid UTF-8", e.message)
         }
     }
 
@@ -138,16 +164,17 @@ class SyncClientBoundsTest {
 
     @Test
     fun pairingResponseRequiresExactBaseEchoAndStringToken() {
+        val pairingToken = "A".repeat(43)
         val valid = parsePairingResponse(
             JSONObject()
-                .put("token", "fresh-token")
+                .put("token", pairingToken)
                 .put("server_device", "desktop-main")
                 .put("outbox_base_seq", 101)
                 .toString(),
             expectedOutboxBaseSeq = 101L,
         )
 
-        assertEquals("fresh-token", valid?.token)
+        assertEquals(pairingToken, valid?.token)
         assertEquals("desktop-main", valid?.serverDevice)
 
         listOf(
@@ -157,12 +184,64 @@ class SyncClientBoundsTest {
             JSONObject().put("token", "").put("outbox_base_seq", 101),
             JSONObject().put("token", 123).put("outbox_base_seq", 101),
             JSONObject()
+                .put("token", "short-token")
+                .put("server_device", "desktop-main")
+                .put("outbox_base_seq", 101),
+            JSONObject()
                 .put("token", "fresh-token")
                 .put("server_device", 123)
                 .put("outbox_base_seq", 101),
+            JSONObject()
+                .put("token", "fresh-token")
+                .put("server_device", "desktop-main")
+                .put("outbox_base_seq", 101)
+                .put("unexpected", true),
         ).forEach { response ->
             assertNull(parsePairingResponse(response.toString(), expectedOutboxBaseSeq = 101L))
         }
+    }
+
+    @Test
+    fun pairPushAndPullResponsesRequireStrictRfc8259Objects() {
+        val pairingToken = "A".repeat(43)
+        val pairing = """{"token":"$pairingToken","server_device":"desktop-main","outbox_base_seq":101}"""
+        assertNotNull(parsePairingResponse(pairing, expectedOutboxBaseSeq = 101L))
+        listOf(
+            "$pairing trailing",
+            "{'token':'fresh-token','server_device':'desktop-main','outbox_base_seq':101}",
+            "{token:\"fresh-token\",\"server_device\":\"desktop-main\",\"outbox_base_seq\":101}",
+            "{\"token\":\"first\",\"\\u0074oken\":\"second\",\"server_device\":\"desktop-main\",\"outbox_base_seq\":101}",
+        ).forEach { raw ->
+            assertNull(raw, parsePairingResponse(raw, expectedOutboxBaseSeq = 101L))
+        }
+
+        assertEquals(7L, parsePushAckResponse("""{"acked_upto":7}"""))
+        listOf(
+            """{"acked_upto":"7"}""",
+            """{"acked_upto":7.0}""",
+            """{"acked_upto":true}""",
+            """{"acked_upto":-1}""",
+            "{'acked_upto':7}",
+            "{acked_upto:7}",
+            """{"acked_upto":7,"unexpected":false}""",
+            "{\"acked_upto\":7,\"\\u0061cked_upto\":8}",
+            """{"acked_upto":7} trailing""",
+        ).forEach { raw -> assertNull(raw, parsePushAckResponse(raw)) }
+
+        val pull = """{"events":[],"next_seq":9,"has_more":false}"""
+        assertNotNull(parsePullResponse(pull))
+        listOf(
+            """{"events":[],"next_seq":"9","has_more":false}""",
+            """{"events":[],"next_seq":9.0,"has_more":false}""",
+            """{"events":[],"next_seq":9,"has_more":"false"}""",
+            """{"events":{},"next_seq":9,"has_more":false}""",
+            """{"events":[],"next_seq":-1,"has_more":false}""",
+            "{'events':[],'next_seq':9,'has_more':false}",
+            "{events:[],next_seq:9,has_more:false}",
+            """{"events":[],"next_seq":9,"has_more":false,"unexpected":0}""",
+            "{\"events\":[],\"next_seq\":9,\"\\u0068as_more\":false,\"has_more\":true}",
+            """{"events":[],"next_seq":9,"has_more":false} trailing""",
+        ).forEach { raw -> assertNull(raw, parsePullResponse(raw)) }
     }
 
     @Test
@@ -207,5 +286,51 @@ class SyncClientBoundsTest {
         } catch (e: IOException) {
             assertEquals("sync pull cursor did not advance", e.message)
         }
+    }
+
+    @Test
+    fun pullCursorRejectsCoercibleControlFields() {
+        val events = JSONArray()
+        for (response in listOf(
+            JSONObject().put("next_seq", "5").put("has_more", false),
+            JSONObject().put("next_seq", 5).put("has_more", "false"),
+        )) {
+            try {
+                nextPullCursorOrThrow(5, events, response)
+                fail("expected IOException")
+            } catch (_: IOException) {
+                // Strict JSON types prevent a forged response from retiring data.
+            }
+        }
+    }
+
+    @Test
+    fun pullCursorRequiresOrderedEventSequencesWithinAcknowledgedRange() {
+        val response = JSONObject()
+            .put("next_seq", 8)
+            .put("has_more", false)
+        val reversed = JSONArray()
+            .put(JSONObject().put("seq", 7))
+            .put(JSONObject().put("seq", 6))
+
+        try {
+            nextPullCursorOrThrow(5, reversed, response)
+            fail("expected IOException")
+        } catch (e: IOException) {
+            assertEquals("invalid sync pull event sequence", e.message)
+        }
+    }
+
+    @Test
+    fun pullCursorAllowsVisibleGapsForQuarantinedOrHiddenRows() {
+        val response = JSONObject()
+            .put("events", JSONArray().put(JSONObject().put("seq", 7)))
+            .put("next_seq", 8)
+            .put("has_more", false)
+
+        assertEquals(
+            8L,
+            nextPullCursorOrThrow(5, response.getJSONArray("events"), response),
+        )
     }
 }

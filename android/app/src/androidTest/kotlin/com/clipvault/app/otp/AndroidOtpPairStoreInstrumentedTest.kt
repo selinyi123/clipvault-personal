@@ -32,8 +32,18 @@ class AndroidOtpPairStoreInstrumentedTest {
                 "\"verifier\":\"$encoded\"}"
             ).toByteArray()
         try {
-            assertTrue(store.importPairResponse(response, sender))
+            assertEquals(
+                OtpPairImportResult.IMPORTED,
+                store.importPairResponse(response, sender),
+            )
             assertTrue(response.all { it == 0.toByte() })
+            val pairFile = File(context.noBackupFilesDir, "otp_pair_v1.bin")
+            val legacyBackup = File(context.noBackupFilesDir, "otp_pair_v1.bin.bak")
+            assertTrue(pairFile.renameTo(legacyBackup))
+            assertFalse(pairFile.exists())
+            assertEquals(OtpPairState.READY, store.inspect().state)
+            assertTrue(pairFile.exists())
+            assertFalse(legacyBackup.exists())
             val summary = requireNotNull(store.summary())
             assertEquals(0L, summary.highSequence)
             assertFalse(summary.toString().contains(encoded))
@@ -47,16 +57,23 @@ class AndroidOtpPairStoreInstrumentedTest {
                 automaticCapture = true,
             )
             val firstNonce = ByteArray(12) { it.toByte() }
-            store.acquire(authorization, firstNonce)!!.use { assertEquals(1L, it.sequence) }
+            val first = store.acquire(authorization, firstNonce)
+                as OtpPairMaterialAcquireResult.Acquired
+            first.lease.use { assertEquals(1L, it.sequence) }
 
             val reopened = AndroidOtpPairStore(context)
             assertEquals(1L, reopened.summary()!!.highSequence)
-            assertNull(reopened.acquire(authorization, firstNonce.copyOf()))
+            assertEquals(
+                OtpPairMaterialAcquireResult.Mismatch,
+                reopened.acquire(authorization, firstNonce.copyOf()),
+            )
             val secondNonce = ByteArray(12) { (it + 1).toByte() }
-            reopened.acquire(authorization, secondNonce)!!.use { assertEquals(2L, it.sequence) }
+            val second = reopened.acquire(authorization, secondNonce)
+                as OtpPairMaterialAcquireResult.Acquired
+            second.lease.use { assertEquals(2L, it.sequence) }
             assertEquals(2L, AndroidOtpPairStore(context).summary()!!.highSequence)
 
-            val encrypted = File(context.noBackupFilesDir, "otp_pair_v1.bin").readBytes()
+            val encrypted = pairFile.readBytes()
             assertFalse(encrypted.toString(Charsets.ISO_8859_1).contains(encoded))
             assertFalse(encrypted.containsSubsequence(verifier))
 
@@ -65,12 +82,35 @@ class AndroidOtpPairStoreInstrumentedTest {
                     "\"sender_device_id\":\"$sender\",\"target_device_id\":\"$target\"," +
                     "\"verifier\":\"$encoded\"}"
                 ).toByteArray()
-            assertFalse(reopened.importPairResponse(duplicateResponse, sender))
+            assertEquals(
+                OtpPairImportResult.CONFLICT,
+                reopened.importPairResponse(duplicateResponse, sender),
+            )
             assertTrue(duplicateResponse.all { it == 0.toByte() })
         } finally {
             verifier.wipe()
             assertTrue(store.clear())
             assertNull(store.summary())
+        }
+    }
+
+    @Test
+    fun frameCorruptionIsTerminalButOpenFailurePreservesTheContainer() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = AndroidOtpPairStore(context)
+        val pairFile = File(context.noBackupFilesDir, "otp_pair_v1.bin")
+        store.clear()
+        try {
+            pairFile.writeBytes(byteArrayOf(1, 2, 3, 4))
+            assertEquals(OtpPairState.UNPAIRED, store.inspect().state)
+            assertFalse(pairFile.exists())
+
+            assertTrue(pairFile.mkdir())
+            assertEquals(OtpPairState.UNAVAILABLE, store.inspect().state)
+            assertTrue(pairFile.exists())
+        } finally {
+            if (pairFile.isDirectory) pairFile.delete()
+            store.clear()
         }
     }
 

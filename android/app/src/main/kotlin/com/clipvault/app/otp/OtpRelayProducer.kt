@@ -16,10 +16,10 @@ internal const val OTP_RELAY_MAX_BODY_BYTES = 4_096
 internal const val OTP_RELAY_MAX_TTL_MS = 180_000L
 internal const val OTP_NONCE_BYTES = 12
 internal const val OTP_PAIR_VERIFIER_BYTES = 32
+internal const val OTP_PAIR_NONCE_HISTORY_CAPACITY = 4_096
 private const val OTP_RELAY_VERSION = 1
 private const val OTP_RELAY_ALGORITHM = "A256GCM"
 private const val OTP_TAG_BYTES = 16
-private const val OTP_NONCE_HISTORY_CAPACITY = 4_096
 private const val OTP_RETIRED_SCOPE_CAPACITY = 64
 private const val OTP_KDF_PREFIX = "ClipVault OTP Relay KDF v1\u0000"
 private const val OTP_KEY_PREFIX = "ClipVault OTP Relay key v1\u0000"
@@ -69,6 +69,8 @@ class OtpCaptureAuthorization(
     val expiresAtMonotonicMs: Long,
     val platformGranted: Boolean,
     val automaticCapture: Boolean = false,
+    /** Process-local generation used to invalidate copied grants on revoke. */
+    internal val grantGeneration: Long = 0L,
 ) {
     init {
         canonicalUuid4(grantId, "capture grant")
@@ -149,6 +151,15 @@ class IsolatedOtpCandidate(
 interface OtpCapturePort : AutoCloseable {
     val source: OtpCaptureSource
     fun capture(authorization: OtpCaptureAuthorization): IsolatedOtpCandidate?
+
+    /**
+     * Re-check the live platform/user grant before each irreversible stage.
+     * The interface default is fail-closed. Synthetic test ports must opt in
+     * explicitly because they do not own an OS grant; a production port must
+     * bind this to its process-local controller.
+     */
+    fun isAuthorizationCurrent(authorization: OtpCaptureAuthorization): Boolean = false
+
     override fun close() = Unit
 }
 
@@ -202,12 +213,20 @@ class OtpPairMaterialLease(
     override fun toString(): String = "<OtpPairMaterialLease redacted>"
 }
 
+sealed class OtpPairMaterialAcquireResult {
+    class Acquired(val lease: OtpPairMaterialLease) : OtpPairMaterialAcquireResult()
+    object Unpaired : OtpPairMaterialAcquireResult()
+    object Mismatch : OtpPairMaterialAcquireResult()
+    object RotationRequired : OtpPairMaterialAcquireResult()
+    object Unavailable : OtpPairMaterialAcquireResult()
+}
+
 interface OtpPairMaterialPort : AutoCloseable {
     /** Must durably reserve both the next sequence and [nonce] before returning. */
     fun acquire(
         authorization: OtpCaptureAuthorization,
         nonce: ByteArray,
-    ): OtpPairMaterialLease?
+    ): OtpPairMaterialAcquireResult
 
     override fun close() = Unit
 }
@@ -216,20 +235,43 @@ class DisabledOtpPairMaterialPort : OtpPairMaterialPort {
     override fun acquire(
         authorization: OtpCaptureAuthorization,
         nonce: ByteArray,
-    ): OtpPairMaterialLease? = null
+    ): OtpPairMaterialAcquireResult = OtpPairMaterialAcquireResult.Unpaired
 }
 
 /** Synchronous, online-only POST. Implementations must never retain [wireBody]. */
 interface OtpOnlineTransportPort : AutoCloseable {
-    fun post(wireBody: ByteArray): Boolean
+    fun post(wireBody: ByteArray): OtpOnlineTransportResult
     override fun close() = Unit
 }
 
 class DisabledOtpOnlineTransportPort : OtpOnlineTransportPort {
-    override fun post(wireBody: ByteArray): Boolean = false
+    override fun post(wireBody: ByteArray): OtpOnlineTransportResult =
+        OtpOnlineTransportResult.PolicyRejected
 }
 
-enum class OtpRelaySendStatus { ACCEPTED, DISABLED, DROPPED }
+sealed class OtpOnlineTransportResult {
+    object Accepted : OtpOnlineTransportResult()
+    object AuthRequired : OtpOnlineTransportResult()
+    object Unpaired : OtpOnlineTransportResult()
+    object Mismatch : OtpOnlineTransportResult()
+    object RotationRequired : OtpOnlineTransportResult()
+    object TransientFailure : OtpOnlineTransportResult()
+    object AuthRejected : OtpOnlineTransportResult()
+    object PolicyRejected : OtpOnlineTransportResult()
+}
+
+enum class OtpRelaySendStatus {
+    ACCEPTED,
+    DISABLED,
+    AUTH_REQUIRED,
+    UNPAIRED,
+    MISMATCH,
+    ROTATION_REQUIRED,
+    TRANSIENT_FAILURE,
+    AUTH_REJECTED,
+    POLICY_REJECTED,
+    DROPPED,
+}
 
 internal fun interface OtpNonceSource { fun nextNonce(): ByteArray }
 internal fun interface OtpEventIdSource { fun nextEventId(): String }
@@ -416,7 +458,10 @@ class OtpJcaRelayProducer internal constructor(
                 lastSequence = 0L
                 nonceDigests.clear()
             }
-            if (material.sequence <= lastSequence || nonceDigests.size >= OTP_NONCE_HISTORY_CAPACITY) {
+            if (
+                material.sequence <= lastSequence ||
+                nonceDigests.size >= OTP_PAIR_NONCE_HISTORY_CAPACITY
+            ) {
                 return@synchronized false
             }
             val digestBytes = MessageDigest.getInstance("SHA-256").digest(nonce)
@@ -441,12 +486,21 @@ class OtpJcaRelayProducer internal constructor(
         var envelope: OtpWireEnvelope? = null
         var wireBody: ByteArray? = null
         return try {
+            if (!capturePort.isAuthorizationCurrent(authorization)) {
+                return OtpRelaySendStatus.DISABLED
+            }
             if (capturePort.source != authorization.source) {
                 throw OtpRelayRejected("capture source mismatch")
             }
             isolated = capturePort.capture(authorization) ?: return OtpRelaySendStatus.DISABLED
+            if (!capturePort.isAuthorizationCurrent(authorization)) {
+                return OtpRelaySendStatus.DISABLED
+            }
             characters = isolated.take(authorization, monotonicClockMs(), explicitUserAction)
             if (characters.size !in 4..8) throw OtpRelayRejected("invalid OTP length")
+            if (!capturePort.isAuthorizationCurrent(authorization)) {
+                return OtpRelaySendStatus.DISABLED
+            }
             plaintext = ByteArray(characters.size)
             for (index in characters.indices) {
                 val value = characters[index]
@@ -464,21 +518,62 @@ class OtpJcaRelayProducer internal constructor(
             val eventId = canonicalUuid4(eventIdSource.nextEventId(), "event id").toString()
             nonce = nonceSource.nextNonce()
             if (nonce.size != OTP_NONCE_BYTES) throw OtpRelayRejected("invalid OTP nonce")
-            material = pairMaterialPort.acquire(authorization, nonce)
-                ?: return OtpRelaySendStatus.DISABLED
+            material = when (val acquired = pairMaterialPort.acquire(authorization, nonce)) {
+                is OtpPairMaterialAcquireResult.Acquired -> acquired.lease
+                OtpPairMaterialAcquireResult.Unpaired -> return OtpRelaySendStatus.UNPAIRED
+                OtpPairMaterialAcquireResult.Mismatch -> return OtpRelaySendStatus.MISMATCH
+                OtpPairMaterialAcquireResult.RotationRequired -> {
+                    return OtpRelaySendStatus.ROTATION_REQUIRED
+                }
+                OtpPairMaterialAcquireResult.Unavailable -> {
+                    return OtpRelaySendStatus.TRANSIENT_FAILURE
+                }
+            }
             if (
                 material.sessionEpoch != authorization.sessionEpoch ||
                 material.senderDeviceId != authorization.senderDeviceId ||
                 material.targetDeviceId != authorization.targetDeviceId ||
                 !reserveInProcess(material, nonce)
             ) throw OtpRelayRejected("pair material or nonce reservation mismatch")
+            if (!capturePort.isAuthorizationCurrent(authorization)) {
+                return OtpRelaySendStatus.DISABLED
+            }
             envelope = sealOtp(plaintext, material, eventId, issuedAtMs, expiresAtMs, nonce)
             nonce = null
             wireBody = envelope.toJsonBytes()
-            if (transport.post(wireBody)) OtpRelaySendStatus.ACCEPTED
-            else OtpRelaySendStatus.DROPPED
+            // This is the last local pre-send guard. Once the transport call
+            // has started, the event is considered in flight and cannot be
+            // recalled from the remote broker; revoke prevents every later
+            // capture/send attempt. A transport implementation may add a
+            // stronger cancellation primitive in a future protocol version.
+            if (!capturePort.isAuthorizationCurrent(authorization)) {
+                return OtpRelaySendStatus.DISABLED
+            }
+            when (transport.post(wireBody)) {
+                OtpOnlineTransportResult.Accepted -> OtpRelaySendStatus.ACCEPTED
+                OtpOnlineTransportResult.AuthRequired -> OtpRelaySendStatus.AUTH_REQUIRED
+                OtpOnlineTransportResult.Unpaired -> OtpRelaySendStatus.UNPAIRED
+                OtpOnlineTransportResult.Mismatch -> OtpRelaySendStatus.MISMATCH
+                OtpOnlineTransportResult.RotationRequired -> OtpRelaySendStatus.ROTATION_REQUIRED
+                OtpOnlineTransportResult.TransientFailure -> {
+                    // Sequence 4,096 is the reserved rotation probe. If it was
+                    // consumed while offline, local state is still exhausted
+                    // and must not collapse back to an ordinary retry signal.
+                    if (material.sequence >= OTP_PAIR_NONCE_HISTORY_CAPACITY) {
+                        OtpRelaySendStatus.ROTATION_REQUIRED
+                    } else {
+                        OtpRelaySendStatus.TRANSIENT_FAILURE
+                    }
+                }
+                OtpOnlineTransportResult.AuthRejected -> OtpRelaySendStatus.AUTH_REJECTED
+                OtpOnlineTransportResult.PolicyRejected -> OtpRelaySendStatus.POLICY_REJECTED
+            }
         } catch (_: Exception) {
-            OtpRelaySendStatus.DROPPED
+            if ((material?.sequence ?: 0L) >= OTP_PAIR_NONCE_HISTORY_CAPACITY) {
+                OtpRelaySendStatus.ROTATION_REQUIRED
+            } else {
+                OtpRelaySendStatus.DROPPED
+            }
         } finally {
             wireBody?.wipe(); envelope?.close(); nonce?.wipe(); material?.close()
             plaintext?.wipe(); characters?.wipe(); isolated?.close()

@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.os.SystemClock
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.util.AtomicFile
 import org.json.JSONObject
@@ -12,11 +13,17 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
+import java.io.FileNotFoundException
 import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
+import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -25,8 +32,14 @@ import javax.crypto.spec.GCMParameterSpec
 private const val OTP_PAIR_KEY_ALIAS = "clipvault_android_otp_pair_v1"
 private const val OTP_PAIR_FILE = "otp_pair_v1.bin"
 private const val OTP_PAIR_FRAME_VERSION = 1
-private const val OTP_PAIR_NONCE_CAPACITY = 4_096
 private const val OTP_PAIR_RESPONSE_MAX_BYTES = 1_024
+private const val OTP_PAIR_FRAME_OVERHEAD_BYTES = 25
+private const val OTP_PAIR_CIPHERTEXT_MIN_BYTES = 32
+private const val OTP_PAIR_CIPHERTEXT_MAX_BYTES = 256 * 1_024
+private const val OTP_PAIR_FILE_MIN_BYTES =
+    OTP_PAIR_FRAME_OVERHEAD_BYTES + OTP_PAIR_CIPHERTEXT_MIN_BYTES
+private const val OTP_PAIR_FILE_MAX_BYTES =
+    OTP_PAIR_FRAME_OVERHEAD_BYTES + OTP_PAIR_CIPHERTEXT_MAX_BYTES
 private val OTP_PAIR_FILE_MAGIC = byteArrayOf('C'.code.toByte(), 'V'.code.toByte(), 'A'.code.toByte(), 'K'.code.toByte())
 private val OTP_PAIR_STATE_MAGIC = byteArrayOf('C'.code.toByte(), 'V'.code.toByte(), 'P'.code.toByte(), 'S'.code.toByte())
 private val OTP_PAIR_FILE_AAD = "ClipVault Android OTP Pair v1".toByteArray(Charsets.UTF_8)
@@ -38,6 +51,30 @@ class OtpPairSummary(
     val highSequence: Long,
 ) {
     override fun toString(): String = "<OtpPairSummary redacted sequence=$highSequence>"
+}
+
+enum class OtpPairState {
+    UNPAIRED,
+    READY,
+    ROTATION_REQUIRED,
+    UNAVAILABLE,
+}
+
+enum class OtpPairImportResult {
+    IMPORTED,
+    CONFLICT,
+    UNAVAILABLE,
+    REJECTED,
+}
+
+class OtpPairInspection internal constructor(
+    val state: OtpPairState,
+    val summary: OtpPairSummary?,
+) {
+    val repairRequired: Boolean
+        get() = state == OtpPairState.ROTATION_REQUIRED
+
+    override fun toString(): String = "<OtpPairInspection redacted state=$state>"
 }
 
 private class OwnedPairState(
@@ -55,55 +92,124 @@ private class OwnedPairState(
     }
 }
 
+private sealed class StoredPairReadResult {
+    class Available(val state: OwnedPairState) : StoredPairReadResult()
+    object Unpaired : StoredPairReadResult()
+    object Unavailable : StoredPairReadResult()
+}
+
+private enum class AtomicRecordPresence {
+    ABSENT,
+    PRESENT,
+    UNAVAILABLE,
+}
+
+private class OtpPairStateCorruptException(cause: Throwable? = null) :
+    IOException("invalid OTP pair state", cause)
+
+private class OtpPairKeyMissingException : Exception("OTP pair key is missing")
+
 /**
  * The verifier, sequence and nonce history are one Keystore-sealed atomic record in
  * no-backup storage. Sequence/nonce reservation is committed before a lease escapes.
  */
 class AndroidOtpPairStore(context: Context) : OtpPairMaterialPort {
     private val appContext = context.applicationContext
-    private val atomicFile = AtomicFile(File(appContext.noBackupFilesDir, OTP_PAIR_FILE))
+    private val pairFile = File(appContext.noBackupFilesDir, OTP_PAIR_FILE)
+    private val atomicFile = AtomicFile(pairFile)
+    private val legacyBackupFile = File(pairFile.path + ".bak")
+    private val pendingNewFile = File(pairFile.path + ".new")
     private val lock = Any()
 
-    fun summary(): OtpPairSummary? = synchronized(lock) {
-        val state = readStateLocked() ?: return@synchronized null
-        state.use {
-            OtpPairSummary(it.sessionEpoch, it.senderDeviceId, it.targetDeviceId, it.highSequence)
+    fun inspect(): OtpPairInspection = synchronized(lock) {
+        when (val stored = readStateLocked()) {
+            is StoredPairReadResult.Available -> stored.state.use {
+                val summary = OtpPairSummary(
+                    it.sessionEpoch,
+                    it.senderDeviceId,
+                    it.targetDeviceId,
+                    it.highSequence,
+                )
+                val state = if (
+                    it.highSequence >= OTP_PAIR_NONCE_HISTORY_CAPACITY ||
+                    it.nonceDigests.size >= OTP_PAIR_NONCE_HISTORY_CAPACITY
+                ) {
+                    OtpPairState.ROTATION_REQUIRED
+                } else {
+                    OtpPairState.READY
+                }
+                OtpPairInspection(state, summary)
+            }
+            StoredPairReadResult.Unpaired -> OtpPairInspection(OtpPairState.UNPAIRED, null)
+            StoredPairReadResult.Unavailable -> OtpPairInspection(OtpPairState.UNAVAILABLE, null)
         }
     }
 
+    fun summary(): OtpPairSummary? = inspect().summary
+
     /** The response buffer is ownership-transferred and wiped on every path. */
-    fun importPairResponse(ownedResponse: ByteArray, expectedSenderDeviceId: String): Boolean {
+    fun importPairResponse(
+        ownedResponse: ByteArray,
+        expectedSenderDeviceId: String,
+    ): OtpPairImportResult {
         var verifier: ByteArray? = null
         try {
-            if (ownedResponse.isEmpty() || ownedResponse.size > OTP_PAIR_RESPONSE_MAX_BYTES) return false
+            if (ownedResponse.isEmpty() || ownedResponse.size > OTP_PAIR_RESPONSE_MAX_BYTES) {
+                return OtpPairImportResult.REJECTED
+            }
             canonicalDevice(expectedSenderDeviceId, "local OTP sender")
-            val text = ownedResponse.toString(Charsets.UTF_8)
-            if (!hasExactFlatResponseKeys(text)) return false
+            val text = decodeUtf8Strict(ownedResponse)
+            if (!hasExactFlatResponseKeys(text)) return OtpPairImportResult.REJECTED
             val body = JSONObject(text)
             val version = body.opt("version")
-            if (version !is Int || version != 1) return false
-            val session = body.opt("session_epoch") as? String ?: return false
-            val sender = body.opt("sender_device_id") as? String ?: return false
-            val target = body.opt("target_device_id") as? String ?: return false
-            val encodedVerifier = body.opt("verifier") as? String ?: return false
+            if (version !is Int || version != 1) return OtpPairImportResult.REJECTED
+            val session = body.opt("session_epoch") as? String
+                ?: return OtpPairImportResult.REJECTED
+            val sender = body.opt("sender_device_id") as? String
+                ?: return OtpPairImportResult.REJECTED
+            val target = body.opt("target_device_id") as? String
+                ?: return OtpPairImportResult.REJECTED
+            val encodedVerifier = body.opt("verifier") as? String
+                ?: return OtpPairImportResult.REJECTED
             canonicalUuid4(session, "pair response session")
             canonicalDevice(sender, "pair response sender")
             canonicalDevice(target, "pair response target")
-            if (sender != expectedSenderDeviceId || sender == target) return false
-            if (!Regex("^[A-Za-z0-9_-]{43}$").matches(encodedVerifier)) return false
+            if (sender != expectedSenderDeviceId || sender == target) {
+                return OtpPairImportResult.REJECTED
+            }
+            if (!Regex("^[A-Za-z0-9_-]{43}$").matches(encodedVerifier)) {
+                return OtpPairImportResult.REJECTED
+            }
             verifier = try { Base64.getUrlDecoder().decode(encodedVerifier) }
-            catch (_: IllegalArgumentException) { return false }
-            if (verifier.size != OTP_PAIR_VERIFIER_BYTES) return false
-            if (Base64.getUrlEncoder().withoutPadding().encodeToString(verifier) != encodedVerifier) return false
+            catch (_: IllegalArgumentException) { return OtpPairImportResult.REJECTED }
+            if (verifier.size != OTP_PAIR_VERIFIER_BYTES) return OtpPairImportResult.REJECTED
+            val canonicalEncoding = Base64.getUrlEncoder().withoutPadding().encode(verifier)
+            val suppliedEncoding = encodedVerifier.toByteArray(Charsets.US_ASCII)
+            try {
+                if (!MessageDigest.isEqual(canonicalEncoding, suppliedEncoding)) {
+                    return OtpPairImportResult.REJECTED
+                }
+            } finally {
+                canonicalEncoding.wipe()
+                suppliedEncoding.wipe()
+            }
 
             synchronized(lock) {
-                if (atomicFile.baseFile.exists()) return false
+                when (atomicRecordPresenceLocked()) {
+                    AtomicRecordPresence.PRESENT -> return OtpPairImportResult.CONFLICT
+                    AtomicRecordPresence.UNAVAILABLE -> return OtpPairImportResult.UNAVAILABLE
+                    AtomicRecordPresence.ABSENT -> Unit
+                }
                 val state = OwnedPairState(session, sender, target, verifier.copyOf(), 0L, mutableListOf())
-                state.use { writeStateLocked(it) }
+                try {
+                    state.use { writeStateLocked(it) }
+                } catch (_: Exception) {
+                    return OtpPairImportResult.UNAVAILABLE
+                }
             }
-            return true
+            return OtpPairImportResult.IMPORTED
         } catch (_: Exception) {
-            return false
+            return OtpPairImportResult.REJECTED
         } finally {
             verifier?.wipe()
             ownedResponse.wipe()
@@ -113,35 +219,53 @@ class AndroidOtpPairStore(context: Context) : OtpPairMaterialPort {
     override fun acquire(
         authorization: OtpCaptureAuthorization,
         nonce: ByteArray,
-    ): OtpPairMaterialLease? = synchronized(lock) {
-        if (nonce.size != OTP_NONCE_BYTES) return@synchronized null
-        if (SystemClock.elapsedRealtime() >= authorization.expiresAtMonotonicMs) return@synchronized null
-        val state = readStateLocked() ?: return@synchronized null
-        state.use {
+    ): OtpPairMaterialAcquireResult = synchronized(lock) {
+        if (nonce.size != OTP_NONCE_BYTES) {
+            return@synchronized OtpPairMaterialAcquireResult.Mismatch
+        }
+        if (SystemClock.elapsedRealtime() >= authorization.expiresAtMonotonicMs) {
+            return@synchronized OtpPairMaterialAcquireResult.Mismatch
+        }
+        val stored = when (val result = readStateLocked()) {
+            is StoredPairReadResult.Available -> result.state
+            StoredPairReadResult.Unpaired -> return@synchronized OtpPairMaterialAcquireResult.Unpaired
+            StoredPairReadResult.Unavailable -> {
+                return@synchronized OtpPairMaterialAcquireResult.Unavailable
+            }
+        }
+        stored.use {
             if (
                 it.sessionEpoch != authorization.sessionEpoch ||
                 it.senderDeviceId != authorization.senderDeviceId ||
-                it.targetDeviceId != authorization.targetDeviceId ||
-                it.highSequence == Long.MAX_VALUE ||
-                it.nonceDigests.size >= OTP_PAIR_NONCE_CAPACITY
-            ) return@synchronized null
+                it.targetDeviceId != authorization.targetDeviceId
+            ) return@synchronized OtpPairMaterialAcquireResult.Mismatch
+            if (
+                it.highSequence >= OTP_PAIR_NONCE_HISTORY_CAPACITY ||
+                it.nonceDigests.size >= OTP_PAIR_NONCE_HISTORY_CAPACITY
+            ) return@synchronized OtpPairMaterialAcquireResult.RotationRequired
 
             val digest = MessageDigest.getInstance("SHA-256").digest(nonce)
             try {
                 if (it.nonceDigests.any { existing -> MessageDigest.isEqual(existing, digest) }) {
-                    return@synchronized null
+                    return@synchronized OtpPairMaterialAcquireResult.Mismatch
                 }
                 it.highSequence += 1L
                 it.nonceDigests += digest.copyOf()
                 // A crash or failed HTTP request consumes the reservation. Never roll it back.
-                writeStateLocked(it)
-                OtpPairMaterialLease(
-                    it.sessionEpoch,
-                    it.senderDeviceId,
-                    it.targetDeviceId,
-                    it.highSequence,
-                    it.verifier.copyOf(),
-                )
+                try {
+                    writeStateLocked(it)
+                    OtpPairMaterialAcquireResult.Acquired(
+                        OtpPairMaterialLease(
+                            it.sessionEpoch,
+                            it.senderDeviceId,
+                            it.targetDeviceId,
+                            it.highSequence,
+                            it.verifier.copyOf(),
+                        ),
+                    )
+                } catch (_: Exception) {
+                    OtpPairMaterialAcquireResult.Unavailable
+                }
             } finally {
                 digest.wipe()
             }
@@ -149,19 +273,21 @@ class AndroidOtpPairStore(context: Context) : OtpPairMaterialPort {
     }
 
     fun clear(): Boolean = synchronized(lock) {
-        var success = true
-        try {
-            atomicFile.delete()
-        } catch (_: Exception) {
-            success = false
-        }
+        // Delete the sealing key first. If Keystore is temporarily unavailable,
+        // retain the sealed record so status remains retryable instead of
+        // claiming UNPAIRED while an orphaned (possibly invalid) alias remains.
         try {
             val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
             if (keyStore.containsAlias(OTP_PAIR_KEY_ALIAS)) keyStore.deleteEntry(OTP_PAIR_KEY_ALIAS)
         } catch (_: Exception) {
-            success = false
+            return@synchronized false
         }
-        success
+        try {
+            atomicFile.delete()
+        } catch (_: Exception) {
+            return@synchronized false
+        }
+        atomicRecordPresenceLocked() == AtomicRecordPresence.ABSENT
     }
 
     override fun close() = Unit
@@ -173,41 +299,143 @@ class AndroidOtpPairStore(context: Context) : OtpPairMaterialPort {
         return keys.size == expected.size && keys.toSet() == expected
     }
 
-    private fun readStateLocked(): OwnedPairState? {
-        if (!atomicFile.baseFile.exists()) return null
+    private fun decodeUtf8Strict(value: ByteArray): String = try {
+        Charsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(ByteBuffer.wrap(value))
+            .toString()
+    } catch (exc: CharacterCodingException) {
+        throw IOException("invalid OTP pair response encoding", exc)
+    }
+
+    private fun atomicResidueExistsLocked(): Boolean =
+        pairFile.exists() || legacyBackupFile.exists() || pendingNewFile.exists()
+
+    /** openRead applies AtomicFile's backup recovery before reporting presence. */
+    private fun atomicRecordPresenceLocked(): AtomicRecordPresence = try {
+        atomicFile.openRead().use { }
+        AtomicRecordPresence.PRESENT
+    } catch (_: FileNotFoundException) {
+        if (atomicResidueExistsLocked()) {
+            AtomicRecordPresence.UNAVAILABLE
+        } else {
+            AtomicRecordPresence.ABSENT
+        }
+    } catch (_: Exception) {
+        AtomicRecordPresence.UNAVAILABLE
+    }
+
+    private fun readStateLocked(): StoredPairReadResult {
         var raw: ByteArray? = null
         var magic: ByteArray? = null
         var iv: ByteArray? = null
         var encrypted: ByteArray? = null
         var plaintext: ByteArray? = null
         try {
-            val rawBytes = atomicFile.openRead().use { it.readBytes() }.also { raw = it }
-            DataInputStream(ByteArrayInputStream(rawBytes)).use { input ->
-                val frameMagic = ByteArray(4).also(input::readFully).also { magic = it }
-                if (!frameMagic.contentEquals(OTP_PAIR_FILE_MAGIC)) throw IOException("invalid OTP pair frame")
-                if (input.readUnsignedByte() != OTP_PAIR_FRAME_VERSION) throw IOException("invalid OTP pair version")
-                if (input.readUnsignedByte() != 0 || input.readUnsignedByte() != 0 || input.readUnsignedByte() != 0) {
-                    throw IOException("invalid OTP pair reserved bytes")
+            val input = try {
+                atomicFile.openRead()
+            } catch (_: FileNotFoundException) {
+                return if (atomicResidueExistsLocked()) {
+                    StoredPairReadResult.Unavailable
+                } else {
+                    StoredPairReadResult.Unpaired
                 }
-                val ivLength = input.readUnsignedByte()
-                if (ivLength != 12) throw IOException("invalid OTP pair IV")
-                val frameIv = ByteArray(ivLength).also(input::readFully).also { iv = it }
-                val encryptedLength = input.readInt()
-                if (encryptedLength !in 32..(256 * 1024)) throw IOException("invalid OTP pair ciphertext")
-                encrypted = ByteArray(encryptedLength).also(input::readFully)
-                if (input.read() != -1) throw IOException("trailing OTP pair bytes")
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, frameIv))
-                cipher.updateAAD(OTP_PAIR_FILE_AAD)
-                plaintext = cipher.doFinal(encrypted)
+            } catch (_: Exception) {
+                return StoredPairReadResult.Unavailable
             }
-            return decodeState(plaintext ?: throw IOException("empty OTP pair state"))
+            val rawBytes = try {
+                input.use {
+                    val length = input.channel.size()
+                    if (length !in OTP_PAIR_FILE_MIN_BYTES.toLong()..OTP_PAIR_FILE_MAX_BYTES.toLong()) {
+                        throw OtpPairStateCorruptException()
+                    }
+                    ByteArray(length.toInt()).also { bytes ->
+                        DataInputStream(input).readFully(bytes)
+                        if (input.read() != -1) throw OtpPairStateCorruptException()
+                        raw = bytes
+                    }
+                }
+            } catch (exc: OtpPairStateCorruptException) {
+                throw exc
+            } catch (_: Exception) {
+                return StoredPairReadResult.Unavailable
+            }
+            try {
+                DataInputStream(ByteArrayInputStream(rawBytes)).use { input ->
+                    val frameMagic = ByteArray(4).also(input::readFully).also { magic = it }
+                    if (!frameMagic.contentEquals(OTP_PAIR_FILE_MAGIC)) throw IOException("invalid OTP pair frame")
+                    if (input.readUnsignedByte() != OTP_PAIR_FRAME_VERSION) throw IOException("invalid OTP pair version")
+                    if (input.readUnsignedByte() != 0 || input.readUnsignedByte() != 0 || input.readUnsignedByte() != 0) {
+                        throw IOException("invalid OTP pair reserved bytes")
+                    }
+                    val ivLength = input.readUnsignedByte()
+                    if (ivLength != 12) throw IOException("invalid OTP pair IV")
+                    ByteArray(ivLength).also(input::readFully).also { iv = it }
+                    val encryptedLength = input.readInt()
+                    if (encryptedLength !in OTP_PAIR_CIPHERTEXT_MIN_BYTES..OTP_PAIR_CIPHERTEXT_MAX_BYTES) {
+                        throw IOException("invalid OTP pair ciphertext")
+                    }
+                    encrypted = ByteArray(encryptedLength).also(input::readFully)
+                    if (input.read() != -1) throw IOException("trailing OTP pair bytes")
+                }
+            } catch (exc: Exception) {
+                throw OtpPairStateCorruptException(exc)
+            }
+
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(
+                Cipher.DECRYPT_MODE,
+                key(createIfMissing = false),
+                GCMParameterSpec(128, requireNotNull(iv)),
+            )
+            cipher.updateAAD(OTP_PAIR_FILE_AAD)
+            plaintext = cipher.doFinal(requireNotNull(encrypted))
+            val decoded = try {
+                decodeState(plaintext ?: throw IOException("empty OTP pair state"))
+            } catch (exc: Exception) {
+                throw OtpPairStateCorruptException(exc)
+            }
+            return StoredPairReadResult.Available(decoded)
+        } catch (_: OtpPairStateCorruptException) {
+            return discardTerminalStateLocked(deleteKey = false)
+        } catch (_: OtpPairKeyMissingException) {
+            return discardTerminalStateLocked(deleteKey = true)
+        } catch (_: KeyPermanentlyInvalidatedException) {
+            return discardTerminalStateLocked(deleteKey = true)
+        } catch (_: AEADBadTagException) {
+            return discardTerminalStateLocked(deleteKey = false)
         } catch (_: Exception) {
-            // Corruption or key invalidation is terminal for this pair. It cannot fall back to plaintext.
-            try { atomicFile.delete() } catch (_: Exception) { }
-            return null
+            // Locked-device Keystore failures and transient provider/I/O errors
+            // must never destroy a still-valid sealed pair record.
+            return StoredPairReadResult.Unavailable
         } finally {
             raw?.wipe(); magic?.wipe(); iv?.wipe(); encrypted?.wipe(); plaintext?.wipe()
+        }
+    }
+
+    private fun discardTerminalStateLocked(deleteKey: Boolean): StoredPairReadResult {
+        if (deleteKey) {
+            try {
+                val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+                if (keyStore.containsAlias(OTP_PAIR_KEY_ALIAS)) {
+                    keyStore.deleteEntry(OTP_PAIR_KEY_ALIAS)
+                }
+            } catch (_: Exception) {
+                // Keep the sealed record so a later unlocked read can retry the
+                // terminal cleanup instead of claiming that re-pair is ready.
+                return StoredPairReadResult.Unavailable
+            }
+        }
+        try {
+            atomicFile.delete()
+        } catch (_: Exception) {
+            return StoredPairReadResult.Unavailable
+        }
+        return when (atomicRecordPresenceLocked()) {
+            AtomicRecordPresence.ABSENT -> StoredPairReadResult.Unpaired
+            AtomicRecordPresence.PRESENT,
+            AtomicRecordPresence.UNAVAILABLE -> StoredPairReadResult.Unavailable
         }
     }
 
@@ -217,7 +445,7 @@ class AndroidOtpPairStore(context: Context) : OtpPairMaterialPort {
         var frame: ByteArray? = null
         try {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, key())
+            cipher.init(Cipher.ENCRYPT_MODE, key(createIfMissing = true))
             cipher.updateAAD(OTP_PAIR_FILE_AAD)
             encrypted = cipher.doFinal(plaintext)
             val output = ByteArrayOutputStream(encrypted.size + 32)
@@ -246,23 +474,33 @@ class AndroidOtpPairStore(context: Context) : OtpPairMaterialPort {
     }
 
     private fun encodeState(state: OwnedPairState): ByteArray {
-        val output = ByteArrayOutputStream(128 + state.nonceDigests.size * 32)
-        DataOutputStream(output).use { data ->
-            data.write(OTP_PAIR_STATE_MAGIC)
-            data.writeByte(OTP_PAIR_FRAME_VERSION)
-            data.write(byteArrayOf(0, 0, 0))
-            data.write(uuidBytes(state.sessionEpoch))
-            data.write(uuidBytes(state.senderDeviceId.removePrefix("device:")))
-            data.write(uuidBytes(state.targetDeviceId.removePrefix("device:")))
-            data.writeLong(state.highSequence)
-            data.write(state.verifier)
-            data.writeInt(state.nonceDigests.size)
+        val encoded = ByteArray(100 + state.nonceDigests.size * 32)
+        try {
+            val output = ByteBuffer.wrap(encoded).order(ByteOrder.BIG_ENDIAN)
+            output.put(OTP_PAIR_STATE_MAGIC)
+            output.put(OTP_PAIR_FRAME_VERSION.toByte())
+            output.put(byteArrayOf(0, 0, 0))
+            putUuid(output, state.sessionEpoch)
+            putUuid(output, state.senderDeviceId.removePrefix("device:"))
+            putUuid(output, state.targetDeviceId.removePrefix("device:"))
+            output.putLong(state.highSequence)
+            output.put(state.verifier)
+            output.putInt(state.nonceDigests.size)
             state.nonceDigests.forEach {
                 if (it.size != 32) throw IOException("invalid nonce digest")
-                data.write(it)
+                output.put(it)
             }
+            return encoded
+        } catch (exc: Exception) {
+            encoded.wipe()
+            throw exc
         }
-        return output.toByteArray()
+    }
+
+    private fun putUuid(output: ByteBuffer, value: String) {
+        val uuid = canonicalUuid4(value, "stored UUID")
+        output.putLong(uuid.mostSignificantBits)
+        output.putLong(uuid.leastSignificantBits)
     }
 
     private fun decodeState(plaintext: ByteArray): OwnedPairState {
@@ -277,11 +515,16 @@ class AndroidOtpPairStore(context: Context) : OtpPairMaterialPort {
             val sender = "device:${readUuid(input)}"
             val target = "device:${readUuid(input)}"
             val sequence = input.readLong()
-            if (sequence < 0L) throw IOException("invalid OTP pair sequence")
+            if (sequence !in 0L..OTP_PAIR_NONCE_HISTORY_CAPACITY.toLong()) {
+                throw IOException("invalid OTP pair sequence")
+            }
             val verifier = ByteArray(OTP_PAIR_VERIFIER_BYTES).also(input::readFully)
             val count = input.readInt()
-            if (count !in 0..OTP_PAIR_NONCE_CAPACITY) {
+            if (count !in 0..OTP_PAIR_NONCE_HISTORY_CAPACITY) {
                 verifier.wipe(); throw IOException("invalid OTP nonce history")
+            }
+            if (sequence != count.toLong()) {
+                verifier.wipe(); throw IOException("OTP pair sequence/history mismatch")
             }
             val nonces = mutableListOf<ByteArray>()
             try {
@@ -298,20 +541,12 @@ class AndroidOtpPairStore(context: Context) : OtpPairMaterialPort {
         }
     }
 
-    private fun uuidBytes(value: String): ByteArray {
-        val uuid = canonicalUuid4(value, "stored UUID")
-        return ByteArrayOutputStream(16).also { output ->
-            DataOutputStream(output).use { data ->
-                data.writeLong(uuid.mostSignificantBits); data.writeLong(uuid.leastSignificantBits)
-            }
-        }.toByteArray()
-    }
-
     private fun readUuid(input: DataInputStream): String = UUID(input.readLong(), input.readLong()).toString()
 
-    private fun key(): SecretKey {
+    private fun key(createIfMissing: Boolean): SecretKey {
         val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         if (!keyStore.containsAlias(OTP_PAIR_KEY_ALIAS)) {
+            if (!createIfMissing) throw OtpPairKeyMissingException()
             val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
             val builder = KeyGenParameterSpec.Builder(
                 OTP_PAIR_KEY_ALIAS,
@@ -324,6 +559,8 @@ class AndroidOtpPairStore(context: Context) : OtpPairMaterialPort {
             generator.init(builder.build())
             generator.generateKey()
         }
-        return (keyStore.getEntry(OTP_PAIR_KEY_ALIAS, null) as KeyStore.SecretKeyEntry).secretKey
+        val entry = keyStore.getEntry(OTP_PAIR_KEY_ALIAS, null) as? KeyStore.SecretKeyEntry
+            ?: throw OtpPairKeyMissingException()
+        return entry.secretKey
     }
 }

@@ -2,13 +2,16 @@ package com.clipvault.app.sync
 
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import com.clipvault.app.ClipVaultApp
 import com.clipvault.app.data.AppDatabase
 import com.clipvault.app.data.ClipEntity
 import com.clipvault.app.data.MemoryPrivacy
+import com.clipvault.core.SECRET_LEVEL_SUSPECT
 import com.clipvault.core.SecretGuard
+import com.clipvault.core.SecretVerdict
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -16,9 +19,13 @@ import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.security.KeyStore
 import java.util.Locale
 import java.util.UUID
+import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -35,12 +42,45 @@ private const val PUSH_BLOCKED_SEQ = "push_blocked_seq"
 private const val PUSH_BLOCKED_REASON = "push_blocked_reason"
 private const val SERVER_DEVICE = "server_device"
 internal const val MAX_SYNC_RESPONSE_BYTES = 7 * 1024 * 1024
+private val PAIRING_RESPONSE_FIELDS = setOf("token", "server_device", "outbox_base_seq")
+private val PUSH_RESPONSE_FIELDS = setOf("acked_upto")
+private val PULL_RESPONSE_FIELDS = setOf("events", "next_seq", "has_more")
+private val PAIR_TOKEN_RE = Regex("^[A-Za-z0-9_-]{32,128}$")
+private val SYNC_DEVICE_ID_RE = Regex("^[A-Za-z0-9_-]{1,80}$")
 private val HOST_LABEL_RE = Regex("""^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$""")
 private val BRACKETED_IPV6_RE = Regex("""^\[[0-9A-Fa-f:.%]+]$""")
 
 internal class SyncAuthException : IOException("sync auth rejected")
 internal class SyncPairingChangedException : IOException("sync pairing changed")
 internal class SyncPushRequestTooLargeException : IOException("sync push request rejected as too large")
+
+private class SecureTokenCorruptException : IOException("invalid secure token container")
+
+internal enum class SecureTokenFailureDisposition {
+    CORRUPT_BLOB,
+    INVALID_KEY,
+    TRANSIENT,
+}
+
+/** Classify a token read without treating a temporary Keystore/provider error
+ * as proof that a still-healthy encrypted pairing credential is invalid. */
+internal fun classifySecureTokenFailure(error: Throwable): SecureTokenFailureDisposition {
+    var current: Throwable? = error
+    while (current != null) {
+        when (current) {
+            is KeyPermanentlyInvalidatedException -> {
+                return SecureTokenFailureDisposition.INVALID_KEY
+            }
+            is SecureTokenCorruptException,
+            is AEADBadTagException,
+            is IllegalArgumentException -> return SecureTokenFailureDisposition.CORRUPT_BLOB
+        }
+        val cause = current.cause
+        if (cause == null || cause === current) break
+        current = cause
+    }
+    return SecureTokenFailureDisposition.TRANSIENT
+}
 
 internal enum class SyncPushBlockReason(val code: String, val safeMessage: String) {
     EVENT_TOO_LARGE("event_too_large", "sync push event exceeds request budget"),
@@ -83,19 +123,41 @@ internal fun normalizeSyncHostOrNull(raw: String?): String? {
     return host.lowercase(Locale.ROOT)
 }
 
+private class WipeableResponseBuffer : ByteArrayOutputStream() {
+    fun decodeUtf8Strict(): String = try {
+        Charsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(ByteBuffer.wrap(buf, 0, count))
+            .toString()
+    } catch (exc: CharacterCodingException) {
+        throw IOException("response body is not valid UTF-8", exc)
+    }
+
+    override fun close() {
+        buf.fill(0)
+        reset()
+    }
+}
+
 internal fun readUtf8BodyBounded(input: InputStream, maxBytes: Int = MAX_SYNC_RESPONSE_BYTES): String {
     require(maxBytes > 0) { "maxBytes must be positive" }
-    val out = ByteArrayOutputStream()
+    val out = WipeableResponseBuffer()
     val buffer = ByteArray(8192)
     var total = 0
-    while (true) {
-        val n = input.read(buffer)
-        if (n == -1) break
-        total += n
-        if (total > maxBytes) throw IOException("response body too large")
-        out.write(buffer, 0, n)
+    try {
+        while (true) {
+            val n = input.read(buffer)
+            if (n == -1) break
+            total += n
+            if (total > maxBytes) throw IOException("response body too large")
+            out.write(buffer, 0, n)
+        }
+        return out.decodeUtf8Strict()
+    } finally {
+        buffer.fill(0)
+        out.close()
     }
-    return out.toString(Charsets.UTF_8.name())
 }
 
 /** A nullable value means the recognized field was absent. Explicit false is
@@ -150,17 +212,80 @@ internal fun parsePairingResponse(
     text: String,
     expectedOutboxBaseSeq: Long,
 ): ValidatedPairingResponse? {
-    val parsed = JSONObject(text)
+    val parsed = parseStrictJsonObject(text) ?: return null
+    if (jsonKeys(parsed) != PAIRING_RESPONSE_FIELDS) return null
     if (strictPairingBaseSeq(parsed.opt("outbox_base_seq")) != expectedOutboxBaseSeq) {
         return null
     }
-    val token = (parsed.opt("token") as? String)?.takeIf { it.isNotEmpty() } ?: return null
+    val token = (parsed.opt("token") as? String)
+        ?.takeIf(PAIR_TOKEN_RE::matches)
+        ?: return null
     val serverDevice = when (val value = parsed.opt("server_device")) {
         null, JSONObject.NULL -> null
-        is String -> value.ifEmpty { null }
+        is String -> value.takeIf(SYNC_DEVICE_ID_RE::matches) ?: return null
         else -> return null
     }
     return ValidatedPairingResponse(token, serverDevice)
+}
+
+/** Parse a successful push response without org.json numeric coercion. The
+ * worker separately proves the acknowledgement does not exceed the exact sent
+ * prefix before deleting any outbox row. */
+internal fun parsePushAckResponse(text: String): Long? {
+    val parsed = parseStrictJsonObject(text) ?: return null
+    if (jsonKeys(parsed) != PUSH_RESPONSE_FIELDS) return null
+    return when (val value = parsed.opt("acked_upto")) {
+        is Int -> value.toLong().takeIf { it >= 0L }
+        is Long -> value.takeIf { it >= 0L }
+        else -> null
+    }
+}
+
+/** Parse the frozen pull-page envelope before its events can reach Room. Event
+ * sequence gaps remain legal because the desktop may advance over quarantined
+ * or content-free rows that are intentionally absent from the visible page. */
+internal fun parsePullResponse(text: String): JSONObject? {
+    val parsed = parseStrictJsonObject(text) ?: return null
+    if (jsonKeys(parsed) != PULL_RESPONSE_FIELDS) return null
+    if (parsed.opt("events") !is JSONArray) return null
+    val nextSeq = when (val value = parsed.opt("next_seq")) {
+        is Int -> value.toLong()
+        is Long -> value
+        else -> return null
+    }
+    if (nextSeq < 0L || parsed.opt("has_more") !is Boolean) return null
+    return parsed
+}
+
+internal class PulledSecretMetadata(
+    val isSecret: Boolean,
+    val level: String?,
+    val reasons: List<String>,
+)
+
+/** Preserve validated remote quarantine metadata when the current local Gate A
+ * scanner does not recognize a declared secret. Local detections take priority
+ * so newer Secret Guard rules can strengthen an older peer's classification. */
+internal fun resolvePulledSecretMetadata(
+    payload: JSONObject,
+    localVerdict: SecretVerdict,
+): PulledSecretMetadata {
+    if (localVerdict.isSecret) {
+        return PulledSecretMetadata(
+            isSecret = true,
+            level = localVerdict.level ?: SECRET_LEVEL_SUSPECT,
+            reasons = localVerdict.reasons,
+        )
+    }
+    if (payload.getBoolean("is_secret")) {
+        val remoteReasons = payload.getJSONArray("secret_reasons")
+        return PulledSecretMetadata(
+            isSecret = true,
+            level = payload.getString("secret_level"),
+            reasons = List(remoteReasons.length()) { index -> remoteReasons.getString(index) },
+        )
+    }
+    return PulledSecretMetadata(isSecret = false, level = null, reasons = emptyList())
 }
 
 /** Keystore-backed bearer-token storage.
@@ -176,19 +301,52 @@ private class SecureTokenStore(context: Context) {
     fun get(): String? {
         val ivB64 = sp.getString(TOKEN_IV, null) ?: return null
         val ctB64 = sp.getString(TOKEN_CT, null) ?: return null
+        var iv: ByteArray? = null
+        var ciphertext: ByteArray? = null
+        var plaintext: ByteArray? = null
         return try {
-            val iv = Base64.decode(ivB64, Base64.NO_WRAP)
-            val ct = Base64.decode(ctB64, Base64.NO_WRAP)
+            val decodedIv = Base64.decode(ivB64, Base64.NO_WRAP).also { iv = it }
+            val decodedCiphertext = Base64.decode(ctB64, Base64.NO_WRAP).also { ciphertext = it }
+            if (decodedIv.size != 12 || decodedCiphertext.size < 16) {
+                throw SecureTokenCorruptException()
+            }
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, iv))
-            String(cipher.doFinal(ct), Charsets.UTF_8)
+            cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, decodedIv))
+            val decodedPlaintext = cipher.doFinal(decodedCiphertext).also { plaintext = it }
+            String(decodedPlaintext, Charsets.UTF_8)
         } catch (e: Exception) {
-            // If the keystore entry was invalidated/corrupted, fail closed and
-            // require pairing again rather than returning stale plaintext.
-            sp.edit().remove(TOKEN_IV).remove(TOKEN_CT).apply()
-            android.util.Log.w("clipvault.sync", "token decrypt failed: ${e.javaClass.simpleName}")
+            val disposition = classifySecureTokenFailure(e)
+            if (disposition == SecureTokenFailureDisposition.TRANSIENT) {
+                // Locked-device and provider/I/O failures are retryable. Keep
+                // the sealed credential while withholding it from this call.
+                android.util.Log.w("clipvault.sync", "token temporarily unavailable")
+            } else {
+                val cleared = discardTerminal(disposition)
+                android.util.Log.w(
+                    "clipvault.sync",
+                    if (cleared) "invalid token container cleared" else "token cleanup deferred",
+                )
+            }
             null
+        } finally {
+            iv?.fill(0)
+            ciphertext?.fill(0)
+            plaintext?.fill(0)
         }
+    }
+
+    private fun discardTerminal(disposition: SecureTokenFailureDisposition): Boolean {
+        if (disposition == SecureTokenFailureDisposition.INVALID_KEY) {
+            try {
+                val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+                if (keyStore.containsAlias(TOKEN_KEY_ALIAS)) keyStore.deleteEntry(TOKEN_KEY_ALIAS)
+            } catch (_: Exception) {
+                // Preserve the ciphertext until the invalid alias can be
+                // removed; otherwise a future pair could remain pinned to it.
+                return false
+            }
+        }
+        return sp.edit().remove(TOKEN_IV).remove(TOKEN_CT).commit()
     }
 
     fun set(value: String?) {
@@ -197,14 +355,24 @@ private class SecureTokenStore(context: Context) {
             if (!cleared) throw IOException("token clear failed")
             return
         }
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key())
-        val ct = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
-        val stored = sp.edit()
-            .putString(TOKEN_IV, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
-            .putString(TOKEN_CT, Base64.encodeToString(ct, Base64.NO_WRAP))
-            .commit()
-        if (!stored) throw IOException("token write failed")
+        val plaintext = value.toByteArray(Charsets.UTF_8)
+        var iv: ByteArray? = null
+        var ciphertext: ByteArray? = null
+        try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, key())
+            val encrypted = cipher.doFinal(plaintext).also { ciphertext = it }
+            val nonce = cipher.iv.also { iv = it }
+            val stored = sp.edit()
+                .putString(TOKEN_IV, Base64.encodeToString(nonce, Base64.NO_WRAP))
+                .putString(TOKEN_CT, Base64.encodeToString(encrypted, Base64.NO_WRAP))
+                .commit()
+            if (!stored) throw IOException("token write failed")
+        } finally {
+            plaintext.fill(0)
+            iv?.fill(0)
+            ciphertext?.fill(0)
+        }
     }
 
     private fun key(): SecretKey {
@@ -705,7 +873,10 @@ class SyncClient private constructor(
         val response = req("POST", "/sync/push", body, auth = true)
         val code = response.code
         val text = response.text
-        if (code == 200) return JSONObject(text).optLong("acked_upto", 0)
+        if (code == 200) {
+            return parsePushAckResponse(text)
+                ?: throw IOException("invalid sync push response")
+        }
         if (isPermanentSyncAuthFailure(code)) throw SyncAuthException()
         // A paired older desktop can still enforce the former 4 MiB cap. This
         // request cannot succeed unchanged, so let the worker persist a safe
@@ -718,7 +889,10 @@ class SyncClient private constructor(
         val response = req("GET", "/sync/pull?since_seq=$since", null, auth = true)
         val code = response.code
         val text = response.text
-        if (code == 200) return JSONObject(text)
+        if (code == 200) {
+            return parsePullResponse(text)
+                ?: throw IOException("invalid sync pull response")
+        }
         if (isPermanentSyncAuthFailure(code)) throw SyncAuthException()
         return null
     }
@@ -735,18 +909,14 @@ object SyncApply {
                 continue
             }
             try {
-                when (ev.optString("kind", "")) {
+                when (validatePulledEvent(ev)) {
                     "clip_new" -> applyClipNew(db, ev.getJSONObject("payload"))
                     "clip_meta" -> applyClipMeta(db, ev.getJSONObject("payload"))
                     "memory_upsert" -> applyMemoryUpsert(db, ev.getJSONObject("payload"))
                     "memory_delete" -> applyMemoryDelete(db, ev.getJSONObject("payload"))
                     "privacy_noop" -> {
-                        val payload = ev.getJSONObject("payload")
-                        if (payload.length() != 0 ||
-                            ev.getString("created_at") != PRIVACY_NOOP_TIMESTAMP
-                        ) {
-                            throw org.json.JSONException("invalid privacy noop")
-                        }
+                        // The strict pull validator already proved this marker is
+                        // content-free and carries the frozen marker timestamp.
                     }
                     else -> android.util.Log.w("clipvault.sync", "ignored unknown event kind")
                 }
@@ -763,16 +933,25 @@ object SyncApply {
 
     private fun applyClipNew(db: AppDatabase, d: JSONObject) {
         val hash = d.getString("content_hash")
-        if (db.clips().byHash(hash) != null) return
         val content = d.getString("content")
         val verdict = SecretGuard.scan(content)              // gate A
-        val isSecret = verdict.isSecret || d.optBoolean("is_secret", false)
+        val secretMetadata = resolvePulledSecretMetadata(d, verdict)
+        if (db.clips().byHash(hash) != null) {
+            if (secretMetadata.isSecret) {
+                db.clips().quarantineByHash(
+                    hash = hash,
+                    level = secretMetadata.level ?: SECRET_LEVEL_SUSPECT,
+                    reasons = JSONArray(secretMetadata.reasons).toString(),
+                )
+            }
+            return
+        }
         db.clips().insert(
             ClipEntity(
                 id = d.getString("id"), content = content, contentHash = hash,
                 contentType = d.getString("content_type"),
-                isSecret = isSecret, secretLevel = if (isSecret) verdict.level else null,
-                secretReasons = JSONArray(verdict.reasons).toString(),
+                isSecret = secretMetadata.isSecret, secretLevel = secretMetadata.level,
+                secretReasons = JSONArray(secretMetadata.reasons).toString(),
                 sourceDevice = d.optString("source_device", "desktop"),
                 sourceApp = if (d.isNull("source_app")) null else d.optString("source_app"),
                 createdAt = d.getString("created_at"), lastSeenAt = d.getString("last_seen_at"),
@@ -781,6 +960,16 @@ object SyncApply {
                 deleted = d.optBoolean("deleted", false),
             )
         )
+        // A concurrent local capture can win the unique-hash insert between
+        // the lookup above and this insert. Re-apply quarantine after the
+        // insert attempt so that race can never leave a public duplicate.
+        if (secretMetadata.isSecret) {
+            db.clips().quarantineByHash(
+                hash = hash,
+                level = secretMetadata.level ?: SECRET_LEVEL_SUSPECT,
+                reasons = JSONArray(secretMetadata.reasons).toString(),
+            )
+        }
     }
 
     private fun applyClipMeta(db: AppDatabase, d: JSONObject) {

@@ -32,9 +32,25 @@ private val CLIP_NEW_FIELDS = setOf(
     "favorite",
     "deleted",
 )
+private val PULL_EVENT_FIELDS = setOf("seq", "kind", "payload", "created_at")
+private val CLIP_META_FIELDS = setOf("content_hash", "patch", "ts")
+private val CLIP_META_PATCH_FIELDS = setOf("pinned", "favorite", "deleted")
+private val MEMORY_UPSERT_FIELDS = setOf("kind", "text", "label", "pinned", "use_count", "source")
+private val MEMORY_DELETE_FIELDS = setOf("kind", "text", "ts")
+private val KNOWN_PULL_EVENT_KINDS = setOf(
+    "clip_new",
+    "clip_meta",
+    "memory_upsert",
+    "memory_delete",
+    PRIVACY_NOOP_KIND,
+)
+private val CLIP_ID = Regex("^[0-9A-Za-z]{1,128}$")
 private val ULID = Regex("^[0-7][0-9A-HJKMNP-TV-Z]{25}$")
 private val CONTENT_HASH = Regex("^[0-9a-f]{64}$")
 private val UTC_SECONDS = Regex("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$")
+private val MEMORY_KINDS = setOf("term", "phrase", "prompt", "command", "key_info", "path")
+private val MEMORY_SOURCES = setOf("manual", "derived", "obsidian_import", "github_import")
+private const val MAX_MEMORY_LABEL_BYTES = 4 * 1024
 private const val MAX_JSON_NESTING_DEPTH = 32
 
 // Deliberately not a data class: the generated toString() would expose public
@@ -44,6 +60,178 @@ internal class ProjectedSyncEvent(
     val timestamp: String,
     val data: JSONObject,
 )
+
+/** Validate one desktop pull event before any field can reach Room.
+ *
+ * Known event kinds use the same payload/type/normalization constraints as the
+ * desktop apply boundary. Unknown kinds remain a forward-compatible no-op. A
+ * seq-valid malformed known event throws JSONException so SyncApply can skip it
+ * and let the caller durably advance the pull cursor.
+ */
+internal fun validatePulledEvent(event: JSONObject): String? {
+    val kind = event.opt("kind") as? String
+        ?: throw JSONException("event kind must be a String")
+    if (kind !in KNOWN_PULL_EVENT_KINDS) return null
+    if (jsonKeys(event) != PULL_EVENT_FIELDS) throw JSONException("invalid event fields")
+    if (strictPositiveLong(event.opt("seq")) == null) throw JSONException("invalid event seq")
+
+    val createdAt = strictUtcInstant(event.opt("created_at"))
+        ?: throw JSONException("invalid event timestamp")
+    val payload = event.opt("payload") as? JSONObject
+        ?: throw JSONException("event payload must be an object")
+
+    when (kind) {
+        "clip_new" -> validatePulledClipNew(payload)
+        "clip_meta" -> validatePulledClipMeta(payload)
+        "memory_upsert" -> validatePulledMemoryUpsert(payload)
+        "memory_delete" -> validatePulledMemoryDelete(payload)
+        PRIVACY_NOOP_KIND -> {
+            if (payload.length() != 0 || createdAt.toString() != PRIVACY_NOOP_TIMESTAMP) {
+                throw JSONException("invalid privacy noop")
+            }
+        }
+    }
+    return kind
+}
+
+private fun validatePulledClipNew(payload: JSONObject) {
+    if (jsonKeys(payload) != CLIP_NEW_FIELDS) throw JSONException("invalid clip fields")
+
+    val id = payload.opt("id") as? String ?: throw JSONException("invalid clip id")
+    if (!CLIP_ID.matches(id)) throw JSONException("invalid clip id")
+
+    val content = payload.opt("content") as? String ?: throw JSONException("invalid clip content")
+    val normalized = Normalize.normalize(content)
+    if (normalized != content || Normalize.rejectReason(normalized) != null) {
+        throw JSONException("invalid normalized clip content")
+    }
+
+    val contentHash = payload.opt("content_hash") as? String
+        ?: throw JSONException("invalid clip hash")
+    if (!CONTENT_HASH.matches(contentHash) || Normalize.contentHash(content) != contentHash) {
+        throw JSONException("invalid clip hash")
+    }
+    val contentType = payload.opt("content_type") as? String
+        ?: throw JSONException("invalid clip content type")
+    if (contentType !in CONTENT_TYPES) throw JSONException("invalid clip content type")
+
+    val declaredSecret = payload.opt("is_secret")
+    if (declaredSecret !is Boolean) throw JSONException("invalid clip secret flag")
+    val secretLevel = payload.opt("secret_level")
+    val secretReasons = payload.opt("secret_reasons")
+    if (declaredSecret) {
+        if (secretLevel !is String || secretLevel !in setOf(SECRET_LEVEL_HARD, SECRET_LEVEL_SUSPECT)) {
+            throw JSONException("invalid clip secret level")
+        }
+        if (!validSecretReasons(secretReasons)) throw JSONException("invalid clip secret reasons")
+    } else if (secretLevel !== JSONObject.NULL || secretReasons !is JSONArray || secretReasons.length() != 0) {
+        throw JSONException("invalid public clip secret metadata")
+    }
+
+    val sourceDevice = payload.opt("source_device") as? String
+        ?: throw JSONException("invalid clip source device")
+    if (
+        sourceDevice.isEmpty() ||
+        sourceDevice.length > 256 ||
+        hasControlChars(sourceDevice) ||
+        SecretGuard.scan(sourceDevice).isSecret
+    ) throw JSONException("invalid clip source device")
+    val sourceApp = payload.opt("source_app")
+    if (
+        sourceApp !== JSONObject.NULL &&
+        (sourceApp !is String ||
+            sourceApp.length > 1024 ||
+            hasControlChars(sourceApp) ||
+            SecretGuard.scan(sourceApp).isSecret)
+    ) throw JSONException("invalid clip source app")
+
+    val createdAt = strictUtcInstant(payload.opt("created_at"))
+        ?: throw JSONException("invalid clip created timestamp")
+    val lastSeenAt = strictUtcInstant(payload.opt("last_seen_at"))
+        ?: throw JSONException("invalid clip last-seen timestamp")
+    if (lastSeenAt.isBefore(createdAt)) throw JSONException("invalid clip timestamp order")
+
+    val timesSeen = strictPositiveLong(payload.opt("times_seen"))
+        ?: throw JSONException("invalid clip times seen")
+    if (timesSeen > Int.MAX_VALUE.toLong()) throw JSONException("invalid clip times seen")
+    for (field in listOf("pinned", "favorite", "deleted")) {
+        if (payload.opt(field) !is Boolean) throw JSONException("invalid clip Boolean")
+    }
+}
+
+private fun validatePulledClipMeta(payload: JSONObject) {
+    if (jsonKeys(payload) != CLIP_META_FIELDS) throw JSONException("invalid clip metadata fields")
+    val contentHash = payload.opt("content_hash") as? String
+        ?: throw JSONException("invalid clip metadata hash")
+    if (!CONTENT_HASH.matches(contentHash)) throw JSONException("invalid clip metadata hash")
+    if (strictUtcInstant(payload.opt("ts")) == null) throw JSONException("invalid clip metadata timestamp")
+    val patch = payload.opt("patch") as? JSONObject
+        ?: throw JSONException("invalid clip metadata patch")
+    val patchFields = jsonKeys(patch)
+    if (patchFields.isEmpty() || !CLIP_META_PATCH_FIELDS.containsAll(patchFields)) {
+        throw JSONException("invalid clip metadata patch")
+    }
+    if (patchFields.any { patch.opt(it) !is Boolean }) {
+        throw JSONException("invalid clip metadata value")
+    }
+}
+
+private fun validatePulledMemoryUpsert(payload: JSONObject) {
+    val fields = jsonKeys(payload)
+    if (!MEMORY_UPSERT_FIELDS.containsAll(fields)) throw JSONException("invalid memory fields")
+    validateMemoryKey(payload)
+
+    if (payload.has("label")) {
+        val label = payload.opt("label")
+        if (label !== JSONObject.NULL && (label !is String || utf8Size(label) > MAX_MEMORY_LABEL_BYTES)) {
+            throw JSONException("invalid memory label")
+        }
+    }
+    if (payload.has("pinned") && payload.opt("pinned") !is Boolean) {
+        throw JSONException("invalid memory pinned flag")
+    }
+    if (payload.has("use_count")) {
+        val useCount = strictNonNegativeLong(payload.opt("use_count"))
+            ?: throw JSONException("invalid memory use count")
+        if (useCount > Int.MAX_VALUE.toLong()) throw JSONException("invalid memory use count")
+    }
+    if (payload.has("source")) {
+        val source = payload.opt("source") as? String
+            ?: throw JSONException("invalid memory source")
+        if (source !in MEMORY_SOURCES || hasControlChars(source)) {
+            throw JSONException("invalid memory source")
+        }
+    }
+}
+
+private fun validatePulledMemoryDelete(payload: JSONObject) {
+    if (jsonKeys(payload) != MEMORY_DELETE_FIELDS) throw JSONException("invalid memory delete fields")
+    validateMemoryKey(payload)
+    if (strictUtcInstant(payload.opt("ts")) == null) throw JSONException("invalid memory timestamp")
+}
+
+private fun validateMemoryKey(payload: JSONObject) {
+    val kind = payload.opt("kind") as? String ?: throw JSONException("invalid memory kind")
+    if (kind !in MEMORY_KINDS) throw JSONException("invalid memory kind")
+    val text = payload.opt("text") as? String ?: throw JSONException("invalid memory text")
+    if (text.isBlank() || text != text.trim() || utf8Size(text) > Normalize.DEFAULT_MAX_CLIP_BYTES) {
+        throw JSONException("invalid memory text")
+    }
+}
+
+private fun strictPositiveLong(value: Any?): Long? = when (value) {
+    is Int -> value.toLong().takeIf { it > 0L }
+    is Long -> value.takeIf { it > 0L }
+    else -> null
+}
+
+private fun strictNonNegativeLong(value: Any?): Long? = when (value) {
+    is Int -> value.toLong().takeIf { it >= 0L }
+    is Long -> value.takeIf { it >= 0L }
+    else -> null
+}
+
+private fun utf8Size(value: String): Int = value.toByteArray(Charsets.UTF_8).size
 
 /** Parse only RFC 8259 JSON objects before handing the text to Android's
  * deliberately lenient org.json implementation. The validator rejects
@@ -282,7 +470,7 @@ private fun privacyNoop(): ProjectedSyncEvent = ProjectedSyncEvent(
     data = JSONObject(),
 )
 
-private fun jsonKeys(value: JSONObject): Set<String> {
+internal fun jsonKeys(value: JSONObject): Set<String> {
     val keys = mutableSetOf<String>()
     val iterator = value.keys()
     while (iterator.hasNext()) keys += iterator.next()

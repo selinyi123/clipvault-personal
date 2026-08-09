@@ -12,6 +12,7 @@ import com.clipvault.app.data.MemoryEntity
 import com.clipvault.app.data.MemoryPrivacy
 import com.clipvault.app.sync.SyncScheduler
 import com.clipvault.core.SecretGuard
+import java.security.MessageDigest
 
 /**
  * ClipVault Runtime API (ADR-0008, ROADMAP_V2 PR2).
@@ -42,6 +43,27 @@ data class Candidate(
     val score: Int,
     val riskFlags: List<String> = emptyList(), // reserved; do not use as a privacy boundary
 )
+
+/** Stable, fixed-size identity for a composite-key Personal Memory row.
+ * The candidate text is deliberately excluded from the wire-visible ID so a
+ * valid long template cannot exceed the Runtime Snapshot 128-byte ID budget.
+ */
+internal fun opaqueMemoryCandidateId(kind: String, text: String): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    digest.update(kind.toByteArray(Charsets.UTF_8))
+    digest.update(0.toByte())
+    digest.update(text.toByteArray(Charsets.UTF_8))
+    val bytes = digest.digest()
+    val alphabet = "0123456789abcdef"
+    return buildString(3 + bytes.size * 2) {
+        append("v1-")
+        bytes.forEach { byte ->
+            val value = byte.toInt() and 0xff
+            append(alphabet[value ushr 4])
+            append(alphabet[value and 0x0f])
+        }
+    }
+}
 
 /**
  * Final read-only privacy gate for clip candidates.
@@ -194,7 +216,7 @@ internal class EligibleMemoryCandidates private constructor(
 ) {
     fun toMemoryCandidates(limit: Int): List<MemoryCandidate> = rows
         .take(limit.coerceAtLeast(0))
-        .map { MemoryCandidate("${it.kind}:${it.text}", it.text, it.kind, it.label) }
+        .map { MemoryCandidate(opaqueMemoryCandidateId(it.kind, it.text), it.text, it.kind, it.label) }
 
     companion object {
         internal const val MATERIALIZE_BATCH_SIZE = 4
@@ -463,7 +485,7 @@ internal object CandidateMixer {
             (memoryKindWeight[m.kind] ?: 20) +
             m.useCount.coerceAtMost(100)
         return Candidate(
-            id = "${m.kind}:${m.text}",
+            id = opaqueMemoryCandidateId(m.kind, m.text),
             source = "memory",
             kind = m.kind,
             text = m.text,

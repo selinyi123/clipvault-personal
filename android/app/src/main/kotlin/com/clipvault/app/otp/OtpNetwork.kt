@@ -13,6 +13,15 @@ private const val OTP_PAIR_RESPONSE_MAX_BYTES = 1_024
 private const val OTP_HTTP_CONNECT_TIMEOUT_MS = 2_500
 private const val OTP_HTTP_READ_TIMEOUT_MS = 2_500
 
+private class WipeablePairResponseBuffer : ByteArrayOutputStream() {
+    fun ownedCopy(): ByteArray = toByteArray()
+
+    override fun close() {
+        buf.fill(0)
+        reset()
+    }
+}
+
 private fun isOnline(context: Context): Boolean {
     val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         ?: return false
@@ -23,7 +32,7 @@ private fun isOnline(context: Context): Boolean {
 }
 
 private fun readBounded(input: java.io.InputStream, maxBytes: Int): ByteArray {
-    val output = ByteArrayOutputStream()
+    val output = WipeablePairResponseBuffer()
     val chunk = ByteArray(1_024)
     var total = 0
     try {
@@ -34,13 +43,21 @@ private fun readBounded(input: java.io.InputStream, maxBytes: Int): ByteArray {
             if (total > maxBytes) throw java.io.IOException("OTP response too large")
             output.write(chunk, 0, read)
         }
-        return output.toByteArray()
+        return output.ownedCopy()
     } finally {
         chunk.wipe()
+        output.close()
     }
 }
 
-enum class OtpPairingStatus { PAIRED, ALREADY_PAIRED, OFFLINE, REJECTED }
+enum class OtpPairingStatus {
+    PAIRED,
+    ALREADY_PAIRED,
+    OFFLINE,
+    UNAVAILABLE,
+    REPAIR_REQUIRED,
+    REJECTED,
+}
 
 /** Redeems the Desktop verifier exactly once and ownership-transfers its response to Keystore storage. */
 class OtpPairingClient(
@@ -51,11 +68,28 @@ class OtpPairingClient(
 ) {
     private val appContext = context.applicationContext
 
+    private fun requireRepair(): OtpPairingStatus = try {
+        runtimeSettings.pairRepairRequired = true
+        OtpPairingStatus.REPAIR_REQUIRED
+    } catch (_: Exception) {
+        OtpPairingStatus.UNAVAILABLE
+    }
+
     fun pair(): OtpPairingStatus {
-        if (pairStore.summary() != null) return OtpPairingStatus.ALREADY_PAIRED
+        if (runtimeSettings.pairRepairRequired) {
+            return OtpPairingStatus.REPAIR_REQUIRED
+        }
+        when (pairStore.inspect().state) {
+            OtpPairState.READY -> return OtpPairingStatus.ALREADY_PAIRED
+            OtpPairState.ROTATION_REQUIRED -> return OtpPairingStatus.REPAIR_REQUIRED
+            OtpPairState.UNAVAILABLE -> return OtpPairingStatus.UNAVAILABLE
+            OtpPairState.UNPAIRED -> Unit
+        }
         if (!isOnline(appContext)) return OtpPairingStatus.OFFLINE
         var requestBody: ByteArray? = null
         var responseBody: ByteArray? = null
+        var requestMayBeCommitted = false
+        var remoteCommitted = false
         return try {
             val snapshot = syncSettings.requestSnapshot(hostOverride = null, auth = true)
             if (!isOtpTransportBaseUrlAllowed(snapshot.baseUrl)) return OtpPairingStatus.REJECTED
@@ -72,27 +106,44 @@ class OtpPairingClient(
                 connection.setRequestProperty("Authorization", "Bearer ${snapshot.bearerToken}")
                 connection.setRequestProperty("Content-Type", "application/json")
                 connection.setFixedLengthStreamingMode(requestBody.size)
-                connection.outputStream.use { it.write(requestBody) }
-                if (connection.responseCode != HttpURLConnection.HTTP_CREATED) {
+                connection.outputStream.use {
+                    // Once a connected request stream exists, a write/close or
+                    // response-read failure cannot prove the one-time pairing
+                    // mutation did not reach Desktop. Preserve the split-brain
+                    // repair signal instead of presenting an ordinary retry.
+                    requestMayBeCommitted = true
+                    it.write(requestBody)
+                }
+                val responseCode = connection.responseCode
+                if (responseCode == HttpURLConnection.HTTP_CONFLICT) {
+                    return requireRepair()
+                }
+                if (responseCode != HttpURLConnection.HTTP_CREATED) {
                     return OtpPairingStatus.REJECTED
                 }
+                remoteCommitted = true
                 if (!connection.getHeaderField("Cache-Control").orEmpty().contains("no-store")) {
-                    return OtpPairingStatus.REJECTED
+                    return requireRepair()
                 }
                 responseBody = connection.inputStream.use { readBounded(it, OTP_PAIR_RESPONSE_MAX_BYTES) }
-                if (!syncSettings.isCurrent(snapshot)) return OtpPairingStatus.REJECTED
+                if (!syncSettings.isCurrent(snapshot)) return requireRepair()
                 val transferred = responseBody
                 responseBody = null
-                if (pairStore.importPairResponse(transferred, sender)) {
-                    OtpPairingStatus.PAIRED
-                } else {
-                    OtpPairingStatus.REJECTED
+                when (pairStore.importPairResponse(transferred, sender)) {
+                    OtpPairImportResult.IMPORTED -> {
+                        runtimeSettings.pairRepairRequired = false
+                        OtpPairingStatus.PAIRED
+                    }
+                    OtpPairImportResult.CONFLICT,
+                    OtpPairImportResult.UNAVAILABLE,
+                    OtpPairImportResult.REJECTED -> requireRepair()
                 }
             } finally {
                 connection.disconnect()
             }
         } catch (_: Exception) {
-            OtpPairingStatus.REJECTED
+            if (requestMayBeCommitted || remoteCommitted) requireRepair()
+            else OtpPairingStatus.REJECTED
         } finally {
             requestBody?.wipe(); responseBody?.wipe()
         }

@@ -150,11 +150,13 @@ class SyncWorkerSourceTest {
 
         val applyBody = sync.substring(applyStart, applyEnd)
         assertTrue(applyBody.contains("\"privacy_noop\" -> {"))
-        assertTrue(applyBody.contains("ev.getJSONObject(\"payload\")"))
-        assertTrue(applyBody.contains("payload.length() != 0"))
-        assertTrue(applyBody.contains("ev.getString(\"created_at\") != PRIVACY_NOOP_TIMESTAMP"))
-        assertTrue(applyBody.contains("throw org.json.JSONException(\"invalid privacy noop\")"))
+        assertTrue(applyBody.contains("validatePulledEvent(ev)"))
         assertFalse(applyBody.contains("\"privacy_noop\" -> apply"))
+
+        val validator = readSource("SyncGateB.kt")
+        assertTrue(validator.contains("payload.length() != 0"))
+        assertTrue(validator.contains("createdAt.toString() != PRIVACY_NOOP_TIMESTAMP"))
+        assertTrue(validator.contains("throw JSONException(\"invalid privacy noop\")"))
     }
 
     @Test

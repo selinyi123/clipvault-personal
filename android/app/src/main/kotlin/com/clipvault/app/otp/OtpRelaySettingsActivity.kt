@@ -89,7 +89,21 @@ private fun OtpSettingsScreen() {
         )
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(if (status.paired) "安全配对：已建立" else "安全配对：未建立")
+                Text(
+                    when (status.pairState) {
+                        OtpPairState.UNPAIRED -> "安全配对：未建立"
+                        OtpPairState.READY -> "安全配对：已建立"
+                        OtpPairState.ROTATION_REQUIRED -> "安全配对：需要重新配对"
+                        OtpPairState.UNAVAILABLE -> "安全配对：暂时不可读取"
+                    },
+                )
+                Text("OTP pair state: ${status.pairState}")
+                if (status.repairRequired) {
+                    Text(
+                        "OTP 配对额度已耗尽。请先在 Desktop 撤销设备，再清除本机配对并重新配对。",
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 Text(if (status.activeGrant) "捕获授权：当前有效" else "捕获授权：关闭")
                 Text(
                     if (status.userConsentSessionActive) "逐条确认会话：正在等待"
@@ -112,6 +126,8 @@ private fun OtpSettingsScreen() {
                         OtpPairingStatus.PAIRED -> "OTP 安全配对已一次性导入 Android Keystore。"
                         OtpPairingStatus.ALREADY_PAIRED -> "OTP 安全配对已存在。"
                         OtpPairingStatus.OFFLINE -> "电脑不在线，未创建持久队列。"
+                        OtpPairingStatus.UNAVAILABLE -> "本机 Keystore 或配对记录暂时不可用；数据未被删除，请解锁后重试。"
+                        OtpPairingStatus.REPAIR_REQUIRED -> "Desktop 与本机 OTP 配对状态未完成一致提交；请先在 Desktop 撤销设备，再清除本机配对并重新建立。"
                         OtpPairingStatus.REJECTED -> "配对被拒绝；请确认同步配对、Tailscale 与 Desktop OTP Pair Authority。"
                     }
                     busy = false
@@ -121,7 +137,7 @@ private fun OtpSettingsScreen() {
         ) { Text("建立 OTP 安全配对") }
 
         Button(
-            enabled = !busy && status.paired && !status.activeGrant &&
+            enabled = !busy && status.pairState == OtpPairState.READY && !status.activeGrant &&
                 !status.userConsentSessionActive,
             onClick = {
                 val session = OtpRelayRuntime.beginUserConsentSession(context)
@@ -136,7 +152,8 @@ private fun OtpSettingsScreen() {
         ) { Text("等待并确认下一条短信验证码") }
 
         Button(
-            enabled = !busy && status.paired && status.smsCaptureIncluded && !status.activeGrant,
+            enabled = !busy && status.pairState == OtpPairState.READY &&
+                status.smsCaptureIncluded && !status.activeGrant,
             onClick = {
                 if (status.smsPermissionGranted) {
                     val armed = OtpRelayRuntime.authorizeApprovedSms(context)

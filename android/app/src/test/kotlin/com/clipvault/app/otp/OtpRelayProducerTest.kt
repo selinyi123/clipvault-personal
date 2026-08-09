@@ -18,6 +18,7 @@ class OtpRelayProducerTest {
 
     private class Capture(private var value: CharArray?) : OtpCapturePort {
         override val source = OtpCaptureSource.SMS_USER_CONSENT
+        override fun isAuthorizationCurrent(authorization: OtpCaptureAuthorization): Boolean = true
         override fun capture(authorization: OtpCaptureAuthorization): IsolatedOtpCandidate? {
             val owned = value ?: return null
             value = null
@@ -31,20 +32,24 @@ class OtpRelayProducerTest {
         override fun acquire(
             authorization: OtpCaptureAuthorization,
             nonce: ByteArray,
-        ): OtpPairMaterialLease {
+        ): OtpPairMaterialAcquireResult {
             acquiredNonce = nonce.copyOf()
-            return OtpPairMaterialLease(
-                authorization.sessionEpoch, authorization.senderDeviceId,
-                authorization.targetDeviceId, sequence, verifier.copyOf(),
+            return OtpPairMaterialAcquireResult.Acquired(
+                OtpPairMaterialLease(
+                    authorization.sessionEpoch, authorization.senderDeviceId,
+                    authorization.targetDeviceId, sequence, verifier.copyOf(),
+                ),
             )
         }
         override fun close() { verifier.wipe(); acquiredNonce?.wipe() }
     }
 
-    private class Transport : OtpOnlineTransportPort {
+    private class Transport(
+        private val result: OtpOnlineTransportResult = OtpOnlineTransportResult.Accepted,
+    ) : OtpOnlineTransportPort {
         var body: ByteArray? = null
-        override fun post(wireBody: ByteArray): Boolean {
-            body = wireBody.copyOf(); return true
+        override fun post(wireBody: ByteArray): OtpOnlineTransportResult {
+            body = wireBody.copyOf(); return result
         }
         override fun close() = Unit
     }
@@ -154,6 +159,65 @@ class OtpRelayProducerTest {
             producer.captureAndRelay(authorization(), explicitUserAction = true, ttlMs = 1_000L),
         )
         assertEquals(null, transport.body)
+        producer.close()
+    }
+
+    @Test
+    fun localPairRotationSignalIsNotCollapsedIntoDisabledOrDropped() {
+        val pairPort = object : OtpPairMaterialPort {
+            override fun acquire(
+                authorization: OtpCaptureAuthorization,
+                nonce: ByteArray,
+            ): OtpPairMaterialAcquireResult = OtpPairMaterialAcquireResult.RotationRequired
+        }
+        val producer = OtpJcaRelayProducer(
+            Capture("482917".toCharArray()), pairPort, Transport(),
+            OtpNonceSource { ByteArray(12) { (it + 1).toByte() } },
+            OtpEventIdSource { event }, { 1_000L }, { 1L },
+        )
+        assertEquals(
+            OtpRelaySendStatus.ROTATION_REQUIRED,
+            producer.captureAndRelay(authorization(), explicitUserAction = true, ttlMs = 1_000L),
+        )
+        producer.close()
+    }
+
+    @Test
+    fun finalReservedSequenceReportsRotationWhenTransportIsOffline() {
+        val verifier = ByteArray(32) { it.toByte() }
+        val producer = OtpJcaRelayProducer(
+            Capture("482917".toCharArray()),
+            PairPort(verifier, OTP_PAIR_NONCE_HISTORY_CAPACITY.toLong()),
+            Transport(OtpOnlineTransportResult.TransientFailure),
+            OtpNonceSource { ByteArray(12) { (it + 1).toByte() } },
+            OtpEventIdSource { event }, { 1_000L }, { 1L },
+        )
+        assertEquals(
+            OtpRelaySendStatus.ROTATION_REQUIRED,
+            producer.captureAndRelay(authorization(), explicitUserAction = true, ttlMs = 1_000L),
+        )
+        producer.close()
+    }
+
+    @Test
+    fun missingSyncAuthenticationRemainsDistinctFromOtpPairRevocation() {
+        val verifier = ByteArray(32) { it.toByte() }
+        val producer = OtpJcaRelayProducer(
+            Capture("482917".toCharArray()),
+            PairPort(verifier, 1L),
+            Transport(OtpOnlineTransportResult.AuthRequired),
+            OtpNonceSource { ByteArray(12) { (it + 1).toByte() } },
+            OtpEventIdSource { event }, { 1_000L }, { 1L },
+        )
+
+        assertEquals(
+            OtpRelaySendStatus.AUTH_REQUIRED,
+            producer.captureAndRelay(
+                authorization(),
+                explicitUserAction = true,
+                ttlMs = 1_000L,
+            ),
+        )
         producer.close()
     }
 }

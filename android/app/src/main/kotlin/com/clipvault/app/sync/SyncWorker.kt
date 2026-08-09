@@ -38,6 +38,7 @@ private const val SYNC_OUTBOX_BATCH_LIMIT = 8
 private const val OUTBOX_PAYLOAD_CHUNK_CHARS = 64 * 1024
 private const val OUTBOX_EVENT_METADATA_BYTES = 1024
 private const val EMPTY_SYNC_PUSH_REQUEST_BYTES = 13 // {"events":[]}
+private const val MAX_SYNC_PULL_EVENTS = 100
 
 /** A durable outbox row cannot be represented safely in the sync protocol.
  * Keep it queued and persist a safe blocked marker instead of dropping it or
@@ -48,11 +49,35 @@ internal class SyncPushBlockedException(
 ) : IOException(reason.safeMessage)
 
 internal fun nextPullCursorOrThrow(currentSince: Long, events: JSONArray, response: JSONObject): Long {
+    val nextSeq = when (val value = response.opt("next_seq")) {
+        is Int -> value.toLong()
+        is Long -> value
+        else -> throw IOException("invalid sync pull cursor")
+    }
+    val hasMore = response.opt("has_more") as? Boolean
+        ?: throw IOException("invalid sync pull continuation")
+    if (events.length() > MAX_SYNC_PULL_EVENTS) {
+        throw IOException("sync pull page too large")
+    }
+    var previousSeq = currentSince
+    for (index in 0 until events.length()) {
+        val event = events.optJSONObject(index)
+            ?: throw IOException("invalid sync pull event")
+        val sequence = when (val value = event.opt("seq")) {
+            is Int -> value.toLong()
+            is Long -> value
+            else -> throw IOException("invalid sync pull event sequence")
+        }
+        if (sequence <= previousSeq || sequence > nextSeq) {
+            throw IOException("invalid sync pull event sequence")
+        }
+        previousSeq = sequence
+    }
     return nextPullCursorOrThrow(
         currentSince = currentSince,
         eventCount = events.length(),
-        nextSeq = response.optLong("next_seq", currentSince),
-        hasMore = response.optBoolean("has_more", false),
+        nextSeq = nextSeq,
+        hasMore = hasMore,
     )
 }
 
@@ -63,6 +88,7 @@ internal fun nextPullCursorOrThrow(
     hasMore: Boolean,
 ): Long {
     if (
+        currentSince < 0L ||
         nextSeq < currentSince ||
         (eventCount > 0 && nextSeq <= currentSince) ||
         (hasMore && nextSeq <= currentSince)
@@ -357,7 +383,7 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
             }
             if (!applied) throw SyncPairingChangedException()
             since = nextSince
-            if (!resp.optBoolean("has_more", false)) return true
+            if (resp.opt("has_more") != true) return true
         }
     }
 

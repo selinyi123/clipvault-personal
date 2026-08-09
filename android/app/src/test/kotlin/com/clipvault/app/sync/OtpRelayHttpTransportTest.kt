@@ -1,9 +1,9 @@
 package com.clipvault.app.sync
 
 import com.clipvault.app.otp.OTP_RELAY_MAX_BODY_BYTES
+import com.clipvault.app.otp.OtpOnlineTransportResult
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -11,20 +11,24 @@ class OtpRelayHttpTransportTest {
     private class EndpointPort(
         private val current: Boolean = true,
         private val baseUrl: String = "http://127.0.0.1:8787/api",
+        private val rejectFailure: Boolean = false,
     ) : OtpPairedEndpointPort {
         var acquired = 0
         var rejected = 0
 
-        override fun acquire(): OtpPairedEndpointLease {
+        override fun acquire(): OtpPairedEndpointAcquireResult {
             acquired += 1
-            return OtpPairedEndpointLease(
-                baseUrl = baseUrl,
-                bearerToken = "paired-bearer-only",
-                currentCheck = { current },
-                rejectAuth = {
-                    rejected += 1
-                    true
-                },
+            return OtpPairedEndpointAcquireResult.Acquired(
+                OtpPairedEndpointLease(
+                    baseUrl = baseUrl,
+                    bearerToken = "paired-bearer-only",
+                    currentCheck = { current },
+                    rejectAuth = {
+                        rejected += 1
+                        if (rejectFailure) throw java.io.IOException("clear failed")
+                        true
+                    },
+                ),
             )
         }
     }
@@ -32,11 +36,13 @@ class OtpRelayHttpTransportTest {
     private class Call(
         private val status: Int,
         private val failWrite: Boolean = false,
+        private val errorBody: String = "",
     ) : OtpHttpCall {
         var bearer: String? = null
         var length = -1
         var body: ByteArray? = null
         var closed = 0
+        var errorReads = 0
 
         override fun configure(bearerToken: String, bodyLength: Int) {
             bearer = bearerToken
@@ -49,6 +55,14 @@ class OtpRelayHttpTransportTest {
         }
 
         override fun responseCode(): Int = status
+
+        override fun readErrorBody(maxBytes: Int): String {
+            errorReads += 1
+            if (errorBody.toByteArray(Charsets.UTF_8).size > maxBytes) {
+                throw java.io.IOException("response body too large")
+            }
+            return errorBody
+        }
 
         override fun close() {
             closed += 1
@@ -78,7 +92,7 @@ class OtpRelayHttpTransportTest {
         val transport = OtpHttpOnlineTransport(endpoint, factory)
         val body = "{\"version\":1}".toByteArray()
 
-        assertTrue(transport.post(body))
+        assertEquals(OtpOnlineTransportResult.Accepted, transport.post(body))
         assertEquals(1, endpoint.acquired)
         assertEquals(1, factory.opens)
         assertEquals("http://127.0.0.1:8787/api/otp/relay", factory.url)
@@ -97,7 +111,7 @@ class OtpRelayHttpTransportTest {
         val firstEndpoint = EndpointPort()
         val openFailure = Factory(failOpen = true)
         val first = OtpHttpOnlineTransport(firstEndpoint, openFailure)
-        assertFalse(first.post(byteArrayOf(1)))
+        assertEquals(OtpOnlineTransportResult.TransientFailure, first.post(byteArrayOf(1)))
         assertEquals(1, firstEndpoint.acquired)
         assertEquals(1, openFailure.opens)
 
@@ -105,10 +119,25 @@ class OtpRelayHttpTransportTest {
         val call = Call(status = 202, failWrite = true)
         val writeFailure = Factory(call)
         val second = OtpHttpOnlineTransport(secondEndpoint, writeFailure)
-        assertFalse(second.post(byteArrayOf(2)))
+        assertEquals(OtpOnlineTransportResult.TransientFailure, second.post(byteArrayOf(2)))
         assertEquals(1, secondEndpoint.acquired)
         assertEquals(1, writeFailure.opens)
         assertEquals(1, call.closed)
+    }
+
+    @Test
+    fun missingSyncPairAndTemporarySettingsFailureRemainDistinct() {
+        val unpaired = OtpPairedEndpointPort { OtpPairedEndpointAcquireResult.AuthRequired }
+        val unavailable = OtpPairedEndpointPort { OtpPairedEndpointAcquireResult.Unavailable }
+
+        assertEquals(
+            OtpOnlineTransportResult.AuthRequired,
+            OtpHttpOnlineTransport(unpaired, Factory(Call(202))).post(byteArrayOf(1)),
+        )
+        assertEquals(
+            OtpOnlineTransportResult.TransientFailure,
+            OtpHttpOnlineTransport(unavailable, Factory(Call(202))).post(byteArrayOf(1)),
+        )
     }
 
     @Test
@@ -118,7 +147,7 @@ class OtpRelayHttpTransportTest {
         val transport = OtpHttpOnlineTransport(endpoint, factory)
         val oversized = ByteArray(OTP_RELAY_MAX_BODY_BYTES + 1)
         try {
-            assertFalse(transport.post(oversized))
+            assertEquals(OtpOnlineTransportResult.PolicyRejected, transport.post(oversized))
             assertEquals(0, endpoint.acquired)
             assertEquals(0, factory.opens)
         } finally {
@@ -135,7 +164,7 @@ class OtpRelayHttpTransportTest {
             val endpoint = EndpointPort(baseUrl = baseUrl)
             val factory = Factory(Call(202))
             val transport = OtpHttpOnlineTransport(endpoint, factory)
-            assertFalse(transport.post(byteArrayOf(1)))
+            assertEquals(OtpOnlineTransportResult.PolicyRejected, transport.post(byteArrayOf(1)))
             assertEquals(1, endpoint.acquired)
             assertEquals(0, factory.opens)
         }
@@ -147,10 +176,61 @@ class OtpRelayHttpTransportTest {
         val call = Call(status = 401)
         val factory = Factory(call)
         val transport = OtpHttpOnlineTransport(endpoint, factory)
-        assertFalse(transport.post(byteArrayOf(1)))
+        assertEquals(OtpOnlineTransportResult.AuthRejected, transport.post(byteArrayOf(1)))
         assertEquals(1, endpoint.rejected)
         assertEquals(1, factory.opens)
         assertEquals(1, call.closed)
+    }
+
+    @Test
+    fun confirmedAuthFailureRemainsTerminalWhenLocalTokenCleanupFails() {
+        val endpoint = EndpointPort(rejectFailure = true)
+        val call = Call(status = 401)
+        val transport = OtpHttpOnlineTransport(endpoint, Factory(call))
+
+        assertEquals(OtpOnlineTransportResult.AuthRejected, transport.post(byteArrayOf(1)))
+        assertEquals(1, endpoint.rejected)
+        assertEquals(1, call.closed)
+    }
+
+    @Test
+    fun otpPairOrTransportPolicyFailureDoesNotInvalidateSharedSyncBearer() {
+        val endpoint = EndpointPort()
+        val call = Call(status = 403)
+        val factory = Factory(call)
+        val transport = OtpHttpOnlineTransport(endpoint, factory)
+
+        assertEquals(OtpOnlineTransportResult.PolicyRejected, transport.post(byteArrayOf(1)))
+        assertEquals(0, endpoint.rejected)
+        assertEquals(1, factory.opens)
+        assertEquals(1, call.closed)
+    }
+
+    @Test
+    fun boundedPairAuthorizationErrorsRemainDistinctFromTransportPolicy() {
+        val unpairedCall = Call(
+            status = 403,
+            errorBody = "{\"error\":{\"code\":\"otp_pair_not_authorized\",\"message\":\"rejected\"}}",
+        )
+        val unpairedEndpoint = EndpointPort()
+        assertEquals(
+            OtpOnlineTransportResult.Unpaired,
+            OtpHttpOnlineTransport(unpairedEndpoint, Factory(unpairedCall)).post(byteArrayOf(1)),
+        )
+
+        val mismatchCall = Call(
+            status = 403,
+            errorBody = "{\"error\":{\"code\":\"otp_target_mismatch\",\"message\":\"rejected\"}}",
+        )
+        val mismatchEndpoint = EndpointPort()
+        assertEquals(
+            OtpOnlineTransportResult.Mismatch,
+            OtpHttpOnlineTransport(mismatchEndpoint, Factory(mismatchCall)).post(byteArrayOf(1)),
+        )
+        assertEquals(0, unpairedEndpoint.rejected)
+        assertEquals(0, mismatchEndpoint.rejected)
+        assertEquals(1, unpairedCall.closed)
+        assertEquals(1, mismatchCall.closed)
     }
 
     @Test
@@ -159,9 +239,44 @@ class OtpRelayHttpTransportTest {
         val call = Call(status = 202)
         val factory = Factory(call)
         val transport = OtpHttpOnlineTransport(stale, factory)
-        assertFalse(transport.post(byteArrayOf(1)))
+        assertEquals(OtpOnlineTransportResult.AuthRejected, transport.post(byteArrayOf(1)))
         transport.close()
-        assertFalse(transport.post(byteArrayOf(2)))
+        assertEquals(OtpOnlineTransportResult.PolicyRejected, transport.post(byteArrayOf(2)))
         assertEquals(0, factory.opens)
+    }
+
+    @Test
+    fun boundedStrictRotationResponseProducesTypedRepairSignal() {
+        val response = (
+            "{\"error\":{\"code\":\"otp_pair_rotation_required\"," +
+                "\"message\":\"OTP relay rejected\"}}"
+            )
+        val call = Call(status = 503, errorBody = response)
+        val transport = OtpHttpOnlineTransport(EndpointPort(), Factory(call))
+
+        assertEquals(OtpOnlineTransportResult.RotationRequired, transport.post(byteArrayOf(1)))
+        assertEquals(1, call.errorReads)
+        assertEquals(1, call.closed)
+    }
+
+    @Test
+    fun malformedOrOversizedRotationResponseRemainsTransient() {
+        val duplicateCode = (
+            "{\"error\":{\"code\":\"otp_pair_rotation_required\"," +
+                "\"code\":\"other\",\"message\":\"rejected\"}}"
+            )
+        val malformedCall = Call(status = 503, errorBody = duplicateCode)
+        assertEquals(
+            OtpOnlineTransportResult.TransientFailure,
+            OtpHttpOnlineTransport(EndpointPort(), Factory(malformedCall)).post(byteArrayOf(1)),
+        )
+
+        val oversizedCall = Call(status = 503, errorBody = "x".repeat(1_025))
+        assertEquals(
+            OtpOnlineTransportResult.TransientFailure,
+            OtpHttpOnlineTransport(EndpointPort(), Factory(oversizedCall)).post(byteArrayOf(1)),
+        )
+        assertEquals(1, malformedCall.closed)
+        assertEquals(1, oversizedCall.closed)
     }
 }

@@ -181,7 +181,11 @@ class MemoryCandidateBudgetTest {
 
         val projected = eligible.toMemoryCandidates(limit = 10)
 
-        assertEquals(listOf("phrase:safe phrase"), projected.map { it.id })
+        assertEquals(
+            listOf(opaqueMemoryCandidateId("phrase", "safe phrase")),
+            projected.map { it.id },
+        )
+        assertTrue(projected.single().id.toByteArray(Charsets.UTF_8).size <= 128)
     }
 
     @Test

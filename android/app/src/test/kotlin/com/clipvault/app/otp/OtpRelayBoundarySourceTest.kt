@@ -65,6 +65,19 @@ class OtpRelayBoundarySourceTest {
     }
 
     @Test
+    fun pairingTreatsPostWriteFailuresAsPotentialRemoteCommit() {
+        val network = read("src/main/kotlin/com/clipvault/app/otp/OtpNetwork.kt")
+        val streamOpened = network.indexOf("connection.outputStream.use")
+        val ambiguousCommit = network.indexOf("requestMayBeCommitted = true", streamOpened)
+        val responseRead = network.indexOf("connection.responseCode", ambiguousCommit)
+
+        assertTrue(streamOpened >= 0)
+        assertTrue(ambiguousCommit > streamOpened)
+        assertTrue(responseRead > ambiguousCommit)
+        assertTrue(network.contains("if (requestMayBeCommitted || remoteCommitted) requireRepair()"))
+    }
+
+    @Test
     fun settingsUiExposesPairConsentPermissionGrantRevokeAndForgetFlow() {
         val ui = read("src/main/kotlin/com/clipvault/app/otp/OtpRelaySettingsActivity.kt")
         assertTrue(ui.contains("OtpRelayRuntime.pair"))
@@ -74,9 +87,14 @@ class OtpRelayBoundarySourceTest {
         assertTrue(ui.contains("OtpUserConsentActivity.intent"))
         assertTrue(ui.contains("revokeCapture"))
         assertTrue(ui.contains("forgetPair"))
+        assertTrue(ui.contains("status.repairRequired"))
+        assertTrue(ui.contains("status.pairState == OtpPairState.READY"))
         val runtime = read("src/main/kotlin/com/clipvault/app/otp/OtpRelayRuntime.kt")
         assertTrue(runtime.contains("settings.captureOptIn = false"))
+        assertTrue(runtime.contains("settings.pairRepairRequired = true"))
+        assertTrue(runtime.contains("OtpPairingStatus.REPAIR_REQUIRED"))
         assertTrue(runtime.contains("Intent.ACTION_SCREEN_OFF"))
         assertTrue(runtime.contains("handler.postDelayed"))
+        assertTrue(runtime.contains("OtpPairState.ROTATION_REQUIRED"))
     }
 }

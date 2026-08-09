@@ -3,6 +3,7 @@ package com.clipvault.app.otp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -50,5 +51,38 @@ class OtpCaptureGrantControllerTest {
             ttlMs = OTP_CAPTURE_GRANT_MAX_TTL_MS + 1,
         ))
         assertFalse(controller.toString().contains(pair.sessionEpoch))
+    }
+
+    @Test
+    fun revokeAndRotationInvalidateCopiedAuthorizations() {
+        val controller = OtpCaptureGrantController { now }
+        val first = controller.authorize(
+            pair, OtpCaptureSource.APPROVED_SMS_PERMISSION,
+            platformGranted = true, automaticCapture = true, ttlMs = 100L,
+        )!!
+        assertTrue(controller.isCurrent(first))
+
+        controller.revoke()
+        assertFalse(controller.isCurrent(first))
+
+        val second = controller.authorize(
+            pair, OtpCaptureSource.APPROVED_SMS_PERMISSION,
+            platformGranted = true, automaticCapture = true, ttlMs = 100L,
+        )!!
+        assertFalse(controller.isCurrent(first))
+        assertTrue(controller.isCurrent(second))
+    }
+
+    @Test
+    fun lookupForAnotherCaptureSourceDoesNotRevokeTheActiveGrant() {
+        val controller = OtpCaptureGrantController { now }
+        val consent = controller.authorize(
+            pair, OtpCaptureSource.SMS_USER_CONSENT,
+            platformGranted = true, automaticCapture = false, ttlMs = 100L,
+        )!!
+
+        assertNull(controller.current(OtpCaptureSource.APPROVED_SMS_PERMISSION))
+        assertTrue(controller.isCurrent(consent))
+        assertSame(consent, controller.current(OtpCaptureSource.SMS_USER_CONSENT))
     }
 }

@@ -20,12 +20,14 @@ class OtpRuntimeStatus(
     val smsCaptureIncluded: Boolean,
     val smsPermissionGranted: Boolean,
     val paired: Boolean,
+    val pairState: OtpPairState,
+    val repairRequired: Boolean,
     val activeGrant: Boolean,
     val userConsentSessionActive: Boolean,
     val highSequence: Long,
 ) {
     override fun toString(): String =
-        "<OtpRuntimeStatus redacted paired=$paired active=$activeGrant consent=$userConsentSessionActive>"
+        "<OtpRuntimeStatus redacted pairState=$pairState active=$activeGrant consent=$userConsentSessionActive>"
 }
 
 private class OneShotCapturePort(
@@ -33,15 +35,23 @@ private class OneShotCapturePort(
     private val grantId: String,
     private val targetDeviceId: String,
     ownedCharacters: CharArray,
+    private val authorizationCheck: (OtpCaptureAuthorization) -> Boolean,
 ) : OtpCapturePort {
     private var characters: CharArray? = ownedCharacters
 
     @Synchronized
     override fun capture(authorization: OtpCaptureAuthorization): IsolatedOtpCandidate? {
+        if (!authorizationCheck(authorization)) {
+            characters?.wipe(); characters = null
+            return null
+        }
         val value = characters ?: return null
         characters = null
         return IsolatedOtpCandidate(source, grantId, targetDeviceId, value)
     }
+
+    override fun isAuthorizationCurrent(authorization: OtpCaptureAuthorization): Boolean =
+        authorizationCheck(authorization)
 
     @Synchronized
     override fun close() {
@@ -58,6 +68,7 @@ object OtpRelayRuntime {
     private lateinit var settings: OtpRuntimeSettings
     private lateinit var grants: OtpCaptureGrantController
     private lateinit var userConsentSessions: OtpUserConsentSessionController
+    @Volatile private var processRepairRequired = false
     private val handler = Handler(Looper.getMainLooper())
     private val expiryRunnable = Runnable { revokeCapture() }
     private val userConsentExpiryRunnable = Runnable { cancelUserConsentSessionInternal() }
@@ -69,6 +80,7 @@ object OtpRelayRuntime {
         settings = OtpRuntimeSettings(appContext)
         grants = OtpCaptureGrantController(SystemClock::elapsedRealtime)
         userConsentSessions = OtpUserConsentSessionController(SystemClock::elapsedRealtime)
+        processRepairRequired = false
         // A prior-process opt-in never fabricates a fresh in-memory grant.
         try { settings.captureOptIn = false } catch (_: Exception) { }
         registerSecurityReceiver()
@@ -77,12 +89,16 @@ object OtpRelayRuntime {
 
     fun status(context: Context): OtpRuntimeStatus {
         ensureInitialized(context)
-        val summary = pairStore.summary()
+        val inspection = effectivePairInspection()
+        val summary = inspection.summary
         return OtpRuntimeStatus(
             smsCaptureIncluded = BuildConfig.OTP_SMS_CAPTURE_INCLUDED,
             smsPermissionGranted = hasSmsPermission(),
-            paired = summary != null,
-            activeGrant = settings.captureOptIn && grants.current() != null,
+            paired = inspection.state != OtpPairState.UNPAIRED,
+            pairState = inspection.state,
+            repairRequired = inspection.repairRequired,
+            activeGrant = inspection.state == OtpPairState.READY &&
+                settings.captureOptIn && grants.current() != null,
             userConsentSessionActive = userConsentSessions.current() != null,
             highSequence = summary?.highSequence ?: 0L,
         )
@@ -90,6 +106,9 @@ object OtpRelayRuntime {
 
     fun pair(context: Context): OtpPairingStatus {
         ensureInitialized(context)
+        if (effectivePairInspection().state == OtpPairState.ROTATION_REQUIRED) {
+            return OtpPairingStatus.REPAIR_REQUIRED
+        }
         return OtpPairingClient(appContext, pairStore, settings).pair()
     }
 
@@ -99,7 +118,9 @@ object OtpRelayRuntime {
     ): Boolean {
         ensureInitialized(context)
         if (!BuildConfig.OTP_SMS_CAPTURE_INCLUDED || !hasSmsPermission() || isDeviceLocked()) return false
-        val pair = pairStore.summary() ?: return false
+        val inspection = effectivePairInspection()
+        if (inspection.state != OtpPairState.READY) return false
+        val pair = inspection.summary ?: return false
         val grant = grants.authorize(
             pair = pair,
             source = OtpCaptureSource.APPROVED_SMS_PERMISSION,
@@ -123,7 +144,9 @@ object OtpRelayRuntime {
     ): OtpUserConsentSession? {
         ensureInitialized(context)
         if (isDeviceLocked() || grants.current() != null) return null
-        val pair = pairStore.summary() ?: return null
+        val inspection = effectivePairInspection()
+        if (inspection.state != OtpPairState.READY) return null
+        val pair = inspection.summary ?: return null
         val session = userConsentSessions.begin(pair, ttlMs) ?: return null
         return try {
             handler.removeCallbacks(userConsentExpiryRunnable)
@@ -169,12 +192,18 @@ object OtpRelayRuntime {
         val session = userConsentSessions.consume(sessionId, targetDeviceId)
         try {
             if (session == null || isDeviceLocked()) return OtpRelaySendStatus.DISABLED
-            val pair = pairStore.summary() ?: return OtpRelaySendStatus.DISABLED
+            val inspection = effectivePairInspection()
+            val pair = when (inspection.state) {
+                OtpPairState.READY -> inspection.summary ?: return OtpRelaySendStatus.TRANSIENT_FAILURE
+                OtpPairState.UNPAIRED -> return OtpRelaySendStatus.UNPAIRED
+                OtpPairState.ROTATION_REQUIRED -> return OtpRelaySendStatus.ROTATION_REQUIRED
+                OtpPairState.UNAVAILABLE -> return OtpRelaySendStatus.TRANSIENT_FAILURE
+            }
             if (
                 pair.sessionEpoch != session.pairSessionEpoch ||
                 pair.senderDeviceId != session.senderDeviceId ||
                 pair.targetDeviceId != session.targetDeviceId
-            ) return OtpRelaySendStatus.DISABLED
+            ) return OtpRelaySendStatus.MISMATCH
             val remaining = session.expiresAtMonotonicMs - SystemClock.elapsedRealtime()
             if (remaining <= 0L) return OtpRelaySendStatus.DISABLED
             val grant = grants.authorize(
@@ -197,13 +226,19 @@ object OtpRelayRuntime {
                     grant.grantId,
                     grant.targetDeviceId,
                     it.take(),
+                    grants::isCurrent,
                 )
                 OtpJcaRelayProducer(
                     capturePort = capture,
                     pairMaterialPort = pairStore,
                     transport = SecureOtpHttpOnlineTransport(Settings(appContext)),
                 ).use { producer ->
-                    return producer.captureAndRelay(grant, explicitUserAction = true)
+                    val result = producer.captureAndRelay(
+                        grant,
+                        explicitUserAction = true,
+                    )
+                    observeRelayResult(grant.sessionEpoch, result)
+                    return result
                 }
             }
         } finally {
@@ -238,13 +273,16 @@ object OtpRelayRuntime {
                 val characters = it.take()
                 val capture = OneShotCapturePort(
                     grant.source, grant.grantId, grant.targetDeviceId, characters,
+                    grants::isCurrent,
                 )
                 OtpJcaRelayProducer(
                     capturePort = capture,
                     pairMaterialPort = pairStore,
                     transport = SecureOtpHttpOnlineTransport(Settings(appContext)),
                 ).use { producer ->
-                    return producer.captureAndRelay(grant, explicitUserAction = false)
+                    val result = producer.captureAndRelay(grant, explicitUserAction = false)
+                    observeRelayResult(grant.sessionEpoch, result)
+                    return result
                 }
             }
         } finally {
@@ -264,7 +302,14 @@ object OtpRelayRuntime {
     fun forgetPair(): Boolean {
         if (!initialized) return false
         revokeCapture()
-        return pairStore.clear()
+        if (!pairStore.clear()) return false
+        return try {
+            settings.pairRepairRequired = false
+            processRepairRequired = false
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     fun onSevereMemoryPressure() = revokeCapture()
@@ -279,6 +324,48 @@ object OtpRelayRuntime {
 
     private fun isDeviceLocked(): Boolean =
         (appContext.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.isDeviceLocked != false
+
+    private fun effectivePairInspection(): OtpPairInspection {
+        val inspection = pairStore.inspect()
+        return if (processRepairRequired || settings.pairRepairRequired) {
+            OtpPairInspection(OtpPairState.ROTATION_REQUIRED, inspection.summary)
+        } else {
+            inspection
+        }
+    }
+
+    private fun observeRelayResult(
+        expectedSessionEpoch: String,
+        result: OtpRelaySendStatus,
+    ) {
+        if (
+            result != OtpRelaySendStatus.ROTATION_REQUIRED &&
+            result != OtpRelaySendStatus.UNPAIRED &&
+            result != OtpRelaySendStatus.MISMATCH &&
+            result != OtpRelaySendStatus.AUTH_REQUIRED &&
+            result != OtpRelaySendStatus.AUTH_REJECTED &&
+            result != OtpRelaySendStatus.POLICY_REJECTED
+        ) return
+
+        if (
+            result == OtpRelaySendStatus.ROTATION_REQUIRED ||
+            result == OtpRelaySendStatus.UNPAIRED ||
+            result == OtpRelaySendStatus.MISMATCH
+        ) {
+            val current = pairStore.inspect()
+            val currentSession = current.summary?.sessionEpoch
+            if (
+                current.state == OtpPairState.UNAVAILABLE ||
+                currentSession == expectedSessionEpoch
+            ) {
+                processRepairRequired = true
+                try { settings.pairRepairRequired = true } catch (_: Exception) { }
+            }
+        }
+        // Even if the pair changed concurrently, the old capture/session must
+        // never remain armed after a terminal server response.
+        revokeCapture()
+    }
 
     private fun registerSecurityReceiver() {
         val receiver = object : BroadcastReceiver() {
