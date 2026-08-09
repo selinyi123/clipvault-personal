@@ -10,6 +10,11 @@
 
 namespace clipvault::otp::broker {
 
+// Must match the Android sealed pair-record nonce history.  Exhaustion never
+// evicts a nonce under the same AES-GCM key; it returns kRotationRequired and
+// requires a freshly paired session_epoch/verifier/key.
+inline constexpr std::size_t kPairSessionNonceCapacity = 4'096;
+
 struct PairSession final {
   crypto::Sha256Bytes pair_verifier{};
   crypto::UuidBytes session_epoch{};
@@ -26,8 +31,10 @@ class PersistentSequenceAuthority {
 
 class OtpBrokerCore final {
  public:
-  explicit OtpBrokerCore(PairSession session, std::size_t live_capacity = 8,
-                         std::size_t replay_capacity = 128,
+  explicit OtpBrokerCore(const PairSession& session,
+                         std::size_t live_capacity = 8,
+                         std::size_t replay_capacity =
+                             kPairSessionNonceCapacity,
                          std::uint64_t high_sequence = 0,
                          PersistentSequenceAuthority* sequence_authority = nullptr);
   ~OtpBrokerCore();
@@ -35,6 +42,7 @@ class OtpBrokerCore final {
   OtpBrokerCore& operator=(const OtpBrokerCore&) = delete;
 
   [[nodiscard]] bool ready() const noexcept;
+  [[nodiscard]] bool MatchesSession(const PairSession& session) const noexcept;
   BrokerStatus Offer(const OpaqueEnvelope& envelope, std::uint64_t wall_now_ms,
                      std::uint64_t monotonic_now_ms);
   BrokerResponse Arm(const ArmRequest& request,
@@ -62,6 +70,7 @@ class OtpBrokerCore final {
                       std::uint32_t verified_window_thread_id) const noexcept;
   BrokerResponse ArmEventLocked(Event* event, const ContextBinding& context,
                                 std::uint64_t monotonic_now_ms);
+  void ReleaseClaim(Event* event) noexcept;
   void EraseEvent(Event* event) noexcept;
   void ExpireDueLocked(std::uint64_t monotonic_now_ms);
 

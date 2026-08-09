@@ -1,5 +1,7 @@
 #include "broker_protocol.h"
 
+#include "../../ime/common/pipe_peer_trust.h"
+
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -10,6 +12,15 @@ namespace {
 
 constexpr std::array<std::uint8_t, 4> kMagic{'C', 'V', 'O', 'B'};
 constexpr std::size_t kHeaderSize = 8;
+
+template <typename ByteContainer>
+void SecureEraseWireBuffer(ByteContainer& bytes) noexcept {
+  if (!bytes.empty()) {
+    SecureZeroMemory(
+        bytes.data(),
+        bytes.size() * sizeof(typename ByteContainer::value_type));
+  }
+}
 
 void AppendU32(std::vector<std::uint8_t>* output, std::uint32_t value) {
   output->push_back(static_cast<std::uint8_t>(value >> 24));
@@ -168,6 +179,20 @@ std::wstring TestSuffix() {
   return L"-" + std::wstring(value, length);
 }
 
+std::wstring ExpectedOtpBrokerServerPath() {
+  using namespace clipvault::windows::trust;
+  const std::wstring module_directory = ParentDirectory(CurrentModulePath());
+  if (FileName(module_directory) != L"host-x64") {
+    if (ExplicitUnsignedTestTrustEnabled(TestSuffix())) {
+      return JoinPath(module_directory, L"ClipVaultOtpBroker.exe");
+    }
+    return {};
+  }
+  const std::wstring package_directory = ParentDirectory(module_directory);
+  return JoinPath(JoinPath(package_directory, L"otp-broker"),
+                  L"ClipVaultOtpBroker.exe");
+}
+
 }  // namespace
 
 std::vector<std::uint8_t> EncodeOffer(const OpaqueEnvelope& envelope) {
@@ -315,10 +340,27 @@ bool DecodeDismiss(const std::vector<std::uint8_t>& frame,
          ReadArray(frame, &cursor, event_id) && cursor == frame.size();
 }
 
+std::vector<std::uint8_t> EncodeRevokeSession(
+    const crypto::UuidBytes& session_epoch) {
+  std::vector<std::uint8_t> output;
+  AppendHeader(&output, BrokerOperation::kRevokeSession);
+  AppendArray(&output, session_epoch);
+  return output;
+}
+
+bool DecodeRevokeSession(const std::vector<std::uint8_t>& frame,
+                         crypto::UuidBytes* session_epoch) {
+  if (session_epoch == nullptr) return false;
+  std::size_t cursor = 0;
+  return ReadHeader(frame, BrokerOperation::kRevokeSession, &cursor) &&
+         ReadArray(frame, &cursor, session_epoch) && cursor == frame.size();
+}
+
 std::vector<std::uint8_t> EncodeResponse(const BrokerResponse& response) {
-  if (!response.secret.empty() &&
-      (response.status != BrokerStatus::kConsumed ||
-       response.secret.size() < 4 || response.secret.size() > 8)) {
+  const bool consumed = response.status == BrokerStatus::kConsumed;
+  if ((consumed &&
+       (response.secret.size() < 4 || response.secret.size() > 8)) ||
+      (!consumed && !response.secret.empty())) {
     return {};
   }
   std::vector<std::uint8_t> output;
@@ -333,28 +375,45 @@ std::vector<std::uint8_t> EncodeResponse(const BrokerResponse& response) {
 bool DecodeResponse(const std::vector<std::uint8_t>& frame,
                     BrokerResponse* response) {
   if (response == nullptr) return false;
+  // Callers may reuse one response object across pipe exchanges. Never leave
+  // a previously consumed OTP or claim reachable when the next frame fails
+  // strict decoding before assignment.
+  SecureEraseWireBuffer(response->claim_id);
+  SecureEraseWireBuffer(response->secret);
+  response->secret.clear();
+  response->status = BrokerStatus::kRejected;
   std::size_t cursor = 0;
   BrokerResponse decoded;
+  const auto reject = [&decoded]() {
+    SecureEraseWireBuffer(decoded.claim_id);
+    SecureEraseWireBuffer(decoded.secret);
+    decoded.secret.clear();
+    return false;
+  };
   if (!ReadHeader(frame, BrokerOperation::kResponse, &cursor) ||
       cursor >= frame.size()) {
-    return false;
+    return reject();
   }
   const auto raw_status = frame[cursor++];
   if (raw_status < static_cast<std::uint8_t>(BrokerStatus::kAccepted) ||
-      raw_status > static_cast<std::uint8_t>(BrokerStatus::kUnavailable) ||
+      raw_status > static_cast<std::uint8_t>(
+                       BrokerStatus::kRotationRequired) ||
       !ReadArray(frame, &cursor, &decoded.claim_id) || cursor >= frame.size()) {
-    return false;
+    return reject();
   }
   decoded.status = static_cast<BrokerStatus>(raw_status);
   const std::size_t secret_size = frame[cursor++];
+  const bool consumed = decoded.status == BrokerStatus::kConsumed;
   if (secret_size > 8 || frame.size() - cursor != secret_size ||
-      (secret_size != 0 &&
-       (secret_size < 4 || decoded.status != BrokerStatus::kConsumed))) {
-    return false;
+      (consumed && secret_size < 4) || (!consumed && secret_size != 0)) {
+    return reject();
   }
   decoded.secret.assign(frame.begin() + static_cast<std::ptrdiff_t>(cursor),
                         frame.end());
   *response = std::move(decoded);
+  SecureEraseWireBuffer(decoded.claim_id);
+  SecureEraseWireBuffer(decoded.secret);
+  decoded.secret.clear();
   return true;
 }
 
@@ -406,10 +465,20 @@ bool BrokerPipeClient::ConnectUntil(ULONGLONG deadline_tick) {
   Close();
   const auto pipe_name = BrokerPipeNameForCurrentSession();
   do {
-    pipe_ = CreateFileW(pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
-                        nullptr, OPEN_EXISTING,
-                        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
-    if (pipe_ != INVALID_HANDLE_VALUE) return true;
+    pipe_ = CreateFileW(
+        pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT |
+            SECURITY_IDENTIFICATION,
+        nullptr);
+    if (pipe_ != INVALID_HANDLE_VALUE) {
+      if (clipvault::windows::trust::VerifyNamedPipeServer(
+              pipe_, ExpectedOtpBrokerServerPath(), TestSuffix())) {
+        return true;
+      }
+      Close();
+      return false;
+    }
     const DWORD error = GetLastError();
     if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PIPE_BUSY) return false;
     const DWORD remaining = Remaining(deadline_tick);
@@ -426,11 +495,22 @@ bool BrokerPipeClient::ConnectUntil(ULONGLONG deadline_tick) {
 bool BrokerPipeClient::ExchangeUntil(const std::vector<std::uint8_t>& request,
                                      BrokerResponse* response,
                                      ULONGLONG deadline_tick) {
+  if (response != nullptr) {
+    SecureEraseWireBuffer(response->claim_id);
+    SecureEraseWireBuffer(response->secret);
+    response->secret.clear();
+    response->status = BrokerStatus::kRejected;
+  }
   std::vector<std::uint8_t> frame;
-  if (pipe_ == INVALID_HANDLE_VALUE || response == nullptr || request.empty() ||
-      !WriteBrokerFrameUntil(pipe_, request, deadline_tick) ||
-      !ReadBrokerFrameUntil(pipe_, &frame, deadline_tick) ||
-      !DecodeResponse(frame, response)) {
+  const bool success =
+      pipe_ != INVALID_HANDLE_VALUE && response != nullptr && !request.empty() &&
+      WriteBrokerFrameUntil(pipe_, request, deadline_tick) &&
+      ReadBrokerFrameUntil(pipe_, &frame, deadline_tick) &&
+      DecodeResponse(frame, response);
+  // A consumed response frame contains the one-use OTP plaintext in addition
+  // to BrokerResponse::secret.  Wipe this raw duplicate on every path.
+  SecureEraseWireBuffer(frame);
+  if (!success) {
     Close();
     return false;
   }

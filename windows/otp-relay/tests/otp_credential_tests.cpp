@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cwchar>
 #include <iostream>
 
 namespace {
@@ -67,6 +68,15 @@ int main() {
   ok &= Expect(authority::PairCredentialAuthority::Encode(
                    record, blob.data(), blob.size()),
                "encode fixed CVPK");
+  authority::PairCredential zero_verifier;
+  zero_verifier.session = record.session;
+  zero_verifier.session.pair_verifier.fill(0);
+  ok &= Expect(!authority::PairCredentialAuthority::Encode(
+                   zero_verifier, blob.data(), blob.size()),
+               "zero verifier cannot encode a native CVPK");
+  ok &= Expect(authority::PairCredentialAuthority::Encode(
+                   record, blob.data(), blob.size()),
+               "restore fixed CVPK after rejected encoding");
   ok &= Expect(std::equal(blob.begin(), blob.begin() + 8,
                           std::array<std::uint8_t, 8>{'C', 'V', 'P', 'K', 1, 0,
                                                       0, 0}.begin()),
@@ -90,6 +100,14 @@ int main() {
   ok &= Expect(!authority::PairCredentialAuthority::Decode(
                    blob.data(), blob.size() - 1, &rejected),
                "non-96-byte record rejected");
+  auto zero_verifier_blob = blob;
+  std::fill(zero_verifier_blob.begin() + 56,
+            zero_verifier_blob.begin() + 88, static_cast<std::uint8_t>(0));
+  ok &= Expect(!authority::PairCredentialAuthority::Decode(
+                   zero_verifier_blob.data(), zero_verifier_blob.size(),
+                   &rejected),
+               "zero verifier CVPK rejected while decoding");
+  crypto::SecureErase(zero_verifier_blob);
 
   // Real current-user WinCred round trip. The unique CVPK target is deleted in
   // every path and never contains a production verifier.
@@ -104,6 +122,12 @@ int main() {
   authority::PairCredentialAuthority::Encode(record, blob.data(), blob.size());
   const auto target = authority::PairCredentialAuthority::TargetForSession(
       record.session.session_epoch);
+  const auto expected_mutex =
+      L"Local\\ClipVaultOtpCredentialV1-" +
+      target.substr(std::wcslen(authority::kPairCredentialTargetPrefix));
+  ok &= Expect(authority::PairCredentialAuthority::MutexForSession(
+                   record.session.session_epoch) == expected_mutex,
+               "cross-language mutation mutex name is exact");
   CredDeleteW(target.c_str(), CRED_TYPE_GENERIC, 0);
   const bool wrote = WriteTestCredential(target, &blob);
   ok &= Expect(wrote, "write current-user test CVPK");
@@ -113,10 +137,24 @@ int main() {
     ok &= Expect(authority.Load(record.session.session_epoch, &loaded) &&
                      loaded.high_sequence == 0,
                  "load exact target");
+    authority::PairCredentialLease reusable_lease;
+    ok &= Expect(authority.Acquire(record.session.session_epoch,
+                                   &reusable_lease) &&
+                     reusable_lease.get() != nullptr,
+                 "acquire reusable credential lease");
+    ok &= Expect(authority.AcquireDetailed(record.session.session_epoch,
+                                           &reusable_lease, 0) ==
+                         authority::CredentialAcquireStatus::kUnavailable &&
+                     reusable_lease.get() == nullptr,
+                 "zero budget clears a previously loaded lease");
     ok &= Expect(authority.AdvanceHighSequence(record.session, 7),
                  "persist high sequence");
     ok &= Expect(!authority.AdvanceHighSequence(record.session, 7),
                  "same sequence fails closed");
+    auto replaced_verifier = record.session;
+    replaced_verifier.pair_verifier[0] ^= 1U;
+    ok &= Expect(!authority.AdvanceHighSequence(replaced_verifier, 8),
+                 "same epoch verifier replacement fails closed");
     std::array<std::uint8_t, authority::kPairCredentialBytes> persisted{};
     authority::PairCredential persisted_record;
     ok &= Expect(ReadTestCredential(target, &persisted) &&

@@ -38,7 +38,8 @@ int wmain(int argc, wchar_t** argv) {
       L"engine-v2-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
       std::to_wstring(GetTickCount64());
   if (!SetEnvironmentVariableW(L"CLIPVAULT_IME_TEST_NAMESPACE",
-                               test_namespace.c_str())) {
+                               test_namespace.c_str()) ||
+      !SetEnvironmentVariableW(L"CLIPVAULT_INSECURE_TEST_PIPE_TRUST", L"1")) {
     return 3;
   }
 

@@ -1,8 +1,10 @@
 #include "protocol.h"
+#include "pipe_peer_trust.h"
 
 #include <windows.h>
 
 #include <iostream>
+#include <vector>
 
 namespace {
 
@@ -16,6 +18,32 @@ bool Expect(bool condition, const char* label) {
 int main() {
   using namespace clipvault::ime;
   bool ok = true;
+
+  clipvault::windows::trust::TrustedPublisherFingerprint primary;
+  primary.certificate_sha256.fill(0x11);
+  primary.subject_public_key_info_sha256.fill(0x22);
+  auto renewed_certificate = primary;
+  renewed_certificate.certificate_sha256.fill(0x33);
+  auto unrelated_publisher = primary;
+  unrelated_publisher.subject_public_key_info_sha256.fill(0x44);
+  ok &= Expect(
+      clipvault::windows::trust::PublisherSetsIntersect(
+          {primary, unrelated_publisher}, {renewed_certificate}) &&
+          !clipvault::windows::trust::PublisherSetsIntersect(
+              {primary}, {unrelated_publisher}) &&
+          !clipvault::windows::trust::PublisherSetsIntersect({}, {primary}),
+      "publisher identity compares trusted signer SPKI, not any certificate");
+  std::vector<clipvault::windows::trust::TrustedPublisherFingerprint>
+      missing_publishers{primary};
+  ok &= Expect(
+      !clipvault::windows::trust::TrustedPublisherFingerprints(
+          L"Z:\\ClipVault-identity-test-does-not-exist.exe",
+          &missing_publishers) &&
+          missing_publishers.empty() &&
+          !clipvault::windows::trust::HaveSameTrustedPublisher(
+              L"Z:\\ClipVault-identity-test-does-not-exist-a.exe",
+              L"Z:\\ClipVault-identity-test-does-not-exist-b.exe"),
+      "missing publisher identity fails closed and clears stale output");
 
   const std::string client_id = "0123456789abcdef";
   std::string decoded_client;

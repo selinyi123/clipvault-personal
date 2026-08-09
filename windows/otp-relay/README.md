@@ -44,8 +44,41 @@ the Credential Manager reader and CNG decryptor. After authentication and
 decryption, the broker acquires a per-session mutex, rereads the exact CVPK,
 atomically replaces its high sequence with `CredWriteW`, and reads it back.
 Only then can it retain the short in-memory event and acknowledge delivery.
-Credential failure returns unavailable, wipes the plaintext, and never ACKs.
-A process restart therefore cannot replay an acknowledged sequence.
+Transient Credential Manager/provider or per-session mutex failure returns
+unavailable, wipes the plaintext and preserves the in-memory Slot for a later
+retry. A missing, malformed or session-mismatched CVPK is treated as invalid,
+clears that Slot and never ACKs. A process restart therefore cannot replay an
+acknowledged sequence.
+
+### Pair lifetime and nonce rotation
+
+One pair epoch has a sealed 4,096-entry nonce-history budget shared with the
+Android producer. The Broker accepts at most 4,095 OTP offers under that
+AES-GCM key and reserves the final entry for the content-free
+`kRotationRequired` (`CVOB` status `9`) response. The boundary uses the
+sender's persisted sequence as well as in-process replay markers, so a Broker
+restart cannot consume the reserved slot. Replay markers are never evicted or
+LRU-reused under an existing key. Desktop exposes this as the safe
+diagnostic code `otp_pair_rotation_required`; the rejected OTP remains owned
+by the sender and is not acknowledged or persisted by the Broker.
+
+Internal daily builds use the existing explicit re-pair flow:
+
+1. In Desktop device management, revoke/unpair the Android device. This marks
+   the route revoked, deletes the CVPK credential under the cross-process
+   mutation mutex, and sends `RevokeSession` to wipe the Broker slot.
+2. In Android **OTP Relay settings**, choose **Forget local OTP pair**. This
+   deletes the Keystore-sealed verifier, sequence and nonce history.
+3. Re-pair the device/sync bearer if it was removed, then run OTP pairing
+   again. `SqliteOtpPairingAuthority.pair()` creates a new UUIDv4
+   `session_epoch`, a new 256-bit verifier and therefore a new AEAD key.
+
+The same verifier must never be replaced in place for an existing epoch.
+Credential Manager writes, Broker high-sequence updates, Arm/Consume
+revalidation and deletion use the exact named mutex
+`Local\\ClipVaultOtpCredentialV1-<session_epoch>`. Missing or changed
+credentials fail closed and their cached slots are securely reclaimed; valid
+slots are never evicted merely to make room.
 
 ## Local process and focus boundary
 
@@ -92,3 +125,10 @@ uninstall path always calls the exact-path disable script. Enabling refuses an
 unsigned broker. Owner signing, actual system registration, interactive focus
 tests, Windows lock/unlock, screen sharing, and the broad application matrix
 remain manual release evidence; source/CTest success is not that evidence.
+
+Native local tests may opt into unsigned peer binaries only through a private
+test namespace. The separate `CLIPVAULT_ENABLE_INSECURE_DEVELOPMENT_TRUST`
+CMake option is disabled by default; even a source-tree development build must
+set `CLIPVAULT_INSECURE_DEVELOPMENT_PIPE_TRUST=1`, and the installer/release
+configuration never enables or propagates it. A packaged/frozen Desktop process
+always requires the exact signed peer paths.

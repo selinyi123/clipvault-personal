@@ -176,6 +176,13 @@ the isolated package layout and dry-runs registration scripts with `-WhatIf`;
 it does not register anything. `Build-NativeSlice.ps1` remains a developer-only entry that
 may build echo mode; release candidates must use `Build-ProductionIme.ps1`.
 
+The CMake option `CLIPVAULT_ENABLE_INSECURE_DEVELOPMENT_TRUST` is `OFF` by
+default and must never be enabled for a package or installer. When explicitly
+enabled for a source-tree development build, the process must also opt in with
+`CLIPVAULT_INSECURE_DEVELOPMENT_PIPE_TRUST=1`; the escape hatch only relaxes
+Authenticode/publisher verification for the exact local test path. Frozen
+Desktop processes and production builds do not honor that environment switch.
+
 Local evidence on 2026-08-01: a clean `production-v6` Release build with MSVC
 19.44 and Windows SDK 10.0.26100 passed x64 16/16 and x86 5/5 CTests under
 `/W4 /WX /MT`. This includes exact Rime staging/deployment, eight clean first-run

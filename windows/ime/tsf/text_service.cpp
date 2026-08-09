@@ -14,6 +14,98 @@
 #include <new>
 #include <string>
 
+namespace {
+
+constexpr DWORD kInitialHostLaunchBackoffMilliseconds = 250;
+constexpr DWORD kHostStartupGraceMilliseconds = 1000;
+constexpr DWORD kMaximumHostLaunchBackoffMilliseconds = 30'000;
+constexpr std::size_t kMaximumBufferedCharacters = 32;
+
+enum class LocalBufferAction {
+  kReject,
+  kAppendLetter,
+  kCommitFullBufferWithLetter,
+  kBackspace,
+  kCancel,
+  kCommit,
+};
+
+LocalBufferAction PlanLocalBufferAction(WPARAM key, bool control, bool alt,
+                                        std::size_t buffered_characters) noexcept {
+  if (!control && !alt && key >= 'A' && key <= 'Z') {
+    return buffered_characters < kMaximumBufferedCharacters
+               ? LocalBufferAction::kAppendLetter
+               : LocalBufferAction::kCommitFullBufferWithLetter;
+  }
+  if (buffered_characters == 0) return LocalBufferAction::kReject;
+  if (key == VK_BACK) return LocalBufferAction::kBackspace;
+  if (key == VK_ESCAPE) return LocalBufferAction::kCancel;
+  if (key == VK_SPACE || key == VK_RETURN) return LocalBufferAction::kCommit;
+  return LocalBufferAction::kReject;
+}
+
+std::wstring HostMutexNameForCurrentSession() {
+  DWORD session_id = 0;
+  if (!ProcessIdToSessionId(GetCurrentProcessId(), &session_id)) return {};
+  return L"Local\\ClipVaultImeHostV2-" + std::to_wstring(session_id) +
+         clipvault::ime::LocalTestNamespaceSuffix();
+}
+
+bool HostInstanceIsRunning() {
+  const auto mutex_name = HostMutexNameForCurrentSession();
+  if (mutex_name.empty()) return true;
+  HANDLE mutex = OpenMutexW(SYNCHRONIZE, FALSE, mutex_name.c_str());
+  if (mutex != nullptr) {
+    CloseHandle(mutex);
+    return true;
+  }
+  // Only a definitely absent mutex authorizes another CreateProcess attempt.
+  // Access failures and other namespace errors fail closed to avoid a launch
+  // loop inside every process that has the TSF DLL loaded.
+  return GetLastError() != ERROR_FILE_NOT_FOUND;
+}
+
+void WipeSnapshotSurface(
+    clipvault::ime::SnapshotSurface* surface) noexcept {
+  if (surface == nullptr) return;
+  std::fill(surface->publisher_epoch.begin(), surface->publisher_epoch.end(),
+            '\0');
+  surface->publisher_epoch.clear();
+  surface->generation = 0;
+  surface->expires_at_ms = 0;
+  for (auto& candidate : surface->candidates) {
+    std::fill(candidate.candidate_id.begin(), candidate.candidate_id.end(),
+              '\0');
+    std::fill(candidate.label.begin(), candidate.label.end(), L'\0');
+    std::fill(candidate.text.begin(), candidate.text.end(), L'\0');
+  }
+  surface->candidates.clear();
+}
+
+void WipeCommitText(clipvault::ime::EngineState* state) noexcept {
+  if (state == nullptr || !state->commit_text.has_value()) return;
+  if (!state->commit_text->empty()) {
+    SecureZeroMemory(state->commit_text->data(),
+                     state->commit_text->size() * sizeof(wchar_t));
+  }
+  state->commit_text.reset();
+}
+
+class CommitTextWipeGuard final {
+ public:
+  explicit CommitTextWipeGuard(clipvault::ime::EngineState* state) noexcept
+      : state_(state) {}
+  ~CommitTextWipeGuard() { WipeCommitText(state_); }
+
+  CommitTextWipeGuard(const CommitTextWipeGuard&) = delete;
+  CommitTextWipeGuard& operator=(const CommitTextWipeGuard&) = delete;
+
+ private:
+  clipvault::ime::EngineState* state_ = nullptr;
+};
+
+}  // namespace
+
 const GUID kOtpInsertPreservedKey = {
     0x9a29af53, 0xa42c, 0x4e3f,
     {0x99, 0x93, 0x89, 0x42, 0x47, 0xb4, 0xb7, 0x0d}};
@@ -122,25 +214,61 @@ class ApplyStateEditSession final : public ITfEditSession {
 
  private:
   ~ApplyStateEditSession() {
+    // OTP insertion uses the same synchronous edit-session machinery as
+    // ordinary commits. Erase the session-owned copy before its string storage
+    // is released; the caller separately owns and wipes the source state.
+    WipeCommitText(&state_);
     context_->Release();
     service_->Release();
   }
 
   HRESULT StartComposition(TfEditCookie cookie) {
     if (service_->composition_ != nullptr) return S_OK;
-    TF_SELECTION selection{};
-    ULONG fetched = 0;
-    HRESULT result = context_->GetSelection(cookie, TF_DEFAULT_SELECTION, 1,
-                                             &selection, &fetched);
-    if (FAILED(result) || fetched != 1) return FAILED(result) ? result : E_FAIL;
+    ITfInsertAtSelection* insert_at_selection = nullptr;
+    HRESULT result =
+        context_->QueryInterface(IID_PPV_ARGS(&insert_at_selection));
+    if (FAILED(result)) {
+      clipvault::ime::EmitDiagnostic(
+          clipvault::ime::DiagnosticEvent::kInsertInterfaceFailed,
+          static_cast<std::uint32_t>(result));
+      return result;
+    }
+
+    // A context may adjust the actual insertion range. Starting a composition
+    // on the raw selection can fail with E_INVALIDARG even for a writable EDIT
+    // control. Query the insertion range exactly as Microsoft SampleIME does.
+    ITfRange* insertion_range = nullptr;
+    result = insert_at_selection->InsertTextAtSelection(
+        cookie, TF_IAS_QUERYONLY, nullptr, 0, &insertion_range);
+    insert_at_selection->Release();
+    if (FAILED(result) || insertion_range == nullptr) {
+      const HRESULT failure = FAILED(result) ? result : E_FAIL;
+      clipvault::ime::EmitDiagnostic(
+          clipvault::ime::DiagnosticEvent::kInsertionRangeFailed,
+          static_cast<std::uint32_t>(failure));
+      SafeRelease(&insertion_range);
+      return failure;
+    }
+
     ITfContextComposition* compositions = nullptr;
     result = context_->QueryInterface(IID_PPV_ARGS(&compositions));
     if (SUCCEEDED(result)) {
-      result = compositions->StartComposition(cookie, selection.range, nullptr,
-                                               &service_->composition_);
+      result = compositions->StartComposition(
+          cookie, insertion_range,
+          static_cast<ITfCompositionSink*>(service_), &service_->composition_);
       compositions->Release();
+    } else {
+      clipvault::ime::EmitDiagnostic(
+          clipvault::ime::DiagnosticEvent::kCompositionInterfaceFailed,
+          static_cast<std::uint32_t>(result));
     }
-    selection.range->Release();
+    if (SUCCEEDED(result) && service_->composition_ == nullptr) result = E_FAIL;
+    if (FAILED(result) && compositions != nullptr) {
+      clipvault::ime::EmitDiagnostic(
+          clipvault::ime::DiagnosticEvent::kCompositionStartFailed,
+          static_cast<std::uint32_t>(result));
+    }
+    insertion_range->Release();
     return result;
   }
 
@@ -149,28 +277,65 @@ class ApplyStateEditSession final : public ITfEditSession {
     if (FAILED(result)) return result;
     ITfRange* range = nullptr;
     result = service_->composition_->GetRange(&range);
-    if (FAILED(result)) return result;
+    if (FAILED(result)) {
+      clipvault::ime::EmitDiagnostic(
+          clipvault::ime::DiagnosticEvent::kCompositionRangeFailed,
+          static_cast<std::uint32_t>(result));
+      return result;
+    }
     result = range->SetText(cookie, 0, state_.preedit.c_str(),
                             static_cast<LONG>(state_.preedit.size()));
+    if (FAILED(result)) {
+      clipvault::ime::EmitDiagnostic(
+          clipvault::ime::DiagnosticEvent::kCompositionTextFailed,
+          static_cast<std::uint32_t>(result));
+    }
     if (SUCCEEDED(result)) {
       ITfRange* caret = nullptr;
       result = range->Clone(&caret);
+      if (FAILED(result)) {
+        clipvault::ime::EmitDiagnostic(
+            clipvault::ime::DiagnosticEvent::kCompositionCaretFailed,
+            static_cast<std::uint32_t>(result));
+      }
       if (SUCCEEDED(result)) {
         result = caret->Collapse(cookie, TF_ANCHOR_START);
+        if (FAILED(result)) {
+          clipvault::ime::EmitDiagnostic(
+              clipvault::ime::DiagnosticEvent::kCompositionCaretFailed,
+              static_cast<std::uint32_t>(result));
+        }
         if (SUCCEEDED(result) && state_.caret_utf16 > 0) {
           LONG shifted = 0;
           result = caret->ShiftEnd(cookie, static_cast<LONG>(state_.caret_utf16),
                                    &shifted, nullptr);
           if (SUCCEEDED(result) &&
               shifted != static_cast<LONG>(state_.caret_utf16)) result = E_FAIL;
+          if (FAILED(result)) {
+            clipvault::ime::EmitDiagnostic(
+                clipvault::ime::DiagnosticEvent::kCompositionCaretFailed,
+                static_cast<std::uint32_t>(result));
+          }
         }
-        if (SUCCEEDED(result)) result = caret->Collapse(cookie, TF_ANCHOR_END);
+        if (SUCCEEDED(result)) {
+          result = caret->Collapse(cookie, TF_ANCHOR_END);
+          if (FAILED(result)) {
+            clipvault::ime::EmitDiagnostic(
+                clipvault::ime::DiagnosticEvent::kCompositionCaretFailed,
+                static_cast<std::uint32_t>(result));
+          }
+        }
         if (SUCCEEDED(result)) {
           TF_SELECTION selection{};
           selection.range = caret;
           selection.style.ase = TF_AE_NONE;
           selection.style.fInterimChar = FALSE;
           result = context_->SetSelection(cookie, 1, &selection);
+          if (FAILED(result)) {
+            clipvault::ime::EmitDiagnostic(
+                clipvault::ime::DiagnosticEvent::kCompositionSelectionFailed,
+                static_cast<std::uint32_t>(result));
+          }
         }
         caret->Release();
       }
@@ -197,8 +362,10 @@ class ApplyStateEditSession final : public ITfEditSession {
       result = range->SetText(cookie, 0, text.c_str(), static_cast<LONG>(text.size()));
       range->Release();
     }
-    if (SUCCEEDED(result)) result = service_->composition_->EndComposition(cookie);
-    SafeRelease(&service_->composition_);
+    if (SUCCEEDED(result)) {
+      result = service_->composition_->EndComposition(cookie);
+      if (SUCCEEDED(result)) SafeRelease(&service_->composition_);
+    }
     return result;
   }
 
@@ -210,8 +377,10 @@ class ApplyStateEditSession final : public ITfEditSession {
       result = range->SetText(cookie, 0, L"", 0);
       range->Release();
     }
-    if (SUCCEEDED(result)) result = service_->composition_->EndComposition(cookie);
-    SafeRelease(&service_->composition_);
+    if (SUCCEEDED(result)) {
+      result = service_->composition_->EndComposition(cookie);
+      if (SUCCEEDED(result)) SafeRelease(&service_->composition_);
+    }
     return result;
   }
 
@@ -219,6 +388,85 @@ class ApplyStateEditSession final : public ITfEditSession {
   TextService* service_;
   ITfContext* context_;
   clipvault::ime::EngineState state_;
+};
+
+// OTP projection intentionally does not reuse ApplyStateEditSession. Copying a
+// full EngineState can allocate after commit_text has already been copied; if a
+// later member copy then throws, the containing class destructor never runs
+// and the partially constructed OTP string cannot be explicitly erased. This
+// narrow session copies into a fixed wipeable buffer and immediately erases
+// the source. A std::wstring move is insufficient here because short-string
+// optimization can copy 4-8 characters while leaving the source inline buffer
+// intact even after its logical size becomes zero.
+class OtpCommitEditSession final : public ITfEditSession {
+ public:
+  OtpCommitEditSession(TextService* service, ITfContext* context,
+                       std::wstring* text) noexcept
+      : service_(service), context_(context) {
+    if (text != nullptr) {
+      text_length_ = std::min(text->size(), text_.size());
+      std::copy_n(text->data(), text_length_, text_.begin());
+      if (!text->empty()) {
+        SecureZeroMemory(text->data(), text->size() * sizeof(wchar_t));
+        text->clear();
+      }
+    }
+    service_->AddRef();
+    context_->AddRef();
+  }
+
+  STDMETHODIMP QueryInterface(REFIID interface_id, void** object) override {
+    if (object == nullptr) return E_INVALIDARG;
+    *object = nullptr;
+    if (IsEqualIID(interface_id, IID_IUnknown) ||
+        IsEqualIID(interface_id, IID_ITfEditSession)) {
+      *object = static_cast<ITfEditSession*>(this);
+      AddRef();
+      return S_OK;
+    }
+    return E_NOINTERFACE;
+  }
+
+  STDMETHODIMP_(ULONG) AddRef() override { return ++references_; }
+  STDMETHODIMP_(ULONG) Release() override {
+    const ULONG remaining = --references_;
+    if (remaining == 0) delete this;
+    return remaining;
+  }
+
+  STDMETHODIMP DoEditSession(TfEditCookie cookie) override {
+    TF_SELECTION selection{};
+    ULONG fetched = 0;
+    try {
+      const HRESULT selected = context_->GetSelection(
+          cookie, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+      if (FAILED(selected) || fetched != 1 || selection.range == nullptr) {
+        SafeRelease(&selection.range);
+        return FAILED(selected) ? selected : E_FAIL;
+      }
+      const HRESULT inserted = selection.range->SetText(
+          cookie, 0, text_.data(), static_cast<LONG>(text_length_));
+      selection.range->Release();
+      return inserted;
+    } catch (...) {
+      SafeRelease(&selection.range);
+      return E_FAIL;
+    }
+  }
+
+ private:
+  ~OtpCommitEditSession() {
+    SecureZeroMemory(text_.data(), text_.size() * sizeof(wchar_t));
+    text_length_ = 0;
+    context_->Release();
+    service_->Release();
+  }
+
+  std::atomic<ULONG> references_{1};
+  TextService* service_ = nullptr;
+  ITfContext* context_ = nullptr;
+  std::array<wchar_t, 8> text_{};
+  std::size_t text_length_ = 0;
 };
 
 TextService::TextService()
@@ -252,6 +500,8 @@ STDMETHODIMP TextService::QueryInterface(REFIID interface_id, void** object) {
     *object = static_cast<ITfTextInputProcessorEx*>(this);
   } else if (IsEqualIID(interface_id, IID_ITfKeyEventSink)) {
     *object = static_cast<ITfKeyEventSink*>(this);
+  } else if (IsEqualIID(interface_id, IID_ITfCompositionSink)) {
+    *object = static_cast<ITfCompositionSink*>(this);
   } else {
     return E_NOINTERFACE;
   }
@@ -309,7 +559,7 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* thread_manager, TfClientId cl
   // Host startup and Rime initialization are separate. Activation permits one
   // bounded control-plane handshake after launching/prewarming the Host; it
   // never waits for Rime or dictionary maintenance on an application UI thread.
-  host_launch_attempted_ = LaunchHost();
+  MaybeLaunchHost();
   return S_OK;
 }
 
@@ -467,6 +717,26 @@ bool TextService::LaunchHost() const {
   return true;
 }
 
+bool TextService::MaybeLaunchHost() {
+  if (HostInstanceIsRunning()) return true;
+  const ULONGLONG now = GetTickCount64();
+  if (now < next_host_launch_tick_) return false;
+
+  const bool launched = LaunchHost();
+  const DWORD attempt_backoff = host_launch_backoff_milliseconds_;
+  const DWORD delay = launched
+                          ? std::max(kHostStartupGraceMilliseconds,
+                                     attempt_backoff)
+                          : attempt_backoff;
+  next_host_launch_tick_ = now + delay;
+  // CreateProcess only proves that a launch was attempted; the child can die
+  // before acquiring its mutex or completing the pipe handshake. Advance the
+  // backoff after every attempt and reset it only after StartSession succeeds.
+  host_launch_backoff_milliseconds_ = std::min<DWORD>(
+      attempt_backoff * 2, kMaximumHostLaunchBackoffMilliseconds);
+  return launched;
+}
+
 bool TextService::EnsureEngine(
     const clipvault::ime::InputContext& input_context) {
   if (session_started_ && input_context_ != input_context) ResetEngine();
@@ -476,7 +746,12 @@ bool TextService::EnsureEngine(
   const ULONGLONG deadline =
       GetTickCount64() + kEnsureEngineBudgetMilliseconds;
   if (!engine_.connected()) {
-    if (!host_launch_attempted_) host_launch_attempted_ = LaunchHost();
+    // The per-session Host mutex is the source of truth. A live Host may be
+    // starting or temporarily unable to accept a pipe, so never spawn another
+    // process while that mutex exists. If the Host really exited, retry launch
+    // under a monotonic exponential backoff; the Host mutex resolves races
+    // among the many application processes that can load this TSF DLL.
+    MaybeLaunchHost();
     // This runs on the host application's key path. A cold/deploying Host is
     // allowed to miss the key; it must never freeze the app for seconds.
     const DWORD connect_budget = RemainingBudget(deadline);
@@ -488,6 +763,11 @@ bool TextService::EnsureEngine(
                      engine_.StartSession(input_context_, &state,
                                           session_budget);
   composition_active_ = false;
+  if (session_started_) {
+    next_host_launch_tick_ = 0;
+    host_launch_backoff_milliseconds_ =
+        kInitialHostLaunchBackoffMilliseconds;
+  }
   return session_started_;
 }
 
@@ -579,6 +859,10 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM key_
                                     BOOL* eaten) {
   if (context == nullptr || eaten == nullptr) return E_INVALIDARG;
   *eaten = FALSE;
+  clipvault::ime::EmitDiagnostic(
+      clipvault::ime::DiagnosticEvent::kKeyDownObserved,
+      static_cast<std::uint32_t>(
+          clipvault::ime::ClassifyKeyForDiagnostics(key, composition_active_)));
   const auto input_context = ClassifyInputContext(context);
   if (input_context.field_kind ==
       clipvault::ime::InputFieldKind::kPassword) {
@@ -620,7 +904,7 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM key_
   if (!processed) {
     clipvault::ime::EmitDiagnostic(
         clipvault::ime::DiagnosticEvent::kKeyRpcTimedOut);
-    if (RecoverPlainKey(context, key, key_data, &state)) {
+    if (RecoverPlainKey(context, key, key_data)) {
       *eaten = TRUE;
     }
     return S_OK;
@@ -658,14 +942,54 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID key_guid,
   return S_OK;
 }
 
+STDMETHODIMP TextService::OnCompositionTerminated(
+    TfEditCookie, ITfComposition* composition) {
+  if (SameComIdentity(composition_, composition)) {
+    SafeRelease(&composition_);
+    composition_active_ = false;
+    candidate_anchor_valid_ = false;
+    candidate_window_.Hide();
+  }
+  return S_OK;
+}
+
 HRESULT TextService::ApplyState(ITfContext* context,
                                 const clipvault::ime::EngineState& state) {
-  auto* edit = new (std::nothrow) ApplyStateEditSession(this, context, state);
+  ApplyStateEditSession* edit = nullptr;
+  try {
+    // nothrow covers allocation of the object itself, but copying EngineState
+    // in the constructor can still throw. Convert both failure modes into an
+    // HRESULT instead of allowing an exception to escape a COM callback.
+    edit = new (std::nothrow) ApplyStateEditSession(this, context, state);
+  } catch (const std::bad_alloc&) {
+    return E_OUTOFMEMORY;
+  } catch (...) {
+    return E_FAIL;
+  }
   if (edit == nullptr) return E_OUTOFMEMORY;
+  struct EditReleaseGuard final {
+    ApplyStateEditSession* value;
+    ~EditReleaseGuard() {
+      if (value != nullptr) value->Release();
+    }
+  } edit_guard{edit};
   HRESULT session_result = E_FAIL;
-  const HRESULT requested = context->RequestEditSession(
-      client_id_, edit, TF_ES_SYNC | TF_ES_READWRITE, &session_result);
-  edit->Release();
+  HRESULT requested = E_FAIL;
+  try {
+    requested = context->RequestEditSession(
+        client_id_, edit, TF_ES_SYNC | TF_ES_READWRITE, &session_result);
+  } catch (...) {
+    return E_FAIL;
+  }
+  if (FAILED(requested)) {
+    clipvault::ime::EmitDiagnostic(
+        clipvault::ime::DiagnosticEvent::kEditSessionRequestFailed,
+        static_cast<std::uint32_t>(requested));
+  } else if (FAILED(session_result)) {
+    clipvault::ime::EmitDiagnostic(
+        clipvault::ime::DiagnosticEvent::kEditSessionApplyFailed,
+        static_cast<std::uint32_t>(session_result));
+  }
   return FAILED(requested) ? requested : session_result;
 }
 
@@ -678,10 +1002,20 @@ HRESULT TextService::ApplyAndPresent(
   composition_active_ = state.composition_active;
   if (!state.candidates.empty() || !state.snapshot_surface.empty()) {
     const RECT* anchor = candidate_anchor_valid_ ? &candidate_anchor_ : nullptr;
-    if (!candidate_window_.Show(context, anchor, state)) return E_FAIL;
+    if (!candidate_window_.Show(context, anchor, state)) {
+      // Candidate presentation is optional. A UI creation failure must not
+      // erase composition text that was already projected successfully.
+      candidate_window_.Hide();
+      clipvault::ime::EmitDiagnostic(
+          clipvault::ime::DiagnosticEvent::kCandidateWindowUnavailable);
+    }
   } else {
     candidate_window_.Hide();
   }
+  // CandidateWindow owns the only UI copy and enforces its monotonic expiry.
+  // TextService needs no second plaintext/ID copy: selection callbacks come
+  // from that window and the Host revalidates epoch, generation, ID and TTL.
+  WipeSnapshotSurface(&last_state_.snapshot_surface);
   return S_OK;
 }
 
@@ -779,29 +1113,98 @@ bool TextService::BuildOtpContext(
   return true;
 }
 
+HRESULT TextService::ApplyOtpCommit(ITfContext* context,
+                                    std::wstring* text) noexcept {
+  if (context == nullptr || text == nullptr || text->size() < 4 ||
+      text->size() > 8) {
+    return E_INVALIDARG;
+  }
+  auto* edit =
+      new (std::nothrow) OtpCommitEditSession(this, context, text);
+  if (edit == nullptr) {
+    clipvault::ime::EmitDiagnostic(
+        clipvault::ime::DiagnosticEvent::kEditSessionApplyFailed,
+        static_cast<std::uint32_t>(E_OUTOFMEMORY));
+    return E_OUTOFMEMORY;
+  }
+  struct EditReleaseGuard final {
+    OtpCommitEditSession* value;
+    ~EditReleaseGuard() {
+      if (value != nullptr) value->Release();
+    }
+  } edit_guard{edit};
+  HRESULT session_result = E_FAIL;
+  HRESULT requested = E_FAIL;
+  try {
+    requested = context->RequestEditSession(
+        client_id_, edit, TF_ES_SYNC | TF_ES_READWRITE, &session_result);
+  } catch (...) {
+    clipvault::ime::EmitDiagnostic(
+        clipvault::ime::DiagnosticEvent::kEditSessionRequestFailed,
+        static_cast<std::uint32_t>(E_FAIL));
+    return E_FAIL;
+  }
+  if (FAILED(requested)) {
+    clipvault::ime::EmitDiagnostic(
+        clipvault::ime::DiagnosticEvent::kEditSessionRequestFailed,
+        static_cast<std::uint32_t>(requested));
+  } else if (FAILED(session_result)) {
+    clipvault::ime::EmitDiagnostic(
+        clipvault::ime::DiagnosticEvent::kEditSessionApplyFailed,
+        static_cast<std::uint32_t>(session_result));
+  }
+  return FAILED(requested) ? requested : session_result;
+}
+
 void TextService::InsertLatestOtp(ITfContext* context) noexcept {
-  if (context == nullptr || composition_active_) return;
-  CaptureContext(context);
-  clipvault::ime::OtpContextBinding before;
-  const auto input = ClassifyInputContext(context);
-  if (!BuildOtpContext(context, &before) || !EnsureEngine(input)) return;
   clipvault::ime::EngineState state;
-  if (!engine_.InsertOtp(before, &state, 40)) return;
-  clipvault::ime::OtpContextBinding after;
-  const bool valid = BuildOtpContext(context, &after) && before == after &&
-                     state.handled && state.commit_text.has_value() &&
-                     state.commit_text->size() >= 4 &&
-                     state.commit_text->size() <= 8 &&
-                     std::all_of(state.commit_text->begin(),
-                                 state.commit_text->end(),
-                                 [](wchar_t value) {
-                                   return value >= L'0' && value <= L'9';
-                                 });
-  if (valid) ApplyState(context, state);  // Direct TSF range insertion only.
-  if (state.commit_text.has_value() && !state.commit_text->empty())
-    SecureZeroMemory(state.commit_text->data(),
-                     state.commit_text->size() * sizeof(wchar_t));
-  candidate_window_.Hide();
+  CommitTextWipeGuard wipe_commit(&state);
+  try {
+    if (context == nullptr || composition_active_) return;
+    CaptureContext(context);
+    clipvault::ime::OtpContextBinding before;
+    const auto input = ClassifyInputContext(context);
+    if (!BuildOtpContext(context, &before) || !EnsureEngine(input)) return;
+    if (!engine_.InsertOtp(before, &state, 40)) {
+      // The protocol layer also wipes partially decoded replies. Keep this
+      // boundary defensive so future transport implementations cannot return
+      // an error while leaving OTP plaintext in the caller-owned state.
+      candidate_window_.Hide();
+      return;
+    }
+    clipvault::ime::OtpContextBinding after;
+    const bool valid = BuildOtpContext(context, &after) && before == after &&
+                       state.handled && state.commit_text.has_value() &&
+                       state.commit_text->size() >= 4 &&
+                       state.commit_text->size() <= 8 &&
+                       std::all_of(state.commit_text->begin(),
+                                   state.commit_text->end(),
+                                   [](wchar_t value) {
+                                     return value >= L'0' && value <= L'9';
+                                   });
+    if (valid) {
+      // Direct TSF range insertion only. The dedicated fixed-buffer edit
+      // session copies the OTP and immediately erases this source string, so
+      // no full EngineState OTP copy exists.
+      const HRESULT projected =
+          ApplyOtpCommit(context, &*state.commit_text);
+      if (FAILED(projected)) {
+        // The Broker has already consumed the one-use lease. Retire the local
+        // Host session so the next key cannot continue from an ambiguous state;
+        // ApplyOtpCommit emitted a content-free HRESULT diagnostic.
+        ResetEngine();
+        return;
+      }
+    }
+    candidate_window_.Hide();
+  } catch (...) {
+    // The guard erases any received OTP before this noexcept COM callback
+    // returns. Sever the session because the Host may already have consumed
+    // the one-use credential even though local projection failed.
+    engine_.Disconnect();
+    session_started_ = false;
+    candidate_window_.Hide();
+  }
 }
 
 void TextService::ResetOtpContext() noexcept {
@@ -842,15 +1245,7 @@ void TextService::SelectSnapshotCandidate(
                            clipvault::ime::InputFieldKind::kUnknown &&
                        current_context.field_kind !=
                            clipvault::ime::InputFieldKind::kPassword;
-  const auto visible = std::find_if(
-      last_state_.snapshot_surface.candidates.begin(),
-      last_state_.snapshot_surface.candidates.end(),
-      [&candidate_id](const clipvault::ime::SnapshotCandidate& candidate) {
-        return candidate.candidate_id == candidate_id;
-      });
-  if (!allowed || publisher_epoch != last_state_.snapshot_surface.publisher_epoch ||
-      generation != last_state_.snapshot_surface.generation ||
-      visible == last_state_.snapshot_surface.candidates.end()) {
+  if (!allowed) {
     candidate_window_.Hide();
     ResetEngine();
     return;
@@ -886,24 +1281,23 @@ void TextService::ChangeCandidatePage(bool backward) {
   }
 }
 
-bool TextService::RecoverPlainKey(ITfContext* context, WPARAM key, LPARAM key_data,
-                                  clipvault::ime::EngineState* state) {
+bool TextService::RecoverPlainKey(ITfContext* context, WPARAM key,
+                                  LPARAM key_data) {
   const auto event = TranslateKey(key, key_data);
   const bool replayable = key >= 'A' && key <= 'Z' && !event.control && !event.alt;
   const auto recovery = clipvault::ime::PlanRpcRecovery(
       composition_active_ && !last_state_.preedit.empty(), replayable);
-  if (recovery.preserve_preedit_as_literal && !PreservePreeditLiteral(context))
-    return false;
-  if (!recovery.preserve_preedit_as_literal) RetireComposition(context);
-  if (recovery.consume_original_key) return true;
-  if (!recovery.replay_plain_letter || !EnsureEngine(input_context_) ||
-      !engine_.ProcessKey(event, state) ||
-      !state->handled) return false;
-  if (FAILED(ApplyAndPresent(context, *state))) {
-    RetireComposition(context);
+  if (recovery.preserve_preedit_as_literal && !PreservePreeditLiteral(context)) {
+    MaybeLaunchHost();
     return false;
   }
-  return true;
+  if (!recovery.preserve_preedit_as_literal) RetireComposition(context);
+  // A failed RPC may have been accepted by the old Host even though its reply
+  // was never acknowledged. Never replay that key into a new session. A plain
+  // letter is allowed to fall through once after any preedit is committed
+  // literally; ambiguous candidate/control operations remain consumed.
+  MaybeLaunchHost();
+  return recovery.consume_original_key;
 }
 
 bool TextService::PreservePreeditLiteral(ITfContext* context) noexcept {
@@ -928,26 +1322,45 @@ bool TextService::PreservePreeditLiteral(ITfContext* context) noexcept {
 bool TextService::CanBufferKey(WPARAM key) const noexcept {
   const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
   const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
-  if (!control && !alt && key >= 'A' && key <= 'Z') return true;
-  return !pending_preedit_.empty() &&
-         (key == VK_BACK || key == VK_ESCAPE || key == VK_SPACE ||
-          key == VK_RETURN);
+  return PlanLocalBufferAction(key, control, alt, pending_preedit_.size()) !=
+         LocalBufferAction::kReject;
 }
 
 bool TextService::BufferLocalKey(ITfContext* context, WPARAM key,
                                  LPARAM key_data) noexcept {
-  if (context == nullptr || !CanBufferKey(key)) return false;
-  constexpr std::size_t kMaximumBufferedCharacters = 32;
+  if (context == nullptr) return false;
   const auto event = TranslateKey(key, key_data);
-  if (key >= 'A' && key <= 'Z') {
-    if (event.control || event.alt || event.text.empty() ||
-        pending_preedit_.size() >= kMaximumBufferedCharacters) {
-      return false;
-    }
+  const auto action = PlanLocalBufferAction(
+      key, event.control, event.alt, pending_preedit_.size());
+  if (action == LocalBufferAction::kReject) return false;
+  if ((action == LocalBufferAction::kAppendLetter ||
+       action == LocalBufferAction::kCommitFullBufferWithLetter) &&
+      event.text.empty()) {
+    return false;
+  }
+  const bool commit_full_buffer =
+      action == LocalBufferAction::kCommitFullBufferWithLetter ||
+      (action == LocalBufferAction::kAppendLetter &&
+       event.text.size() >
+           kMaximumBufferedCharacters - pending_preedit_.size());
+  if (commit_full_buffer) {
+    // At capacity, atomically commit the buffered preedit and the current key
+    // as one literal state. This keeps OnTestKeyDown/OnKeyDown consistent and
+    // cannot either eat-and-drop key 33 or leak it through behind an active
+    // 32-character composition.
+    clipvault::ime::EngineState literal;
+    literal.commit_text = pending_preedit_ + event.text;
+    if (FAILED(ApplyAndPresent(context, literal))) return false;
+    pending_preedit_.clear();
+    clipvault::ime::EmitDiagnostic(
+        clipvault::ime::DiagnosticEvent::kLocalBufferUpdated, 0);
+    return true;
+  }
+  if (action == LocalBufferAction::kAppendLetter) {
     pending_preedit_.append(event.text);
-  } else if (key == VK_BACK) {
+  } else if (action == LocalBufferAction::kBackspace) {
     if (!pending_preedit_.empty()) pending_preedit_.pop_back();
-  } else if (key == VK_ESCAPE) {
+  } else if (action == LocalBufferAction::kCancel) {
     pending_preedit_.clear();
   } else {
     clipvault::ime::EngineState literal;
@@ -977,15 +1390,29 @@ bool TextService::ReplayBufferedPreedit(
   if (pending_preedit_.empty()) return true;
   constexpr DWORD kReplayBudgetMilliseconds = 40;
   const ULONGLONG deadline = GetTickCount64() + kReplayBudgetMilliseconds;
+  const auto abandon_partial_replay = [this] {
+    // The Host session may already contain a strict prefix. It cannot remain
+    // connected while the editor continues with the complete local buffer,
+    // otherwise the next key would fork composition/revision state.
+    engine_.Disconnect();
+    session_started_ = false;
+    last_state_ = clipvault::ime::EngineState{};
+    candidate_window_.Hide();
+  };
   clipvault::ime::EngineState replayed;
   for (const wchar_t value : pending_preedit_) {
     const DWORD remaining = RemainingBudget(deadline);
-    if (remaining == 0) return false;
+    if (remaining == 0) {
+      abandon_partial_replay();
+      return false;
+    }
     clipvault::ime::KeyEvent event;
     event.virtual_key = static_cast<std::uint32_t>(std::towupper(value));
     event.text.assign(1, value);
-    if (!engine_.ProcessKey(event, &replayed, remaining) || !replayed.handled)
+    if (!engine_.ProcessKey(event, &replayed, remaining) || !replayed.handled) {
+      abandon_partial_replay();
       return false;
+    }
   }
   const auto replayed_count = static_cast<std::uint32_t>(pending_preedit_.size());
   pending_preedit_.clear();
@@ -1014,5 +1441,4 @@ void TextService::ResetEngine() noexcept {
   composition_active_ = false;
   last_state_ = clipvault::ime::EngineState{};
   candidate_anchor_valid_ = false;
-  host_launch_attempted_ = false;
 }

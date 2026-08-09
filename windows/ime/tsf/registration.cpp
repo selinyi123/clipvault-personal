@@ -102,6 +102,11 @@ HRESULT RegisterTsfProfile() {
         kDescription, static_cast<ULONG>(std::size(kDescription) - 1), icon.c_str(),
         static_cast<ULONG>(icon.size()), 0);
   }
+  if (SUCCEEDED(result)) {
+    result = profiles->EnableLanguageProfile(
+        CLSID_ClipVaultTextService, kLanguage, GUID_ClipVaultLanguageProfile,
+        TRUE);
+  }
   profiles->Release();
   if (FAILED(result)) return result;
 
@@ -147,6 +152,10 @@ HRESULT UnregisterTsfProfile() {
   result = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
                             CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles));
   if (SUCCEEDED(result)) {
+    RememberFailure(profiles->EnableLanguageProfile(
+                        CLSID_ClipVaultTextService, kLanguage,
+                        GUID_ClipVaultLanguageProfile, FALSE),
+                    &first_failure);
     RememberFailure(profiles->RemoveLanguageProfile(
                         CLSID_ClipVaultTextService, kLanguage,
                         GUID_ClipVaultLanguageProfile),

@@ -93,6 +93,11 @@ try {
         if (-not $elevatedOwnerRejected) {
             throw 'Elevated Rime deployment did not fail closed.'
         }
+        if ($actualSid.EndsWith('-500', [StringComparison]::Ordinal)) {
+            & $deployScript -HostDirectory (Join-Path $package 'host-x64') `
+                -ExpectedOwnerSid $actualSid `
+                -AllowBuiltInAdministratorOwner -WhatIf
+        }
     } else {
         & $deployScript -HostDirectory (Join-Path $package 'host-x64') `
             -ExpectedOwnerSid $actualSid -WhatIf
@@ -100,6 +105,8 @@ try {
     $deployText = Get-Content -LiteralPath $deployScript -Raw
     foreach ($requiredToken in @('ExpectedOwnerSid',
                                   'WindowsBuiltInRole]::Administrator',
+                                  'AllowBuiltInAdministratorOwner',
+                                  "EndsWith('-500'",
                                   'ownerLocalAppData',
                                   'userDataDirectory.StartsWith')) {
         if (-not $deployText.Contains($requiredToken)) {

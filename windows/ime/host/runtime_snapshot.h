@@ -85,7 +85,7 @@ class RuntimeSnapshotCoordinator final {
       delete;
 
   std::shared_ptr<SessionHandle> BeginSession(bool clipvault_allowed);
-  SnapshotSurface Current(const std::shared_ptr<SessionHandle>& session) const;
+  SnapshotSurface Current(const std::shared_ptr<SessionHandle>& session);
   std::optional<std::wstring> Consume(
       const std::shared_ptr<SessionHandle>& session,
       const std::string& publisher_epoch, std::uint64_t generation,
@@ -94,6 +94,7 @@ class RuntimeSnapshotCoordinator final {
 
  private:
   struct SharedState;
+  void RequestRefresh(const std::shared_ptr<SessionHandle>& session);
   std::shared_ptr<SharedState> state_;
 };
 

@@ -3,6 +3,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <chrono>
 #include <iterator>
 #include <string>
 #include <utility>
@@ -11,6 +12,15 @@ namespace {
 
 constexpr wchar_t kCandidateWindowClass[] =
     L"ClipVaultCandidateWindow.C5CEE00A05AD4ABA93BB6E76932AF126";
+constexpr UINT_PTR kSnapshotExpiryTimerId = 1;
+constexpr ULONGLONG kMaximumSnapshotLifetimeMilliseconds = 30'000;
+
+std::uint64_t UnixTimeMilliseconds() noexcept {
+  const auto value = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
+  return value > 0 ? static_cast<std::uint64_t>(value) : 0;
+}
 
 }  // namespace
 
@@ -23,6 +33,9 @@ CandidateWindow::CandidateWindow(HINSTANCE module, SelectionHandler select,
       select_snapshot_(std::move(select_snapshot)) {}
 
 CandidateWindow::~CandidateWindow() {
+  StopSnapshotExpiryTimer();
+  ClearSnapshotSurface();
+  ResetSnapshotDeadlineIdentity();
   if (window_ != nullptr) DestroyWindow(window_);
 }
 
@@ -77,12 +90,23 @@ bool CandidateWindow::Show(ITfContext* context,
     Hide();
     return true;
   }
-  if (!EnsureWindow()) return false;
+  StopSnapshotExpiryTimer();
+  if (!EnsureWindow()) {
+    Hide();
+    return false;
+  }
   candidates_ = state.candidates;
   if (candidates_.size() > 9) candidates_.resize(9);
+  ClearSnapshotSurface();
   snapshot_surface_ = state.snapshot_surface;
   if (snapshot_surface_.candidates.size() > 8)
     snapshot_surface_.candidates.resize(8);
+  if (!snapshot_surface_.empty() && !ArmSnapshotExpiryTimer())
+    ClearSnapshotSurface();
+  if (candidates_.empty() && snapshot_surface_.empty()) {
+    Hide();
+    return true;
+  }
   page_index_ = state.page_index;
   has_previous_page_ = state.has_previous_page;
   has_next_page_ = state.has_next_page;
@@ -112,7 +136,61 @@ bool CandidateWindow::Show(ITfContext* context,
 }
 
 void CandidateWindow::Hide() noexcept {
+  StopSnapshotExpiryTimer();
   candidates_.clear();
+  ClearSnapshotSurface();
+  if (window_ != nullptr) ShowWindow(window_, SW_HIDE);
+}
+
+bool CandidateWindow::ArmSnapshotExpiryTimer() {
+  if (window_ == nullptr || snapshot_surface_.empty()) return false;
+
+  const bool same_snapshot =
+      snapshot_deadline_publisher_epoch_ ==
+          snapshot_surface_.publisher_epoch &&
+      snapshot_deadline_generation_ == snapshot_surface_.generation &&
+      snapshot_deadline_expires_at_ms_ == snapshot_surface_.expires_at_ms;
+  const ULONGLONG now_tick = GetTickCount64();
+  if (!same_snapshot) {
+    ResetSnapshotDeadlineIdentity();
+    snapshot_deadline_publisher_epoch_ = snapshot_surface_.publisher_epoch;
+    snapshot_deadline_generation_ = snapshot_surface_.generation;
+    snapshot_deadline_expires_at_ms_ = snapshot_surface_.expires_at_ms;
+    const std::uint64_t now_unix = UnixTimeMilliseconds();
+    const std::uint64_t wall_remaining =
+        snapshot_surface_.expires_at_ms > now_unix
+            ? snapshot_surface_.expires_at_ms - now_unix
+            : 0;
+    // A wall-clock rollback must not mint a fresh UI lifetime. Host responses
+    // are contractually capped at 30 seconds; anything outside that envelope
+    // is rejected instead of silently clamped and displayed.
+    if (wall_remaining == 0 ||
+        wall_remaining > kMaximumSnapshotLifetimeMilliseconds) {
+      snapshot_expiry_deadline_tick_ = now_tick;
+      return false;
+    }
+    snapshot_expiry_deadline_tick_ = now_tick + wall_remaining;
+  }
+
+  if (snapshot_expiry_deadline_tick_ <= now_tick) return false;
+  const auto remaining = static_cast<UINT>(
+      std::min<ULONGLONG>(snapshot_expiry_deadline_tick_ - now_tick,
+                          kMaximumSnapshotLifetimeMilliseconds));
+  if (SetTimer(window_, kSnapshotExpiryTimerId, std::max<UINT>(remaining, 1),
+               nullptr) == 0) {
+    // Timer creation failure is fail-closed. Remember this generation as
+    // already expired so a later Show cannot resurrect it with a fresh TTL.
+    snapshot_expiry_deadline_tick_ = now_tick;
+    return false;
+  }
+  return true;
+}
+
+void CandidateWindow::StopSnapshotExpiryTimer() noexcept {
+  if (window_ != nullptr) KillTimer(window_, kSnapshotExpiryTimerId);
+}
+
+void CandidateWindow::ClearSnapshotSurface() noexcept {
   std::fill(snapshot_surface_.publisher_epoch.begin(),
             snapshot_surface_.publisher_epoch.end(), '\0');
   snapshot_surface_.publisher_epoch.clear();
@@ -125,7 +203,31 @@ void CandidateWindow::Hide() noexcept {
     std::fill(candidate.text.begin(), candidate.text.end(), L'\0');
   }
   snapshot_surface_.candidates.clear();
-  if (window_ != nullptr) ShowWindow(window_, SW_HIDE);
+}
+
+void CandidateWindow::ResetSnapshotDeadlineIdentity() noexcept {
+  std::fill(snapshot_deadline_publisher_epoch_.begin(),
+            snapshot_deadline_publisher_epoch_.end(), '\0');
+  snapshot_deadline_publisher_epoch_.clear();
+  snapshot_deadline_generation_ = 0;
+  snapshot_deadline_expires_at_ms_ = 0;
+  snapshot_expiry_deadline_tick_ = 0;
+}
+
+void CandidateWindow::ExpireSnapshotSurface() noexcept {
+  StopSnapshotExpiryTimer();
+  ClearSnapshotSurface();
+  if (window_ == nullptr) return;
+  if (candidates_.empty()) {
+    ShowWindow(window_, SW_HIDE);
+    return;
+  }
+
+  const auto size = clipvault::ime::candidate_layout::MeasureWindow(
+      candidates_.size(), 0, layout_metrics_);
+  SetWindowPos(window_, nullptr, 0, 0, size.width, size.height,
+               SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  InvalidateRect(window_, nullptr, TRUE);
 }
 
 void CandidateWindow::Paint() {
@@ -196,10 +298,38 @@ LRESULT CandidateWindow::HandleMessage(UINT message, WPARAM word, LPARAM data) {
   if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
   if (message == WM_ERASEBKGND) return 1;
   if (message == WM_PAINT) {
+    if (!snapshot_surface_.empty() &&
+        (snapshot_expiry_deadline_tick_ == 0 ||
+         GetTickCount64() >= snapshot_expiry_deadline_tick_)) {
+      ExpireSnapshotSurface();
+    }
     Paint();
     return 0;
   }
+  if (message == WM_TIMER && word == kSnapshotExpiryTimerId) {
+    const ULONGLONG now_tick = GetTickCount64();
+    if (snapshot_surface_.empty() || snapshot_expiry_deadline_tick_ == 0 ||
+        now_tick >= snapshot_expiry_deadline_tick_) {
+      ExpireSnapshotSurface();
+    } else {
+      const auto remaining = static_cast<UINT>(std::max<ULONGLONG>(
+          snapshot_expiry_deadline_tick_ - now_tick, 1));
+      if (SetTimer(window_, kSnapshotExpiryTimerId, remaining, nullptr) == 0) {
+        snapshot_expiry_deadline_tick_ = now_tick;
+        ExpireSnapshotSurface();
+      }
+    }
+    return 0;
+  }
   if (message == WM_LBUTTONDOWN) {
+    // A queued timer can be delivered just after a click. Enforce the frozen
+    // monotonic deadline again before hit-testing so an expired Snapshot item
+    // is never selected during that race.
+    if (!snapshot_surface_.empty() &&
+        (snapshot_expiry_deadline_tick_ == 0 ||
+         GetTickCount64() >= snapshot_expiry_deadline_tick_)) {
+      ExpireSnapshotSurface();
+    }
     const int x = GET_X_LPARAM(data);
     const int y = GET_Y_LPARAM(data);
     RECT bounds{};
@@ -230,6 +360,16 @@ LRESULT CandidateWindow::HandleMessage(UINT message, WPARAM word, LPARAM data) {
         break;
     }
     return 0;
+  }
+  if (message == WM_NCDESTROY) {
+    const HWND destroyed_window = window_;
+    StopSnapshotExpiryTimer();
+    candidates_.clear();
+    ClearSnapshotSurface();
+    ResetSnapshotDeadlineIdentity();
+    SetWindowLongPtrW(destroyed_window, GWLP_USERDATA, 0);
+    window_ = nullptr;
+    return DefWindowProcW(destroyed_window, message, word, data);
   }
   return DefWindowProcW(window_, message, word, data);
 }

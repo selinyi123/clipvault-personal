@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cwctype>
+#include <list>
 #include <limits>
 #include <mutex>
 #include <thread>
@@ -24,6 +25,27 @@ constexpr std::uint32_t kWireVarint = 0;
 constexpr std::uint32_t kWireBytes = 2;
 constexpr std::uint64_t kMaximumPositiveInt64 =
     static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+constexpr std::uint64_t kRefreshLeadMilliseconds = 5'000;
+constexpr std::uint64_t kRefreshRetryMilliseconds = 1'000;
+// Epochs are random process incarnations, so concurrent requests cannot prove
+// which Runtime process is newer when their responses arrive out of order.
+// Serialize this local 250 ms fetch boundary to make epoch transitions ordered.
+constexpr std::size_t kMaximumConcurrentSnapshotFetches = 1;
+
+std::uint64_t AllocateRequestId(
+    std::atomic<std::uint64_t>* counter) noexcept {
+  std::uint64_t observed = counter->load(std::memory_order_relaxed);
+  for (;;) {
+    if (observed == 0 || observed > kMaximumPositiveInt64) return 0;
+    const std::uint64_t request_id = observed;
+    const std::uint64_t next =
+        request_id == kMaximumPositiveInt64 ? 0 : request_id + 1;
+    if (counter->compare_exchange_weak(observed, next,
+                                       std::memory_order_relaxed)) {
+      return request_id;
+    }
+  }
+}
 
 struct Field final {
   std::uint32_t number = 0;
@@ -707,20 +729,39 @@ bool RuntimeSnapshotPipeClient::Fetch(
 struct RuntimeSnapshotCoordinator::SessionHandle final {
   mutable std::mutex mutex;
   bool allowed = false;
+  bool fetch_in_flight = false;
   std::uint64_t input_generation = 1;
+  ULONGLONG retry_after_tick = 0;
+  ULONGLONG surface_deadline_tick = 0;
   SnapshotSurface surface;
+
+  void WipeSurfaceState() noexcept {
+    WipeSurface(&surface);
+    surface_deadline_tick = 0;
+  }
 };
 
 struct RuntimeSnapshotCoordinator::SharedState final {
+  struct Worker final {
+    std::shared_ptr<std::atomic_bool> done;
+    std::jthread thread;
+  };
+
   explicit SharedState(Fetcher value) : fetcher(std::move(value)) {}
 
   std::mutex mutex;
   Fetcher fetcher;
   std::atomic<std::uint64_t> next_request{1};
+  std::atomic<std::size_t> in_flight_fetches{0};
   std::string publisher_epoch;
   std::uint64_t generation = 0;
+  std::uint64_t last_accepted_request_id = 0;
   std::unordered_set<std::string> retired_epochs;
   std::vector<std::weak_ptr<SessionHandle>> sessions;
+  std::mutex workers_mutex;
+  // Keep this member last so its jthreads join before any state they access is
+  // destroyed when the coordinator shuts down.
+  std::list<Worker> workers;
 };
 
 RuntimeSnapshotCoordinator::RuntimeSnapshotCoordinator(Fetcher fetcher)
@@ -734,77 +775,206 @@ RuntimeSnapshotCoordinator::BeginSession(bool clipvault_allowed) {
     std::lock_guard lock(state_->mutex);
     state_->sessions.push_back(session);
   }
-  if (!clipvault_allowed || !state_->fetcher) return session;
-  std::uint64_t request_id = state_->next_request.fetch_add(1);
-  if (request_id == 0 || request_id > kMaximumPositiveInt64) {
-    state_->next_request.store(2);
-    request_id = 1;
-  }
-  const std::uint64_t input_generation = session->input_generation;
-  auto state = state_;
-  std::thread([state, session, request_id, input_generation] {
-    RuntimeSnapshotResponse response;
-    const std::uint64_t now_ms = UnixTimeMilliseconds();
-    if (!state->fetcher(request_id, kRuntimeSnapshotMaximumItems, now_ms,
-                        &response) ||
-        response.request_id != request_id ||
-        !IsSurfaceStructurallyValid(response.surface) ||
-        !(now_ms < response.surface.expires_at_ms &&
-          response.surface.expires_at_ms <=
-              now_ms + kRuntimeSnapshotMaximumLifetimeMilliseconds)) {
-      return;
-    }
-
-    std::lock_guard state_lock(state->mutex);
-    bool epoch_changed = false;
-    if (state->publisher_epoch.empty()) {
-      state->publisher_epoch = response.surface.publisher_epoch;
-    } else if (response.surface.publisher_epoch == state->publisher_epoch) {
-      if (response.surface.generation <= state->generation) return;
-    } else {
-      if (state->retired_epochs.contains(response.surface.publisher_epoch))
-        return;
-      state->retired_epochs.insert(state->publisher_epoch);
-      state->publisher_epoch = response.surface.publisher_epoch;
-      state->generation = 0;
-      epoch_changed = true;
-    }
-    state->generation = response.surface.generation;
-
-    auto output = state->sessions.begin();
-    for (auto input = state->sessions.begin(); input != state->sessions.end();
-         ++input) {
-      if (auto current = input->lock()) {
-        if (epoch_changed) {
-          std::lock_guard session_lock(current->mutex);
-          WipeSurface(&current->surface);
-        }
-        *output++ = *input;
-      }
-    }
-    state->sessions.erase(output, state->sessions.end());
-
-    std::lock_guard session_lock(session->mutex);
-    if (!session->allowed ||
-        session->input_generation != input_generation) {
-      return;
-    }
-    WipeSurface(&session->surface);
-    session->surface = std::move(response.surface);
-  }).detach();
+  if (clipvault_allowed) RequestRefresh(session);
   return session;
 }
 
-SnapshotSurface RuntimeSnapshotCoordinator::Current(
-    const std::shared_ptr<SessionHandle>& session) const {
-  if (!session) return {};
-  std::lock_guard lock(session->mutex);
-  if (!session->allowed ||
-      session->surface.expires_at_ms <= UnixTimeMilliseconds()) {
-    WipeSurface(&session->surface);
-    return {};
+void RuntimeSnapshotCoordinator::RequestRefresh(
+    const std::shared_ptr<SessionHandle>& session) {
+  if (!session || !state_->fetcher) return;
+  std::shared_ptr<std::atomic_bool> done;
+  try {
+    done = std::make_shared<std::atomic_bool>(false);
+  } catch (...) {
+    return;
   }
-  return session->surface;
+  const ULONGLONG request_started_tick = GetTickCount64();
+  std::uint64_t input_generation = 0;
+  {
+    std::lock_guard session_lock(session->mutex);
+    if (!session->allowed || session->fetch_in_flight ||
+        request_started_tick < session->retry_after_tick) {
+      return;
+    }
+    session->fetch_in_flight = true;
+    input_generation = session->input_generation;
+  }
+
+  std::size_t active = state_->in_flight_fetches.load();
+  while (active < kMaximumConcurrentSnapshotFetches &&
+         !state_->in_flight_fetches.compare_exchange_weak(active, active + 1)) {
+  }
+  if (active >= kMaximumConcurrentSnapshotFetches) {
+    std::lock_guard session_lock(session->mutex);
+    if (session->input_generation == input_generation) {
+      session->fetch_in_flight = false;
+      session->retry_after_tick =
+          request_started_tick + kRefreshRetryMilliseconds;
+    }
+    return;
+  }
+
+  const std::uint64_t request_id = AllocateRequestId(&state_->next_request);
+  const auto reject = [&] {
+    std::lock_guard session_lock(session->mutex);
+    if (session->input_generation == input_generation) {
+      session->fetch_in_flight = false;
+      session->retry_after_tick =
+          GetTickCount64() + kRefreshRetryMilliseconds;
+    }
+  };
+  if (request_id == 0) {
+    state_->in_flight_fetches.fetch_sub(1);
+    reject();
+    return;
+  }
+
+  SharedState* const state = state_.get();
+  std::lock_guard workers_lock(state->workers_mutex);
+  for (auto worker = state->workers.begin(); worker != state->workers.end();) {
+    if (worker->done != nullptr &&
+        worker->done->load(std::memory_order_acquire)) {
+      worker = state->workers.erase(worker);
+    } else {
+      ++worker;
+    }
+  }
+
+  bool placeholder_created = false;
+  try {
+    state->workers.emplace_back();
+    placeholder_created = true;
+    auto& worker = state->workers.back();
+    worker.done = done;
+    worker.thread = std::jthread(
+        [state, session, done, request_id, input_generation] {
+      struct DoneGuard final {
+        std::shared_ptr<std::atomic_bool> done;
+        ~DoneGuard() { done->store(true, std::memory_order_release); }
+      } done_guard{done};
+      struct FetchCountGuard final {
+        SharedState* state;
+        ~FetchCountGuard() { state->in_flight_fetches.fetch_sub(1); }
+      } fetch_count{state};
+      const auto reject = [&] {
+        std::lock_guard session_lock(session->mutex);
+        if (session->input_generation == input_generation) {
+          session->fetch_in_flight = false;
+          session->retry_after_tick =
+              GetTickCount64() + kRefreshRetryMilliseconds;
+        }
+      };
+
+      try {
+        RuntimeSnapshotResponse response;
+        const std::uint64_t now_ms = UnixTimeMilliseconds();
+        if (!state->fetcher(request_id, kRuntimeSnapshotMaximumItems, now_ms,
+                            &response) ||
+            response.request_id != request_id ||
+            !IsSurfaceStructurallyValid(response.surface) ||
+            !(now_ms < response.surface.expires_at_ms &&
+              response.surface.expires_at_ms <=
+                  now_ms + kRuntimeSnapshotMaximumLifetimeMilliseconds)) {
+          reject();
+          return;
+        }
+        const std::uint64_t accepted_wall_ms = UnixTimeMilliseconds();
+        if (response.surface.expires_at_ms <= accepted_wall_ms ||
+            response.surface.expires_at_ms - accepted_wall_ms >
+                kRuntimeSnapshotMaximumLifetimeMilliseconds) {
+          reject();
+          return;
+        }
+        const ULONGLONG surface_deadline_tick =
+            GetTickCount64() +
+            (response.surface.expires_at_ms - accepted_wall_ms);
+
+        std::lock_guard state_lock(state->mutex);
+        if (request_id <= state->last_accepted_request_id) {
+          reject();
+          return;
+        }
+        bool epoch_changed = false;
+        if (state->publisher_epoch.empty()) {
+          state->publisher_epoch = response.surface.publisher_epoch;
+        } else if (response.surface.publisher_epoch == state->publisher_epoch) {
+          if (response.surface.generation <= state->generation) {
+            reject();
+            return;
+          }
+        } else {
+          if (state->retired_epochs.contains(response.surface.publisher_epoch)) {
+            reject();
+            return;
+          }
+          state->retired_epochs.insert(state->publisher_epoch);
+          state->publisher_epoch = response.surface.publisher_epoch;
+          state->generation = 0;
+          epoch_changed = true;
+        }
+        state->generation = response.surface.generation;
+        state->last_accepted_request_id = request_id;
+
+        auto output = state->sessions.begin();
+        for (auto input = state->sessions.begin();
+             input != state->sessions.end(); ++input) {
+          if (auto current = input->lock()) {
+            if (epoch_changed) {
+              std::lock_guard session_lock(current->mutex);
+              current->WipeSurfaceState();
+            }
+            *output++ = *input;
+          }
+        }
+        state->sessions.erase(output, state->sessions.end());
+
+        std::lock_guard session_lock(session->mutex);
+        session->fetch_in_flight = false;
+        if (!session->allowed ||
+            session->input_generation != input_generation) {
+          return;
+        }
+        if (response.surface.publisher_epoch != state->publisher_epoch) {
+          session->retry_after_tick =
+              GetTickCount64() + kRefreshRetryMilliseconds;
+          return;
+        }
+        session->WipeSurfaceState();
+        session->retry_after_tick = 0;
+        session->surface_deadline_tick = surface_deadline_tick;
+        session->surface = std::move(response.surface);
+      } catch (...) {
+        reject();
+      }
+    });
+  } catch (...) {
+    if (placeholder_created) state->workers.pop_back();
+    state->in_flight_fetches.fetch_sub(1);
+    reject();
+  }
+}
+
+SnapshotSurface RuntimeSnapshotCoordinator::Current(
+    const std::shared_ptr<SessionHandle>& session) {
+  if (!session) return {};
+  SnapshotSurface result;
+  bool refresh = false;
+  {
+    std::lock_guard lock(session->mutex);
+    if (!session->allowed) return {};
+    const ULONGLONG now_tick = GetTickCount64();
+    if (session->surface_deadline_tick == 0 ||
+        now_tick >= session->surface_deadline_tick) {
+      session->WipeSurfaceState();
+      refresh = true;
+    } else {
+      result = session->surface;
+      refresh = session->surface_deadline_tick - now_tick <=
+                kRefreshLeadMilliseconds;
+    }
+  }
+  if (refresh) RequestRefresh(session);
+  return result;
 }
 
 std::optional<std::wstring> RuntimeSnapshotCoordinator::Consume(
@@ -814,10 +984,11 @@ std::optional<std::wstring> RuntimeSnapshotCoordinator::Consume(
   if (!session) return std::nullopt;
   std::lock_guard lock(session->mutex);
   if (!session->allowed ||
-      session->surface.expires_at_ms <= UnixTimeMilliseconds() ||
+      session->surface_deadline_tick == 0 ||
+      GetTickCount64() >= session->surface_deadline_tick ||
       publisher_epoch != session->surface.publisher_epoch ||
       generation != session->surface.generation) {
-    WipeSurface(&session->surface);
+    session->WipeSurfaceState();
     return std::nullopt;
   }
   const auto candidate = std::find_if(
@@ -827,7 +998,7 @@ std::optional<std::wstring> RuntimeSnapshotCoordinator::Consume(
       });
   if (candidate == session->surface.candidates.end()) return std::nullopt;
   std::wstring text = candidate->text;
-  WipeSurface(&session->surface);
+  session->WipeSurfaceState();
   return text;
 }
 
@@ -837,7 +1008,9 @@ void RuntimeSnapshotCoordinator::Invalidate(
   std::lock_guard lock(session->mutex);
   session->allowed = false;
   ++session->input_generation;
-  WipeSurface(&session->surface);
+  session->fetch_in_flight = false;
+  session->retry_after_tick = 0;
+  session->WipeSurfaceState();
 }
 
 }  // namespace clipvault::ime

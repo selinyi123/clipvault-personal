@@ -7,7 +7,9 @@
 
 #include <atomic>
 
-class TextService final : public ITfTextInputProcessorEx, public ITfKeyEventSink {
+class TextService final : public ITfTextInputProcessorEx,
+                          public ITfKeyEventSink,
+                          public ITfCompositionSink {
  public:
   TextService();
 
@@ -31,6 +33,8 @@ class TextService final : public ITfTextInputProcessorEx, public ITfKeyEventSink
                        BOOL* eaten) override;
   STDMETHODIMP OnPreservedKey(ITfContext* context, REFGUID key_guid,
                               BOOL* eaten) override;
+  STDMETHODIMP OnCompositionTerminated(
+      TfEditCookie cookie, ITfComposition* composition) override;
 
  private:
   ~TextService();
@@ -40,6 +44,7 @@ class TextService final : public ITfTextInputProcessorEx, public ITfKeyEventSink
   clipvault::ime::InputContext ClassifyInputContext(
       ITfContext* context) const noexcept;
   bool EnsureEngine(const clipvault::ime::InputContext& input_context);
+  bool MaybeLaunchHost();
   bool LaunchHost() const;
   clipvault::ime::KeyEvent TranslateKey(WPARAM key, LPARAM key_data) const;
   HRESULT ApplyState(ITfContext* context, const clipvault::ime::EngineState& state);
@@ -50,6 +55,7 @@ class TextService final : public ITfTextInputProcessorEx, public ITfKeyEventSink
   bool IsCurrentContext(ITfContext* context) const noexcept;
   bool BuildOtpContext(ITfContext* context,
                        clipvault::ime::OtpContextBinding* binding) const noexcept;
+  HRESULT ApplyOtpCommit(ITfContext* context, std::wstring* text) noexcept;
   void InsertLatestOtp(ITfContext* context) noexcept;
   void ResetOtpContext() noexcept;
   void SelectCandidate(std::size_t index);
@@ -57,8 +63,7 @@ class TextService final : public ITfTextInputProcessorEx, public ITfKeyEventSink
                                std::uint64_t generation,
                                const std::string& candidate_id);
   void ChangeCandidatePage(bool backward);
-  bool RecoverPlainKey(ITfContext* context, WPARAM key, LPARAM key_data,
-                       clipvault::ime::EngineState* state);
+  bool RecoverPlainKey(ITfContext* context, WPARAM key, LPARAM key_data);
   bool PreservePreeditLiteral(ITfContext* context) noexcept;
   bool CanBufferKey(WPARAM key) const noexcept;
   bool BufferLocalKey(ITfContext* context, WPARAM key, LPARAM key_data) noexcept;
@@ -76,7 +81,8 @@ class TextService final : public ITfTextInputProcessorEx, public ITfKeyEventSink
   CandidateWindow candidate_window_;
   RECT candidate_anchor_{};
   bool candidate_anchor_valid_ = false;
-  bool host_launch_attempted_ = false;
+  ULONGLONG next_host_launch_tick_ = 0;
+  DWORD host_launch_backoff_milliseconds_ = 250;
   bool session_started_ = false;
   bool composition_active_ = false;
   std::wstring pending_preedit_;

@@ -106,109 +106,133 @@ bool RimeEngine::Initialize(const std::wstring& executable_directory,
 #else
   std::scoped_lock lock(mutex_);
   if (initialized_.load(std::memory_order_acquire)) return true;
-  const std::wstring dll_path = executable_directory + L"\\rime.dll";
-  module_ = LoadLibraryExW(dll_path.c_str(), nullptr,
-                           LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
-                               LOAD_LIBRARY_SEARCH_SYSTEM32);
-  if (module_ == nullptr) return false;
-  const auto get_api = reinterpret_cast<RimeGetApi>(GetProcAddress(module_, "rime_get_api"));
-  if (get_api == nullptr) return false;
-  api_ = get_api();
-  if (api_ == nullptr || !RIME_API_AVAILABLE(api_, setup) ||
-      !RIME_API_AVAILABLE(api_, initialize) ||
-      !RIME_API_AVAILABLE(api_, finalize) ||
-      !RIME_API_AVAILABLE(api_, create_session) ||
-      !RIME_API_AVAILABLE(api_, destroy_session) ||
-      !RIME_API_AVAILABLE(api_, set_option) ||
-      !RIME_API_AVAILABLE(api_, select_schema) ||
-      !RIME_API_AVAILABLE(api_, process_key) ||
-      !RIME_API_AVAILABLE(api_, get_context) ||
-      !RIME_API_AVAILABLE(api_, free_context) ||
-      !RIME_API_AVAILABLE(api_, get_commit) ||
-      !RIME_API_AVAILABLE(api_, free_commit) ||
-      !RIME_API_AVAILABLE(api_, select_candidate_on_current_page) ||
-      !RIME_API_AVAILABLE(api_, change_page) ||
-      !RIME_API_AVAILABLE(api_, commit_composition) ||
-      !RIME_API_AVAILABLE(api_, clear_composition)) {
-    api_ = nullptr;
-    return false;
-  }
 
-  std::wstring shared = EnvironmentPath(L"CLIPVAULT_RIME_DATA_DIR");
-  if (shared.empty()) shared = executable_directory + L"\\rime-data";
-  std::wstring user = EnvironmentPath(L"CLIPVAULT_RIME_USER_DIR");
-  if (user.empty()) user = DefaultUserDirectory();
-  std::error_code error;
-  std::filesystem::create_directories(user, error);
-  if (user.empty() || error || !std::filesystem::is_directory(shared, error) || error)
-    return false;
-  std::string shared_utf8;
-  std::string user_utf8;
-  if (!WideToUtf8(shared, &shared_utf8) || !WideToUtf8(user, &user_utf8)) return false;
-
-  RIME_STRUCT(RimeTraits, traits);
-  traits.shared_data_dir = shared_utf8.c_str();
-  traits.user_data_dir = user_utf8.c_str();
-  traits.distribution_name = "ClipVault";
-  traits.distribution_code_name = "clipvault";
-  traits.distribution_version = "2-native-p1";
-  traits.app_name = "rime.clipvault";
-  traits.min_log_level = 3;
-  traits.log_dir = "";
-  api_->setup(&traits);
-  api_->initialize(&traits);
-  if (run_maintenance && RIME_API_AVAILABLE(api_, start_maintenance) &&
-      RIME_API_AVAILABLE(api_, join_maintenance_thread) &&
-      api_->start_maintenance(True)) {
-    api_->join_maintenance_thread();
-  }
-  // Creating an empty session does not load a schema or its dictionary. Warm
-  // both production schemas and one minimal decode before publishing
-  // readiness, otherwise the first StartSession can exceed the 40 ms TSF RPC
-  // budget on a clean user directory.
-  const auto prepare_schema_session = [this](const char* schema,
-                                             RimeSessionId* prepared) {
-    const RimeSessionId session = api_->create_session();
-    if (session == 0) return false;
-    api_->set_option(session, "incognito_mode", True);
-    bool ready = api_->select_schema(session, schema) != False &&
-                 api_->process_key(session, 'n', 0) != False &&
-                 api_->process_key(session, 'i', 0) != False;
-    RIME_STRUCT(RimeContext, context);
-    if (ready) {
-      const bool got_context = api_->get_context(session, &context) != False;
-      ready = got_context && context.composition.preedit != nullptr &&
-              context.menu.num_candidates > 0;
-      if (got_context) api_->free_context(&context);
-    }
-    api_->clear_composition(session);
-    if (ready) {
-      *prepared = session;
-    } else {
-      api_->destroy_session(session);
-    }
-    return ready;
-  };
-  ordinary_pool_.reserve(kPreparedSessionsPerSchema);
-  private_pool_.reserve(kPreparedSessionsPerSchema);
-  for (std::size_t index = 0; index < kPreparedSessionsPerSchema; ++index) {
-    RimeSessionId private_session = 0;
-    RimeSessionId ordinary_session = 0;
-    if (!prepare_schema_session("clipvault_pinyin_private",
-                                &private_session) ||
-        !prepare_schema_session("clipvault_pinyin", &ordinary_session)) {
+  // Initialization is retried after a failed optional Rime startup.  Keep a
+  // failed attempt from leaking the loaded DLL (or leaving a half-configured
+  // API pointer behind), otherwise the next attempt acquires another module
+  // reference and may continue using stale process state.
+  bool rime_initialized = false;
+  const auto fail_initialization = [this, &rime_initialized]() {
+    ordinary_pool_.clear();
+    private_pool_.clear();
+    leased_sessions_.clear();
+    if (rime_initialized && api_ != nullptr) {
       api_->cleanup_all_sessions();
-      ordinary_pool_.clear();
-      private_pool_.clear();
       api_->finalize();
-      api_ = nullptr;
-      return false;
     }
-    private_pool_.push_back(private_session);
-    ordinary_pool_.push_back(ordinary_session);
+    api_ = nullptr;
+    if (module_ != nullptr) FreeLibrary(module_);
+    module_ = nullptr;
+    initialized_.store(false, std::memory_order_release);
+    return false;
+  };
+
+  try {
+    const std::wstring dll_path = executable_directory + L"\\rime.dll";
+    module_ = LoadLibraryExW(dll_path.c_str(), nullptr,
+                             LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
+                                 LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (module_ == nullptr) return false;
+    const auto get_api =
+        reinterpret_cast<RimeGetApi>(GetProcAddress(module_, "rime_get_api"));
+    if (get_api == nullptr) return fail_initialization();
+    api_ = get_api();
+    if (api_ == nullptr || !RIME_API_AVAILABLE(api_, setup) ||
+        !RIME_API_AVAILABLE(api_, initialize) ||
+        !RIME_API_AVAILABLE(api_, finalize) ||
+        !RIME_API_AVAILABLE(api_, create_session) ||
+        !RIME_API_AVAILABLE(api_, destroy_session) ||
+        !RIME_API_AVAILABLE(api_, set_option) ||
+        !RIME_API_AVAILABLE(api_, select_schema) ||
+        !RIME_API_AVAILABLE(api_, process_key) ||
+        !RIME_API_AVAILABLE(api_, get_context) ||
+        !RIME_API_AVAILABLE(api_, free_context) ||
+        !RIME_API_AVAILABLE(api_, get_commit) ||
+        !RIME_API_AVAILABLE(api_, free_commit) ||
+        !RIME_API_AVAILABLE(api_, select_candidate_on_current_page) ||
+        !RIME_API_AVAILABLE(api_, change_page) ||
+        !RIME_API_AVAILABLE(api_, commit_composition) ||
+        !RIME_API_AVAILABLE(api_, clear_composition) ||
+        !RIME_API_AVAILABLE(api_, cleanup_all_sessions)) {
+      return fail_initialization();
+    }
+
+    std::wstring shared = EnvironmentPath(L"CLIPVAULT_RIME_DATA_DIR");
+    if (shared.empty()) shared = executable_directory + L"\\rime-data";
+    std::wstring user = EnvironmentPath(L"CLIPVAULT_RIME_USER_DIR");
+    if (user.empty()) user = DefaultUserDirectory();
+    std::error_code error;
+    std::filesystem::create_directories(user, error);
+    if (user.empty() || error ||
+        !std::filesystem::is_directory(shared, error) || error)
+      return fail_initialization();
+    std::string shared_utf8;
+    std::string user_utf8;
+    if (!WideToUtf8(shared, &shared_utf8) || !WideToUtf8(user, &user_utf8))
+      return fail_initialization();
+
+    RIME_STRUCT(RimeTraits, traits);
+    traits.shared_data_dir = shared_utf8.c_str();
+    traits.user_data_dir = user_utf8.c_str();
+    traits.distribution_name = "ClipVault";
+    traits.distribution_code_name = "clipvault";
+    traits.distribution_version = "2-native-p1";
+    traits.app_name = "rime.clipvault";
+    traits.min_log_level = 3;
+    traits.log_dir = "";
+    api_->setup(&traits);
+    api_->initialize(&traits);
+    rime_initialized = true;
+    if (run_maintenance && RIME_API_AVAILABLE(api_, start_maintenance) &&
+        RIME_API_AVAILABLE(api_, join_maintenance_thread) &&
+        api_->start_maintenance(True)) {
+      api_->join_maintenance_thread();
+    }
+    // Creating an empty session does not load a schema or its dictionary. Warm
+    // both production schemas and one minimal decode before publishing
+    // readiness, otherwise the first StartSession can exceed the 40 ms TSF RPC
+    // budget on a clean user directory.
+    const auto prepare_schema_session = [this](const char* schema,
+                                               RimeSessionId* prepared) {
+      const RimeSessionId session = api_->create_session();
+      if (session == 0) return false;
+      api_->set_option(session, "incognito_mode", True);
+      bool ready = api_->select_schema(session, schema) != False &&
+                   api_->process_key(session, 'n', 0) != False &&
+                   api_->process_key(session, 'i', 0) != False;
+      RIME_STRUCT(RimeContext, context);
+      if (ready) {
+        const bool got_context = api_->get_context(session, &context) != False;
+        ready = got_context && context.composition.preedit != nullptr &&
+                context.menu.num_candidates > 0;
+        if (got_context) api_->free_context(&context);
+      }
+      api_->clear_composition(session);
+      if (ready) {
+        *prepared = session;
+      } else {
+        api_->destroy_session(session);
+      }
+      return ready;
+    };
+    ordinary_pool_.reserve(kPreparedSessionsPerSchema);
+    private_pool_.reserve(kPreparedSessionsPerSchema);
+    for (std::size_t index = 0; index < kPreparedSessionsPerSchema; ++index) {
+      RimeSessionId private_session = 0;
+      RimeSessionId ordinary_session = 0;
+      if (!prepare_schema_session("clipvault_pinyin_private",
+                                  &private_session) ||
+          !prepare_schema_session("clipvault_pinyin", &ordinary_session)) {
+        return fail_initialization();
+      }
+      private_pool_.push_back(private_session);
+      ordinary_pool_.push_back(ordinary_session);
+    }
+    initialized_.store(true, std::memory_order_release);
+    return true;
+  } catch (...) {
+    return fail_initialization();
   }
-  initialized_.store(true, std::memory_order_release);
-  return true;
 #endif
 }
 

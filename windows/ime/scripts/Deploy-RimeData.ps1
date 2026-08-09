@@ -6,10 +6,13 @@ param(
     [ValidatePattern('^S-1-5-')]
     [string]$ExpectedOwnerSid,
     [string]$SharedDataDirectory = '',
-    [string]$UserDataDirectory = ''
+    [string]$UserDataDirectory = '',
+    [switch]$NoConfirm,
+    [switch]$AllowBuiltInAdministratorOwner
 )
 
 $ErrorActionPreference = 'Stop'
+if ($NoConfirm) { $ConfirmPreference = 'None' }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $actualOwnerSid = $identity.User.Value
 if (-not [string]::Equals($actualOwnerSid, $ExpectedOwnerSid,
@@ -18,7 +21,9 @@ if (-not [string]::Equals($actualOwnerSid, $ExpectedOwnerSid,
 }
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if ($principal.IsInRole(
-        [Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        [Security.Principal.WindowsBuiltInRole]::Administrator) -and
+    (-not $AllowBuiltInAdministratorOwner -or
+        -not $actualOwnerSid.EndsWith('-500', [StringComparison]::Ordinal))) {
     throw 'Rime deployment received an elevated token instead of the original-user token.'
 }
 if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {

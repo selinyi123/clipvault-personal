@@ -110,7 +110,9 @@ int wmain(int argc, wchar_t** argv) {
          SetEnvironmentVariableW(L"CLIPVAULT_RIME_USER_DIR",
                                  user.c_str()) != FALSE &&
          SetEnvironmentVariableW(L"CLIPVAULT_IME_TEST_NAMESPACE",
-                                 test_namespace.c_str()) != FALSE;
+                                 test_namespace.c_str()) != FALSE &&
+         SetEnvironmentVariableW(L"CLIPVAULT_INSECURE_TEST_PIPE_TRUST",
+                                 L"1") != FALSE;
     DWORD deploy_exit = 99;
     ok = ok && LaunchAndWait(argv[1], Quote(argv[1]) + L" --deploy-rime",
                              60'000, &deploy_exit) &&

@@ -25,7 +25,7 @@ class NonActivatingOtpPrompt final : public OtpPromptSink {
   void Stop() noexcept;
 
  private:
-  void Run();
+  void Run(std::stop_token stop_token) noexcept;
   static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
                                      LPARAM lparam);
   std::jthread thread_;

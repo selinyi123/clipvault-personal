@@ -18,7 +18,9 @@ int main() {
       L"budget-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
       std::to_wstring(GetTickCount64());
   if (!SetEnvironmentVariableW(L"CLIPVAULT_IME_TEST_NAMESPACE",
-                               test_namespace.c_str())) return 2;
+                               test_namespace.c_str()) ||
+      !SetEnvironmentVariableW(L"CLIPVAULT_INSECURE_TEST_PIPE_TRUST", L"1"))
+    return 2;
   clipvault::ime::PipeEngineClient client;
   const ULONGLONG started = GetTickCount64();
   const bool connected = client.Connect(30);

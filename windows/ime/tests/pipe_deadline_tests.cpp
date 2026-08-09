@@ -17,20 +17,31 @@ enum class Behavior { kAcceptNoReply, kHalfFrame };
 
 struct EnvironmentGuard final {
   EnvironmentGuard() {
-    const DWORD required =
-        GetEnvironmentVariableW(L"CLIPVAULT_IME_TEST_NAMESPACE", nullptr, 0);
-    if (required != 0) {
-      prior.resize(required, L'\0');
-      const DWORD written = GetEnvironmentVariableW(
-          L"CLIPVAULT_IME_TEST_NAMESPACE", prior.data(), required);
-      if (written < required) prior.resize(written);
-    }
+    ReadPrior(L"CLIPVAULT_IME_TEST_NAMESPACE", &prior_namespace);
+    ReadPrior(L"CLIPVAULT_INSECURE_TEST_PIPE_TRUST", &prior_trust);
+    ready = SetEnvironmentVariableW(L"CLIPVAULT_INSECURE_TEST_PIPE_TRUST",
+                                    L"1") != FALSE;
   }
   ~EnvironmentGuard() {
     SetEnvironmentVariableW(L"CLIPVAULT_IME_TEST_NAMESPACE",
-                            prior.empty() ? nullptr : prior.c_str());
+                            prior_namespace.empty()
+                                ? nullptr
+                                : prior_namespace.c_str());
+    SetEnvironmentVariableW(L"CLIPVAULT_INSECURE_TEST_PIPE_TRUST",
+                            prior_trust.empty() ? nullptr
+                                                : prior_trust.c_str());
   }
-  std::wstring prior;
+  static void ReadPrior(const wchar_t* name, std::wstring* output) {
+    const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+    if (required == 0) return;
+    output->resize(required, L'\0');
+    const DWORD written =
+        GetEnvironmentVariableW(name, output->data(), required);
+    if (written < required) output->resize(written);
+  }
+  std::wstring prior_namespace;
+  std::wstring prior_trust;
+  bool ready = false;
 };
 
 HANDLE CreateTestPipe() {
@@ -253,7 +264,8 @@ bool RunMidSessionHalfFrameRecovery() {
 
 int wmain() {
   EnvironmentGuard environment;
-  return RunHandshakeTimeout(Behavior::kAcceptNoReply) &&
+  return environment.ready &&
+                 RunHandshakeTimeout(Behavior::kAcceptNoReply) &&
                  RunHandshakeTimeout(Behavior::kHalfFrame) &&
                  RunWriteNotReadTimeout() && RunMidSessionHalfFrameRecovery()
              ? 0

@@ -1,5 +1,6 @@
 #include "diagnostics.h"
 #include "otp_broker_client.h"
+#include "pipe_peer_trust.h"
 #include "protocol.h"
 #include "replay_ledger.h"
 #include "rime_engine.h"
@@ -12,6 +13,10 @@
 #include <array>
 #include <cwchar>
 #include <cwctype>
+#include <limits>
+#include <list>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -24,6 +29,16 @@ namespace {
 using namespace clipvault::ime;
 
 constexpr std::size_t kMaximumSessionsPerConnection = 8;
+constexpr std::size_t kMaximumConcurrentConnections = 16;
+constexpr DWORD kClientHelloTimeoutMilliseconds = 5'000;
+constexpr DWORD kClientIdleTimeoutMilliseconds = 5 * 60 * 1'000;
+constexpr DWORD kClientWriteTimeoutMilliseconds = 5'000;
+
+struct PeerWindowBinding final {
+  DWORD process_id = 0;
+  DWORD thread_id = 0;
+  HWND focus_window = nullptr;
+};
 
 struct Session final {
   std::uint64_t revision = 0;
@@ -34,6 +49,7 @@ struct Session final {
   std::vector<std::wstring> candidate_texts;
   std::uint32_t candidate_page = 0;
   InputContext input_context;
+  PeerWindowBinding peer;
   std::shared_ptr<RuntimeSnapshotCoordinator::SessionHandle> snapshot;
 };
 
@@ -88,6 +104,51 @@ struct LocalSecurity final {
   }
 };
 
+struct ConnectionContext final {
+  std::mutex mutex;
+  HANDLE pipe = INVALID_HANDLE_VALUE;
+  std::atomic_bool done{false};
+};
+
+struct ConnectionWorker final {
+  std::shared_ptr<ConnectionContext> context;
+  std::jthread thread;
+};
+
+void CloseConnection(const std::shared_ptr<ConnectionContext>& context) {
+  std::lock_guard lock(context->mutex);
+  if (context->pipe != INVALID_HANDLE_VALUE) {
+    CancelIoEx(context->pipe, nullptr);
+    DisconnectNamedPipe(context->pipe);
+    CloseHandle(context->pipe);
+    context->pipe = INVALID_HANDLE_VALUE;
+  }
+  context->done.store(true);
+}
+
+void CancelConnection(const std::shared_ptr<ConnectionContext>& context) {
+  std::lock_guard lock(context->mutex);
+  if (context->pipe != INVALID_HANDLE_VALUE) {
+    CancelIoEx(context->pipe, nullptr);
+    DisconnectNamedPipe(context->pipe);
+  }
+}
+
+void ReapCompletedWorkers(std::list<ConnectionWorker>* workers) {
+  for (auto current = workers->begin(); current != workers->end();) {
+    if (current->context->done.load()) {
+      current = workers->erase(current);
+    } else {
+      ++current;
+    }
+  }
+}
+
+void StopWorkers(std::list<ConnectionWorker>* workers) {
+  for (auto& worker : *workers) CancelConnection(worker.context);
+  workers->clear();
+}
+
 std::wstring ExecutableDirectory() {
   std::array<wchar_t, 32768> path{};
   const DWORD length = GetModuleFileNameW(nullptr, path.data(),
@@ -98,14 +159,190 @@ std::wstring ExecutableDirectory() {
   return separator == std::wstring::npos ? std::wstring{} : value.substr(0, separator);
 }
 
+std::vector<std::wstring> ExpectedTextServiceModules() {
+  using namespace clipvault::windows::trust;
+  const std::wstring host_path = CurrentExecutablePath();
+  const std::wstring host_directory = ParentDirectory(host_path);
+  if (FileName(host_directory) != L"host-x64") return {};
+  const std::wstring package_directory = ParentDirectory(host_directory);
+  return {
+      JoinPath(JoinPath(package_directory, L"x64"),
+               L"ClipVaultTextService.dll"),
+      JoinPath(JoinPath(package_directory, L"x86"),
+               L"ClipVaultTextService.dll"),
+  };
+}
+
+bool AuthorizeImePipeClient(DWORD process_id) {
+  using namespace clipvault::windows::trust;
+  if (!ProcessMatchesCurrentUserAndSession(process_id)) return false;
+  const std::wstring host_path = CurrentExecutablePath();
+  const auto expected_modules = ExpectedTextServiceModules();
+  if (!host_path.empty() && !expected_modules.empty()) {
+    if (ProcessHasModuleAtWithSamePublisher(
+            process_id, expected_modules, host_path) ||
+        (ExplicitUnsignedDevelopmentTrustEnabled() &&
+         ProcessHasModuleAt(process_id, expected_modules, false))) {
+      return true;
+    }
+  }
+
+  // Unsigned local binaries are accepted only when the whole process tree
+  // explicitly opted into an isolated test pipe namespace. This is never the
+  // production default and still binds the peer to the Host build directory.
+  if (!ExplicitUnsignedTestTrustEnabled(LocalTestNamespaceSuffix())) {
+    return false;
+  }
+  const std::wstring peer_path = ProcessExecutablePath(process_id);
+  return !host_path.empty() && !peer_path.empty() &&
+         ParentDirectory(peer_path) == ParentDirectory(host_path);
+}
+
+bool CaptureForegroundPeerBinding(DWORD process_id,
+                                  PeerWindowBinding* binding) {
+  if (process_id == 0 || binding == nullptr) return false;
+  *binding = PeerWindowBinding{};
+  const HWND foreground = GetForegroundWindow();
+  DWORD foreground_process_id = 0;
+  const DWORD foreground_thread_id =
+      foreground == nullptr
+          ? 0
+          : GetWindowThreadProcessId(foreground, &foreground_process_id);
+  if (foreground_thread_id == 0 || foreground_process_id != process_id) {
+    return false;
+  }
+  GUITHREADINFO gui{};
+  gui.cbSize = static_cast<DWORD>(sizeof(gui));
+  if (!GetGUIThreadInfo(foreground_thread_id, &gui) ||
+      gui.hwndFocus == nullptr || !IsWindow(gui.hwndFocus)) {
+    return false;
+  }
+  DWORD focus_process_id = 0;
+  const DWORD focus_thread_id =
+      GetWindowThreadProcessId(gui.hwndFocus, &focus_process_id);
+  if (focus_thread_id == 0 || focus_process_id != process_id) return false;
+  binding->process_id = process_id;
+  binding->thread_id = focus_thread_id;
+  binding->focus_window = gui.hwndFocus;
+  return true;
+}
+
+bool IsPeerWindowBindingCurrent(const PeerWindowBinding& binding) {
+  if (binding.process_id == 0 || binding.thread_id == 0 ||
+      binding.focus_window == nullptr || !IsWindow(binding.focus_window)) {
+    return false;
+  }
+  DWORD focus_process_id = 0;
+  if (GetWindowThreadProcessId(binding.focus_window, &focus_process_id) !=
+          binding.thread_id ||
+      focus_process_id != binding.process_id) {
+    return false;
+  }
+  const HWND foreground = GetForegroundWindow();
+  DWORD foreground_process_id = 0;
+  if (foreground == nullptr ||
+      GetWindowThreadProcessId(foreground, &foreground_process_id) == 0 ||
+      foreground_process_id != binding.process_id) {
+    return false;
+  }
+  GUITHREADINFO gui{};
+  gui.cbSize = static_cast<DWORD>(sizeof(gui));
+  return GetGUIThreadInfo(binding.thread_id, &gui) != FALSE &&
+         gui.hwndFocus == binding.focus_window;
+}
+
+bool ValidateOtpContextForPeer(const OtpContextBinding& context,
+                               const PeerWindowBinding& peer) {
+  if (!IsPeerWindowBindingCurrent(peer) ||
+      context.process_id != peer.process_id ||
+      context.thread_id != peer.thread_id ||
+      context.thread_id == 0 || context.window_handle == 0 ||
+      context.window_handle >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::uintptr_t>::max())) {
+    return false;
+  }
+  const HWND window = reinterpret_cast<HWND>(
+      static_cast<std::uintptr_t>(context.window_handle));
+  if (!IsWindow(window)) return false;
+  DWORD window_process_id = 0;
+  const DWORD window_thread_id =
+      GetWindowThreadProcessId(window, &window_process_id);
+  if (window != peer.focus_window || window_process_id != peer.process_id ||
+      window_thread_id != peer.thread_id) {
+    return false;
+  }
+  GUITHREADINFO gui{};
+  gui.cbSize = static_cast<DWORD>(sizeof(gui));
+  if (!GetGUIThreadInfo(context.thread_id, &gui) || gui.hwndFocus != window) {
+    return false;
+  }
+  return true;
+}
+
+SnapshotSurface SnapshotForSession(
+    Session* session, RuntimeSnapshotCoordinator* snapshot_coordinator) {
+  if (session == nullptr || snapshot_coordinator == nullptr ||
+      !IsPeerWindowBindingCurrent(session->peer)) {
+    if (session != nullptr && snapshot_coordinator != nullptr)
+      snapshot_coordinator->Invalidate(session->snapshot);
+    return {};
+  }
+  return snapshot_coordinator->Current(session->snapshot);
+}
+
 HANDLE CreatePipe(LocalSecurity* security, bool first_instance) {
-  DWORD open_mode = PIPE_ACCESS_DUPLEX;
+  DWORD open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
   if (first_instance) open_mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
   return CreateNamedPipeW(
       PipeNameForCurrentSession().c_str(), open_mode,
       PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
       PIPE_UNLIMITED_INSTANCES, kMaximumFrameBytes + 4, kMaximumFrameBytes + 4,
       0, &security->attributes);
+}
+
+bool ConnectPipe(HANDLE pipe) {
+  HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (event == nullptr) return false;
+  OVERLAPPED overlapped{};
+  overlapped.hEvent = event;
+  bool connected = ConnectNamedPipe(pipe, &overlapped) != FALSE;
+  if (!connected) {
+    const DWORD error = GetLastError();
+    if (error == ERROR_PIPE_CONNECTED) {
+      connected = true;
+    } else if (error == ERROR_IO_PENDING) {
+      const DWORD wait = WaitForSingleObject(event, INFINITE);
+      DWORD transferred = 0;
+      if (wait == WAIT_OBJECT_0) {
+        connected = GetOverlappedResult(pipe, &overlapped, &transferred,
+                                        FALSE) != FALSE;
+      } else {
+        CancelIoEx(pipe, &overlapped);
+        // OVERLAPPED and its event are stack-owned. Observe cancellation before
+        // either object leaves scope, including the rare WAIT_FAILED path.
+        GetOverlappedResult(pipe, &overlapped, &transferred, TRUE);
+      }
+    }
+  }
+  CloseHandle(event);
+  return connected;
+}
+
+bool ReadClientHelloFrame(HANDLE pipe, std::vector<std::uint8_t>* frame) {
+  return ReadFrameUntil(pipe, frame,
+                        GetTickCount64() + kClientHelloTimeoutMilliseconds);
+}
+
+bool ReadClientFrame(HANDLE pipe, std::vector<std::uint8_t>* frame) {
+  return ReadFrameUntil(pipe, frame,
+                        GetTickCount64() + kClientIdleTimeoutMilliseconds);
+}
+
+bool WriteClientFrame(HANDLE pipe,
+                      const std::vector<std::uint8_t>& frame) {
+  return WriteFrameUntil(pipe, frame,
+                         GetTickCount64() + kClientWriteTimeoutMilliseconds);
 }
 
 void ApplyEnvelope(const std::string& host_instance_id,
@@ -229,13 +466,22 @@ bool HandleConnection(HANDLE pipe, const std::string& host_instance_id,
                        ReplayLedger* replay_ledger,
                        OtpBrokerInsertClient* otp_client,
                        bool allow_echo) {
+  ULONG client_process_id = 0;
+  if (!GetNamedPipeClientProcessId(pipe, &client_process_id) ||
+      client_process_id == 0 ||
+      !AuthorizeImePipeClient(client_process_id)) {
+    return false;
+  }
   std::vector<std::uint8_t> frame;
   std::string client_id;
-  if (!ReadFrame(pipe, &frame) || !DecodeClientHello(frame, &client_id) ||
-      !WriteFrame(pipe, EncodeHostHello(host_instance_id))) return false;
+  if (!ReadClientHelloFrame(pipe, &frame) ||
+      !DecodeClientHello(frame, &client_id) ||
+      !WriteClientFrame(pipe, EncodeHostHello(host_instance_id))) {
+    return false;
+  }
 
   SessionRegistry registry(rime, snapshot_coordinator, replay_ledger);
-  while (ReadFrame(pipe, &frame)) {
+  while (ReadClientFrame(pipe, &frame)) {
     ResponseAck acknowledgement;
     if (DecodeResponseAck(frame, &acknowledgement)) {
       if (acknowledgement.host_instance_id != host_instance_id) return false;
@@ -263,9 +509,9 @@ bool HandleConnection(HANDLE pipe, const std::string& host_instance_id,
       const ReplayLookup ended = replay_ledger->LookupEnded(
           end.session_id, end.request_seq, frame);
       if (ended == ReplayLookup::kExact) {
-        if (!WriteFrame(pipe, EncodeSessionEnded(
-                                  SessionEnded{host_instance_id, end.session_id,
-                                               end.request_seq}))) {
+        if (!WriteClientFrame(
+                pipe, EncodeSessionEnded(SessionEnded{
+                          host_instance_id, end.session_id, end.request_seq}))) {
           return false;
         }
         continue;
@@ -284,9 +530,9 @@ bool HandleConnection(HANDLE pipe, const std::string& host_instance_id,
                                         frame)) {
         return false;
       }
-      if (!WriteFrame(pipe, EncodeSessionEnded(
-                                SessionEnded{host_instance_id, end.session_id,
-                                             end.request_seq}))) {
+      if (!WriteClientFrame(
+              pipe, EncodeSessionEnded(SessionEnded{
+                        host_instance_id, end.session_id, end.request_seq}))) {
         return false;
       }
       continue;
@@ -303,7 +549,7 @@ bool HandleConnection(HANDLE pipe, const std::string& host_instance_id,
         const ReplayLookup duplicate = replay_ledger->LookupResponse(
             start.session_id, start.request_seq, frame, &cached);
         if (duplicate != ReplayLookup::kExact ||
-            !WriteFrame(pipe, cached)) {
+            !WriteClientFrame(pipe, cached)) {
           if (!cached.empty()) SecureZeroMemory(cached.data(), cached.size());
           return false;
         }
@@ -313,7 +559,10 @@ bool HandleConnection(HANDLE pipe, const std::string& host_instance_id,
       if (registry.sessions.size() >= kMaximumSessionsPerConnection) return false;
       Session session;
       session.input_context = start.context;
+      const bool peer_bound =
+          CaptureForegroundPeerBinding(client_process_id, &session.peer);
       const bool snapshot_allowed =
+          peer_bound &&
           start.context.clipvault_allowed && start.context.learning_allowed &&
           !start.context.incognito &&
           start.context.field_kind != InputFieldKind::kUnknown &&
@@ -331,13 +580,13 @@ bool HandleConnection(HANDLE pipe, const std::string& host_instance_id,
       state.session_id = start.session_id;
       state.ack_request_seq = start.request_seq;
       state.mode = 1;
-      state.snapshot_surface =
-          snapshot_coordinator->Current(inserted_session->second.snapshot);
+      state.snapshot_surface = SnapshotForSession(
+          &inserted_session->second, snapshot_coordinator);
       const auto encoded = EncodeEngineState(state);
       if (encoded.empty() ||
           !replay_ledger->CacheResponse(start.session_id, start.request_seq,
                                         frame, encoded) ||
-          !WriteFrame(pipe, encoded)) {
+          !WriteClientFrame(pipe, encoded)) {
         return false;
       }
       continue;
@@ -431,7 +680,8 @@ bool HandleConnection(HANDLE pipe, const std::string& host_instance_id,
       std::vector<std::uint8_t> cached;
       const ReplayLookup duplicate = replay_ledger->LookupResponse(
           session_id, request_seq, frame, &cached);
-      if (duplicate != ReplayLookup::kExact || !WriteFrame(pipe, cached)) {
+      if (duplicate != ReplayLookup::kExact ||
+          !WriteClientFrame(pipe, cached)) {
         if (!cached.empty()) SecureZeroMemory(cached.data(), cached.size());
         return false;
       }
@@ -459,6 +709,17 @@ bool HandleConnection(HANDLE pipe, const std::string& host_instance_id,
     }
 
     EngineState state;
+    struct SensitiveCommitGuard final {
+      EngineState* state;
+      bool enabled;
+      ~SensitiveCommitGuard() {
+        if (enabled && state != nullptr && state->commit_text.has_value() &&
+            !state->commit_text->empty()) {
+          SecureZeroMemory(state->commit_text->data(),
+                           state->commit_text->size() * sizeof(wchar_t));
+        }
+      }
+    } sensitive_commit{&state, operation == Operation::kInsertOtp};
     bool success = false;
     if (operation == Operation::kKey) {
       success = session.rime_session_id != 0
@@ -500,9 +761,14 @@ bool HandleConnection(HANDLE pipe, const std::string& host_instance_id,
                     : PopulateEchoState(&session, nullptr, std::nullopt,
                                         &state);
     } else if (operation == Operation::kSelectSnapshot) {
-      const auto selected = snapshot_coordinator->Consume(
-          session.snapshot, snapshot_select.publisher_epoch,
-          snapshot_select.generation, snapshot_select.candidate_id);
+      std::optional<std::wstring> selected;
+      if (IsPeerWindowBindingCurrent(session.peer)) {
+        selected = snapshot_coordinator->Consume(
+            session.snapshot, snapshot_select.publisher_epoch,
+            snapshot_select.generation, snapshot_select.candidate_id);
+      } else {
+        snapshot_coordinator->Invalidate(session.snapshot);
+      }
       state = EngineState{};
       success = true;
       if (selected.has_value()) {
@@ -530,13 +796,21 @@ bool HandleConnection(HANDLE pipe, const std::string& host_instance_id,
           session.input_context.field_kind != InputFieldKind::kUnknown &&
           session.input_context.field_kind != InputFieldKind::kPassword;
       std::wstring otp;
+      struct OtpSourceGuard final {
+        std::wstring* value;
+        ~OtpSourceGuard() {
+          if (value != nullptr && !value->empty())
+            SecureZeroMemory(value->data(), value->size() * sizeof(wchar_t));
+        }
+      } otp_source{&otp};
       success = true;
-      if (context_allowed && otp_client != nullptr &&
+      if (context_allowed &&
+          ValidateOtpContextForPeer(otp_insert.context, session.peer) &&
+          otp_client != nullptr &&
           otp_client->ConsumeLatest(otp_insert.context, &otp)) {
         EngineState ignored;
         if (session.rime_session_id != 0 &&
             !rime->CancelComposition(session.rime_session_id, &ignored)) {
-          SecureZeroMemory(otp.data(), otp.size() * sizeof(wchar_t));
           return false;
         }
         session.echo_preedit.clear();
@@ -544,24 +818,39 @@ bool HandleConnection(HANDLE pipe, const std::string& host_instance_id,
         session.candidate_texts.clear();
         session.candidate_page = 0;
         state.handled = true;
-        state.commit_text = std::move(otp);
+        // Copy out of the short-string buffer, then erase the source. Moving a
+        // 4-8 digit SSO string can leave a second plaintext copy behind.
+        state.commit_text = otp;
+        if (!otp.empty()) {
+          SecureZeroMemory(otp.data(), otp.size() * sizeof(wchar_t));
+          otp.clear();
+        }
         state.mode = 1;
       }
     }
     if (!success) return false;
     ApplyEnvelope(host_instance_id, session_id, &session, request_seq, &state);
-    state.snapshot_surface = snapshot_coordinator->Current(session.snapshot);
+    state.snapshot_surface = SnapshotForSession(&session, snapshot_coordinator);
     auto encoded = EncodeEngineState(state);
-    const bool cached = !encoded.empty() && replay_ledger->CacheResponse(
-                                                session_id, request_seq, frame,
-                                                encoded);
-    const bool wrote = cached && WriteFrame(pipe, encoded);
-    if (operation == Operation::kInsertOtp) {
-      if (!encoded.empty()) SecureZeroMemory(encoded.data(), encoded.size());
-      if (state.commit_text.has_value() && !state.commit_text->empty())
-        SecureZeroMemory(state.commit_text->data(),
-                         state.commit_text->size() * sizeof(wchar_t));
-    }
+    struct SensitiveFrameGuard final {
+      std::vector<std::uint8_t>* frame;
+      bool enabled;
+      ~SensitiveFrameGuard() {
+        if (enabled && frame != nullptr && !frame->empty())
+          SecureZeroMemory(frame->data(), frame->size());
+      }
+    } sensitive_frame{&encoded, operation == Operation::kInsertOtp};
+    // OTP is an explicitly one-shot credential.  Never copy its plaintext
+    // response into the generic replay ledger: a duplicate request sequence
+    // must fail closed instead of returning the consumed code again.  Normal
+    // engine responses retain their short idempotency cache.
+    const bool response_ready = !encoded.empty();
+    const bool cached = operation == Operation::kInsertOtp
+                            ? response_ready
+                            : response_ready && replay_ledger->CacheResponse(
+                                                    session_id, request_seq,
+                                                    frame, encoded);
+    const bool wrote = cached && WriteClientFrame(pipe, encoded);
     if (!wrote) return false;
   }
   return true;
@@ -601,7 +890,14 @@ int wmain(int argc, wchar_t** argv) {
     const ULONGLONG started = GetTickCount64();
     EmitDiagnostic(DiagnosticEvent::kRimeDeployStarted);
     RimeEngine deployer;
-    const bool deployed = deployer.Initialize(ExecutableDirectory(), true);
+    bool deployed = false;
+    try {
+      deployed = deployer.Initialize(ExecutableDirectory(), true);
+    } catch (...) {
+      // Deployment runs during installation/upgrade.  Treat filesystem,
+      // allocation or native-loader exceptions as a reported deployment
+      // failure so the caller can retain or restore the prior active version.
+    }
     const auto duration = static_cast<std::uint32_t>(
         std::min<ULONGLONG>(GetTickCount64() - started, UINT32_MAX));
     EmitDiagnostic(DiagnosticEvent::kRimeDeployFinished, deployed ? 1u : 0u,
@@ -657,7 +953,14 @@ int wmain(int argc, wchar_t** argv) {
   if (require_rime) {
     const ULONGLONG started = GetTickCount64();
     EmitDiagnostic(DiagnosticEvent::kRimeInitializeStarted);
-    const bool ready = rime.Initialize(ExecutableDirectory(), false);
+    bool ready = false;
+    try {
+      ready = rime.Initialize(ExecutableDirectory(), false);
+    } catch (...) {
+      // Initialization is allowed to allocate, load native modules and inspect
+      // the filesystem.  A failure in any of those layers must remain a
+      // controlled Host startup failure rather than escaping from wmain.
+    }
     const auto duration = static_cast<std::uint32_t>(
         std::min<ULONGLONG>(GetTickCount64() - started, UINT32_MAX));
     EmitDiagnostic(ready ? DiagnosticEvent::kRimeInitializeReady
@@ -669,43 +972,93 @@ int wmain(int argc, wchar_t** argv) {
       return 6;
     }
   } else if (!force_echo) {
-    rime_initialization = std::jthread([&rime] {
-      const ULONGLONG started = GetTickCount64();
-      EmitDiagnostic(DiagnosticEvent::kRimeInitializeStarted);
-      const DWORD test_delay = TestRimeInitializationDelayMilliseconds();
-      if (test_delay != 0) Sleep(test_delay);
-      const bool ready = rime.Initialize(ExecutableDirectory(), false);
-      const auto duration = static_cast<std::uint32_t>(
-          std::min<ULONGLONG>(GetTickCount64() - started, UINT32_MAX));
-      EmitDiagnostic(ready ? DiagnosticEvent::kRimeInitializeReady
-                           : DiagnosticEvent::kRimeInitializeUnavailable,
-                     0, duration);
-    });
+    try {
+      rime_initialization = std::jthread([&rime] {
+        const ULONGLONG started = GetTickCount64();
+        EmitDiagnostic(DiagnosticEvent::kRimeInitializeStarted);
+        bool ready = false;
+        try {
+          const DWORD test_delay = TestRimeInitializationDelayMilliseconds();
+          if (test_delay != 0) Sleep(test_delay);
+          ready = rime.Initialize(ExecutableDirectory(), false);
+        } catch (...) {
+          // An exception escaping a jthread entry point calls std::terminate.
+          // Keep the control endpoint alive so clients receive the normal
+          // engine-unavailable/echo fallback instead of losing the Host.
+        }
+        const auto duration = static_cast<std::uint32_t>(
+            std::min<ULONGLONG>(GetTickCount64() - started, UINT32_MAX));
+        EmitDiagnostic(ready ? DiagnosticEvent::kRimeInitializeReady
+                             : DiagnosticEvent::kRimeInitializeUnavailable,
+                       0, duration);
+      });
+    } catch (...) {
+      // Thread creation/allocation failure is equivalent to an unavailable
+      // optional engine.  The already-created pipe endpoint remains usable.
+      EmitDiagnostic(DiagnosticEvent::kRimeInitializeUnavailable);
+    }
   }
 
+  std::list<ConnectionWorker> workers;
   int result = 0;
   do {
     HANDLE pipe = next_pipe;
     next_pipe = INVALID_HANDLE_VALUE;
-    const bool connected = ConnectNamedPipe(pipe, nullptr) != FALSE ||
-                           GetLastError() == ERROR_PIPE_CONNECTED;
+    const bool connected = ConnectPipe(pipe);
     if (connected) {
       if (once) {
-        HandleConnection(pipe, host_instance_id, &rime, &snapshot_coordinator,
-                         &replay_ledger, &otp_client, allow_echo);
-        FlushFileBuffers(pipe);
-        DisconnectNamedPipe(pipe);
-        CloseHandle(pipe);
-      } else {
-        std::thread([pipe, host_instance_id, &rime, &snapshot_coordinator,
-                     &replay_ledger, &otp_client, allow_echo] {
+        try {
           HandleConnection(pipe, host_instance_id, &rime,
                            &snapshot_coordinator, &replay_ledger, &otp_client,
                            allow_echo);
-          FlushFileBuffers(pipe);
+        } catch (...) {
+          result = 5;
+        }
+        CancelIoEx(pipe, nullptr);
+        DisconnectNamedPipe(pipe);
+        CloseHandle(pipe);
+      } else {
+        ReapCompletedWorkers(&workers);
+        if (workers.size() >= kMaximumConcurrentConnections) {
+          CancelIoEx(pipe, nullptr);
           DisconnectNamedPipe(pipe);
           CloseHandle(pipe);
-        }).detach();
+        } else {
+          std::shared_ptr<ConnectionContext> context;
+          bool placeholder_created = false;
+          try {
+            context = std::make_shared<ConnectionContext>();
+            context->pipe = pipe;
+            workers.emplace_back();
+            placeholder_created = true;
+            auto& worker = workers.back();
+            worker.context = context;
+            worker.thread = std::jthread(
+                [context, host_instance_id, rime_ptr = &rime,
+                 snapshot_ptr = &snapshot_coordinator,
+                 replay_ptr = &replay_ledger, otp_ptr = &otp_client,
+                 allow_echo] {
+                  try {
+                    HandleConnection(context->pipe, host_instance_id, rime_ptr,
+                                     snapshot_ptr, replay_ptr, otp_ptr,
+                                     allow_echo);
+                  } catch (...) {
+                    // A malformed/failed client must not terminate the shared
+                    // Host process or other application connections.
+                  }
+                  CloseConnection(context);
+                });
+          } catch (...) {
+            if (placeholder_created) workers.pop_back();
+            if (context != nullptr) {
+              CloseConnection(context);
+            } else {
+              CancelIoEx(pipe, nullptr);
+              DisconnectNamedPipe(pipe);
+              CloseHandle(pipe);
+            }
+          }
+        }
       }
     } else {
       CloseHandle(pipe);
@@ -721,6 +1074,8 @@ int wmain(int argc, wchar_t** argv) {
   } while (!once);
 
   if (next_pipe != INVALID_HANDLE_VALUE) CloseHandle(next_pipe);
+  StopWorkers(&workers);
+  if (rime_initialization.joinable()) rime_initialization.join();
 
   ReleaseMutex(mutex);
   CloseHandle(mutex);

@@ -125,6 +125,7 @@ struct Fixture final {
 
 int main() {
   bool ok = true;
+  static_assert(broker::kPairSessionNonceCapacity == 4'096);
   const Fixture fixture;
   constexpr std::uint64_t wall_now = 1'785'566'410'000ULL;
   constexpr std::uint64_t monotonic_now = 50'000ULL;
@@ -142,6 +143,11 @@ int main() {
 
   broker::OtpBrokerCore core(fixture.Session());
   ok &= Expect(core.ready(), "broker session derives CNG key");
+  auto changed_session = fixture.Session();
+  changed_session.pair_verifier[0] ^= 1U;
+  ok &= Expect(core.MatchesSession(fixture.Session()) &&
+                   !core.MatchesSession(changed_session),
+               "same epoch cannot replace verifier/key in-place");
   ok &= Expect(core.Offer(vector_envelope, wall_now, monotonic_now) ==
                    broker::BrokerStatus::kAccepted,
                "authenticated offer and delivery ACK");
@@ -162,6 +168,13 @@ int main() {
                    broker::DecodeArmLatest(arm_latest_frame, &decoded_context) &&
                    decoded_context == context,
                "strict arm-latest context round trip");
+  const auto revoke_frame = broker::EncodeRevokeSession(fixture.epoch);
+  crypto::UuidBytes decoded_revoke{};
+  ok &= Expect(!revoke_frame.empty() &&
+                   broker::DecodeRevokeSession(revoke_frame,
+                                               &decoded_revoke) &&
+                   decoded_revoke == fixture.epoch,
+               "strict revoke-session epoch round trip");
   broker::ArmRequest arm{fixture.event, context};
   auto denied_arm = core.Arm(arm, 9999, 77, monotonic_now + 1);
   ok &= Expect(denied_arm.status == broker::BrokerStatus::kDenied,
@@ -226,6 +239,105 @@ int main() {
                    broker::BrokerStatus::kAccepted &&
                    expiry_core.ExpireDue(monotonic_now + 25) == 1,
                "single derived monotonic deadline expires payload");
+
+  broker::OtpBrokerCore claim_expiry_core(fixture.Session());
+  auto claim_event = fixture.Encrypt(
+      1, HexArray<16>("aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa"),
+      HexArray<12>("404142434445464748494a4b"), wall_now,
+      wall_now + 120'000);
+  ok &= Expect(claim_expiry_core.Offer(claim_event, wall_now, monotonic_now) ==
+                   broker::BrokerStatus::kAccepted,
+               "claim-expiry fixture accepted");
+  const auto first_claim = claim_expiry_core.ArmLatest(
+      context, 4242, 77, monotonic_now + 1);
+  const auto replacement_claim = claim_expiry_core.ArmLatest(
+      context, 4242, 77, monotonic_now + 15'001);
+  ok &= Expect(first_claim.status == broker::BrokerStatus::kAccepted &&
+                   replacement_claim.status == broker::BrokerStatus::kAccepted &&
+                   replacement_claim.claim_id != first_claim.claim_id,
+               "expired claim releases still-live OTP for a fresh arm");
+  auto replacement_consumed = claim_expiry_core.Consume(
+      broker::ConsumeRequest{replacement_claim.claim_id, context}, 4242, 77,
+      monotonic_now + 15'002);
+  ok &= Expect(replacement_consumed.status == broker::BrokerStatus::kConsumed &&
+                   replacement_consumed.secret == expected,
+               "replacement claim consumes exactly once");
+  crypto::SecureErase(replacement_consumed.secret);
+
+  broker::OtpBrokerCore rotation_core(fixture.Session(), 1, 3);
+  auto rotation_first = fixture.Encrypt(
+      1, HexArray<16>("bbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb"),
+      HexArray<12>("505152535455565758595a5b"), wall_now,
+      wall_now + 120'000);
+  auto rotation_second = fixture.Encrypt(
+      2, HexArray<16>("cccccccccccc4ccc8ccccccccccccccc"),
+      HexArray<12>("606162636465666768696a6b"), wall_now,
+      wall_now + 120'000);
+  auto rotation_third = fixture.Encrypt(
+      3, HexArray<16>("dddddddddddd4ddd8ddddddddddddddd"),
+      HexArray<12>("707172737475767778797a7b"), wall_now,
+      wall_now + 120'000);
+  ok &= Expect(rotation_core.Offer(rotation_first, wall_now, monotonic_now) ==
+                       broker::BrokerStatus::kAccepted &&
+                   rotation_core.Dismiss(rotation_first.event_id) ==
+                       broker::BrokerStatus::kAccepted &&
+                   rotation_core.Offer(rotation_second, wall_now,
+                                       monotonic_now + 1) ==
+                       broker::BrokerStatus::kAccepted &&
+                   rotation_core.Dismiss(rotation_second.event_id) ==
+                       broker::BrokerStatus::kAccepted &&
+                   rotation_core.Offer(rotation_third, wall_now,
+                                       monotonic_now + 2) ==
+                       broker::BrokerStatus::kRotationRequired,
+               "nonce ledger exhaustion requires a fresh pair epoch without LRU");
+  broker::BrokerResponse rotation_response;
+  rotation_response.status = broker::BrokerStatus::kRotationRequired;
+  broker::BrokerResponse decoded_rotation_response;
+  const auto encoded_rotation_response =
+      broker::EncodeResponse(rotation_response);
+  ok &= Expect(!encoded_rotation_response.empty() &&
+                   broker::DecodeResponse(encoded_rotation_response,
+                                          &decoded_rotation_response) &&
+                   decoded_rotation_response.status ==
+                       broker::BrokerStatus::kRotationRequired,
+               "rotation-required is an explicit content-free wire status");
+  broker::BrokerResponse empty_consumed_response;
+  empty_consumed_response.status = broker::BrokerStatus::kConsumed;
+  ok &= Expect(broker::EncodeResponse(empty_consumed_response).empty(),
+               "consumed response requires a four-to-eight digit lease");
+  broker::BrokerResponse stale_response;
+  stale_response.status = broker::BrokerStatus::kConsumed;
+  stale_response.claim_id.fill(0x7f);
+  stale_response.secret = {'1', '2', '3', '4'};
+  ok &= Expect(!broker::DecodeResponse({}, &stale_response) &&
+                   stale_response.status == broker::BrokerStatus::kRejected &&
+                   stale_response.secret.empty() &&
+                   std::all_of(stale_response.claim_id.begin(),
+                               stale_response.claim_id.end(),
+                               [](std::uint8_t value) { return value == 0; }),
+               "failed response decode erases a previous one-use lease");
+  stale_response.status = broker::BrokerStatus::kConsumed;
+  stale_response.secret = {'5', '6', '7', '8'};
+  broker::BrokerPipeClient disconnected_client;
+  ok &= Expect(!disconnected_client.ExchangeUntil(
+                   std::vector<std::uint8_t>{1}, &stale_response,
+                   GetTickCount64() + 1) &&
+                   stale_response.status == broker::BrokerStatus::kRejected &&
+                   stale_response.secret.empty(),
+               "pre-I/O exchange failure erases a previous one-use lease");
+  broker::OtpBrokerCore restarted_rotation_core(fixture.Session(), 1, 3, 2);
+  ok &= Expect(restarted_rotation_core.ready() &&
+                   restarted_rotation_core.Offer(
+                       rotation_third, wall_now, monotonic_now + 3) ==
+                       broker::BrokerStatus::kRotationRequired,
+               "persisted sequence preserves the reserved rotation slot across restart");
+  auto expired_rotation = rotation_third;
+  expired_rotation.issued_at_ms = wall_now - 120;
+  expired_rotation.expires_at_ms = wall_now - 1;
+  ok &= Expect(restarted_rotation_core.Offer(
+                   expired_rotation, wall_now, monotonic_now + 4) ==
+                   broker::BrokerStatus::kRotationRequired,
+               "expired final reservation still returns the repair signal");
 
   core.Clear();
   ok &= Expect(!core.ready() &&

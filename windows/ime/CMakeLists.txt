@@ -23,6 +23,8 @@ option(CLIPVAULT_BUILD_HOST
        "Build the single per-user x64 engine Host" ${_clipvault_default_build_host})
 option(CLIPVAULT_REQUIRE_RIME_RUNTIME
        "Fail the production build unless the x64 Host ships with Rime SDK and data" OFF)
+option(CLIPVAULT_ENABLE_INSECURE_DEVELOPMENT_TRUST
+       "Compile the explicit unsigned pipe-trust escape hatch for local development only" OFF)
 if(CLIPVAULT_BUILD_HOST AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "ClipVaultImeHost is x64-only; Win32 builds the TSF DLL only")
 endif()
@@ -67,6 +69,10 @@ target_include_directories(clipvault_ime_protocol PUBLIC common)
 target_compile_definitions(clipvault_ime_protocol PUBLIC
   UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00
 )
+if(CLIPVAULT_ENABLE_INSECURE_DEVELOPMENT_TRUST)
+  target_compile_definitions(clipvault_ime_protocol PUBLIC
+    CLIPVAULT_ENABLE_INSECURE_DEVELOPMENT_TRUST=1)
+endif()
 target_compile_options(clipvault_ime_protocol PRIVATE /W4 /WX /permissive- /utf-8)
 target_link_libraries(clipvault_ime_protocol PUBLIC ole32)
 
@@ -80,6 +86,10 @@ target_include_directories(clipvault_otp_wire PUBLIC
   ../otp-relay/broker ../otp-relay/crypto)
 target_compile_definitions(clipvault_otp_wire PUBLIC
   UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+if(CLIPVAULT_ENABLE_INSECURE_DEVELOPMENT_TRUST)
+  target_compile_definitions(clipvault_otp_wire PUBLIC
+    CLIPVAULT_ENABLE_INSECURE_DEVELOPMENT_TRUST=1)
+endif()
 target_compile_options(clipvault_otp_wire PRIVATE
   /W4 /WX /permissive- /utf-8)
 
@@ -113,6 +123,10 @@ if(CLIPVAULT_BUILD_HOST)
     ../otp-relay/authority ../otp-relay/broker ../otp-relay/crypto)
   target_compile_definitions(clipvault_otp_broker PUBLIC
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+  if(CLIPVAULT_ENABLE_INSECURE_DEVELOPMENT_TRUST)
+    target_compile_definitions(clipvault_otp_broker PUBLIC
+      CLIPVAULT_ENABLE_INSECURE_DEVELOPMENT_TRUST=1)
+  endif()
   target_compile_options(clipvault_otp_broker PRIVATE
     /W4 /WX /permissive- /utf-8)
   target_link_libraries(clipvault_otp_broker PUBLIC
@@ -238,6 +252,25 @@ target_link_libraries(ClipVaultTextService PRIVATE
 
 include(CTest)
 if(BUILD_TESTING)
+  # Manual evidence host: a clean Win32 EDIT control that loads the currently
+  # selected TSF profile without touching user documents or application data.
+  add_executable(clipvault_tsf_evidence_editor WIN32
+    tests/tsf_evidence_editor.cpp)
+  target_compile_definitions(clipvault_tsf_evidence_editor PRIVATE
+    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+  target_compile_options(clipvault_tsf_evidence_editor PRIVATE
+    /W4 /WX /permissive- /utf-8)
+  target_link_libraries(clipvault_tsf_evidence_editor PRIVATE user32 gdi32)
+
+  # Manual diagnostics capture: listens to the current session's DBWIN channel
+  # and prints only content-free ClipVaultIme event lines with their source PID.
+  add_executable(clipvault_dbwin_diagnostics_capture
+    tests/dbwin_diagnostics_capture.cpp)
+  target_compile_definitions(clipvault_dbwin_diagnostics_capture PRIVATE
+    WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+  target_compile_options(clipvault_dbwin_diagnostics_capture PRIVATE
+    /W4 /WX /permissive- /utf-8)
+
   add_executable(clipvault_candidate_layout_tests
     tests/candidate_layout_tests.cpp)
   target_compile_options(clipvault_candidate_layout_tests PRIVATE

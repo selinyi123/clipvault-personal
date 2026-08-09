@@ -6,10 +6,12 @@ param(
     [string]$RuntimeExecutable,
     [Parameter(Mandatory)]
     [ValidatePattern('^S-1-5-')]
-    [string]$OwnerSid
+    [string]$OwnerSid,
+    [switch]$NoConfirm
 )
 
 $ErrorActionPreference = 'Stop'
+if ($NoConfirm) { $ConfirmPreference = 'None' }
 $packageDirectory = [System.IO.Path]::GetFullPath($PackageDirectory)
 $targets = [System.Collections.Generic.HashSet[string]]::new(
     [System.StringComparer]::OrdinalIgnoreCase)

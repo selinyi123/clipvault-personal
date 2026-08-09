@@ -3,10 +3,12 @@ param(
     [Parameter(Mandatory)]
     [string]$PackageDirectory,
     [Alias('AllowSystemWideTsfRegistration')]
-    [switch]$AllowMachineWideRegistration
+    [switch]$AllowMachineWideRegistration,
+    [switch]$NoConfirm
 )
 
 $ErrorActionPreference = 'Stop'
+if ($NoConfirm) { $ConfirmPreference = 'None' }
 $packageDirectory = [System.IO.Path]::GetFullPath($PackageDirectory)
 $x64Dll = Join-Path $packageDirectory 'x64\ClipVaultTextService.dll'
 $x86Dll = Join-Path $packageDirectory 'x86\ClipVaultTextService.dll'

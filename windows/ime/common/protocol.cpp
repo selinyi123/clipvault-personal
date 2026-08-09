@@ -1,5 +1,7 @@
 #include "protocol.h"
 
+#include "pipe_peer_trust.h"
+
 #include <objbase.h>
 
 #include <algorithm>
@@ -369,6 +371,10 @@ bool ReadExactUntil(HANDLE pipe, std::uint8_t* data, DWORD size,
   DWORD offset = 0;
   bool success = true;
   while (offset < size) {
+    if (RemainingMilliseconds(deadline_tick) == 0) {
+      success = false;
+      break;
+    }
     ResetEvent(event);
     OVERLAPPED overlapped{};
     overlapped.hEvent = event;
@@ -399,6 +405,10 @@ bool WriteExactUntil(HANDLE pipe, const std::uint8_t* data, DWORD size,
   DWORD offset = 0;
   bool success = true;
   while (offset < size) {
+    if (RemainingMilliseconds(deadline_tick) == 0) {
+      success = false;
+      break;
+    }
     ResetEvent(event);
     OVERLAPPED overlapped{};
     overlapped.hEvent = event;
@@ -627,11 +637,28 @@ std::vector<std::uint8_t> EncodeInsertOtp(const InsertOtpRequest& request) {
 std::vector<std::uint8_t> EncodeEngineState(const EngineState& state) {
   std::string preedit;
   std::string commit;
+  struct Utf8Guard final {
+    std::string* first;
+    std::string* second;
+    ~Utf8Guard() {
+      if (first != nullptr && !first->empty())
+        SecureZeroMemory(first->data(), first->size());
+      if (second != nullptr && !second->empty())
+        SecureZeroMemory(second->data(), second->size());
+    }
+  } utf8_guard{&preedit, &commit};
   if (!Utf8FromWide(state.preedit, &preedit) ||
       (state.commit_text.has_value() && !Utf8FromWide(*state.commit_text, &commit))) {
     return {};
   }
   std::vector<std::uint8_t> message;
+  struct ByteGuard final {
+    std::vector<std::uint8_t>* bytes;
+    ~ByteGuard() {
+      if (bytes != nullptr && !bytes->empty())
+        SecureZeroMemory(bytes->data(), bytes->size());
+    }
+  } message_guard{&message};
   AppendString(&message, 1, state.host_instance_id);
   AppendString(&message, 2, state.session_id);
   AppendUInt(&message, 3, state.ack_request_seq);
@@ -667,6 +694,7 @@ std::vector<std::uint8_t> EncodeEngineState(const EngineState& state) {
   AppendBool(&message, 12, state.composition_active);
   AppendUInt(&message, 13, state.mode);
   std::vector<std::uint8_t> snapshot;
+  ByteGuard snapshot_guard{&snapshot};
   if (!EncodeSnapshotSurface(state.snapshot_surface, &snapshot)) return {};
   if (!snapshot.empty()) AppendBytes(&message, 20, snapshot);
   return Wrap(FrameKind::kEngineState, message);
@@ -1200,6 +1228,26 @@ std::string NewOpaqueId() {
   return output;
 }
 
+std::wstring ExpectedImeHostServerPath() {
+  using namespace clipvault::windows::trust;
+  const std::wstring module_directory = ParentDirectory(CurrentModulePath());
+  const std::wstring architecture_directory = FileName(module_directory);
+  if (architecture_directory != L"x64" &&
+      architecture_directory != L"x86") {
+    // Native tests place the client and Host targets in one private build
+    // directory.  The isolated test escape hatch may skip signatures, but it
+    // still names the exact executable rather than trusting any process in
+    // that directory.
+    if (ExplicitUnsignedTestTrustEnabled(LocalTestNamespaceSuffix())) {
+      return JoinPath(module_directory, L"ClipVaultImeHost.exe");
+    }
+    return {};
+  }
+  const std::wstring package_directory = ParentDirectory(module_directory);
+  return JoinPath(JoinPath(package_directory, L"host-x64"),
+                  L"ClipVaultImeHost.exe");
+}
+
 std::wstring PipeNameForCurrentSession() {
   DWORD session_id = 0;
   ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
@@ -1259,9 +1307,12 @@ bool PipeEngineClient::Connect(DWORD wait_milliseconds) {
   const auto pipe_name = PipeNameForCurrentSession();
   const ULONGLONG deadline = GetTickCount64() + wait_milliseconds;
   do {
-    pipe_ = CreateFileW(pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
-                        nullptr);
+    pipe_ = CreateFileW(
+        pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT |
+            SECURITY_IDENTIFICATION,
+        nullptr);
     if (pipe_ != INVALID_HANDLE_VALUE) break;
     const DWORD error = GetLastError();
     if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PIPE_BUSY) return false;
@@ -1275,6 +1326,11 @@ bool PipeEngineClient::Connect(DWORD wait_milliseconds) {
     }
   } while (GetTickCount64() < deadline);
   if (pipe_ == INVALID_HANDLE_VALUE) return false;
+  if (!clipvault::windows::trust::VerifyNamedPipeServer(
+          pipe_, ExpectedImeHostServerPath(), LocalTestNamespaceSuffix())) {
+    Disconnect();
+    return false;
+  }
   const auto client_id = NewOpaqueId();
   std::vector<std::uint8_t> response;
   if (client_id.empty() ||
@@ -1532,13 +1588,41 @@ bool PipeEngineClient::InsertOtp(const OtpContextBinding& context,
                                  EngineState* state,
                                  DWORD budget_milliseconds) {
   if (!connected() || session_id_.empty()) return false;
-  InsertOtpRequest request{host_instance_id_, session_id_, next_request_seq_,
-                           revision_, context};
-  const auto encoded = EncodeInsertOtp(request);
+  std::vector<std::uint8_t> encoded;
   std::vector<std::uint8_t> response;
+  struct SensitiveResponseGuard final {
+    std::vector<std::uint8_t>* value;
+    ~SensitiveResponseGuard() {
+      if (value != nullptr && !value->empty())
+        SecureZeroMemory(value->data(), value->size());
+    }
+  } response_guard{&response};
   const ULONGLONG deadline = GetTickCount64() + budget_milliseconds;
-  if (encoded.empty() || !ExchangeUntil(encoded, &response, deadline) ||
-      !AcceptState(response, state, deadline)) {
+  bool accepted = false;
+  try {
+    const InsertOtpRequest request{host_instance_id_, session_id_,
+                                   next_request_seq_, revision_, context};
+    encoded = EncodeInsertOtp(request);
+    accepted = !encoded.empty() &&
+               ExchangeUntil(encoded, &response, deadline) &&
+               AcceptState(response, state, deadline);
+  } catch (...) {
+    // Keep exceptions from allocation/decoding inside the native transport
+    // boundary. The guard still erases any response bytes already received.
+  }
+  if (!response.empty()) {
+    SecureZeroMemory(response.data(), response.size());
+    response.clear();
+  }
+  if (!accepted) {
+    // AcceptState can decode the OTP before its acknowledgement write fails.
+    // Clear that partially accepted plaintext before retiring the transport.
+    if (state != nullptr && state->commit_text.has_value() &&
+        !state->commit_text->empty()) {
+      SecureZeroMemory(state->commit_text->data(),
+                       state->commit_text->size() * sizeof(wchar_t));
+      state->commit_text.reset();
+    }
     Disconnect();
     return false;
   }

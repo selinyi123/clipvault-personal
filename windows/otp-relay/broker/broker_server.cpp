@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <vector>
 
 namespace clipvault::otp::broker {
@@ -74,6 +75,15 @@ bool ConnectUntil(HANDLE pipe, ULONGLONG deadline_tick) {
   return connected;
 }
 
+ULONGLONG BoundedDeadline(ULONGLONG upper_bound, DWORD budget_ms) {
+  const ULONGLONG now = GetTickCount64();
+  const ULONGLONG candidate =
+      now > (std::numeric_limits<ULONGLONG>::max() - budget_ms)
+          ? std::numeric_limits<ULONGLONG>::max()
+          : now + budget_ms;
+  return std::min(upper_bound, candidate);
+}
+
 std::uint64_t WallNowMilliseconds() {
   return static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -95,6 +105,59 @@ WindowIdentity WindowOwner(const ContextBinding& context) {
   return WindowIdentity{owner, thread};
 }
 
+struct ScopedBrokerPipe final {
+  HANDLE value = INVALID_HANDLE_VALUE;
+
+  ~ScopedBrokerPipe() {
+    if (value == INVALID_HANDLE_VALUE) return;
+    CancelIoEx(value, nullptr);
+    DisconnectNamedPipe(value);
+    CloseHandle(value);
+  }
+};
+
+struct SensitiveRequestState final {
+  BrokerResponse* response = nullptr;
+  std::vector<std::uint8_t>* request_frame = nullptr;
+  std::vector<std::uint8_t>* encoded_response = nullptr;
+  std::vector<std::uint8_t>* ignored_followup = nullptr;
+  OpaqueEnvelope* offer = nullptr;
+  ContextBinding* arm_latest = nullptr;
+  ConsumeRequest* consume = nullptr;
+  crypto::UuidBytes* dismiss = nullptr;
+  crypto::UuidBytes* revoke_session = nullptr;
+
+  ~SensitiveRequestState() {
+    if (request_frame != nullptr) crypto::SecureErase(*request_frame);
+    if (encoded_response != nullptr) crypto::SecureErase(*encoded_response);
+    if (ignored_followup != nullptr) crypto::SecureErase(*ignored_followup);
+    if (response != nullptr) {
+      crypto::SecureErase(response->claim_id);
+      crypto::SecureErase(response->secret);
+    }
+    if (offer != nullptr) {
+      crypto::SecureErase(offer->session_epoch);
+      crypto::SecureErase(offer->event_id);
+      crypto::SecureErase(offer->sender_device);
+      crypto::SecureErase(offer->target_device);
+      crypto::SecureErase(offer->nonce);
+      crypto::SecureErase(offer->ciphertext);
+      crypto::SecureErase(offer->authentication_tag);
+    }
+    if (arm_latest != nullptr) {
+      crypto::SecureErase(arm_latest->document_token);
+      crypto::SecureErase(arm_latest->context_token);
+    }
+    if (consume != nullptr) {
+      crypto::SecureErase(consume->claim_id);
+      crypto::SecureErase(consume->context.document_token);
+      crypto::SecureErase(consume->context.context_token);
+    }
+    if (dismiss != nullptr) crypto::SecureErase(*dismiss);
+    if (revoke_session != nullptr) crypto::SecureErase(*revoke_session);
+  }
+};
+
 }  // namespace
 
 bool BrokerPipeServer::ServeOne(DWORD accept_timeout_ms,
@@ -104,37 +167,49 @@ bool BrokerPipeServer::ServeOne(DWORD accept_timeout_ms,
       request_budget_ms == 0) {
     return false;
   }
-  LocalSecurity security;
-  if (!security.Initialize()) return false;
-  HANDLE pipe = CreateNamedPipeW(
-      BrokerPipeNameForCurrentSession().c_str(),
-      PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
-      PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
-          PIPE_REJECT_REMOTE_CLIENTS,
-      1, kMaximumBrokerFrameBytes + 4, kMaximumBrokerFrameBytes + 4, 0,
-      &security.attributes);
-  if (pipe == INVALID_HANDLE_VALUE) return false;
+  try {
+    LocalSecurity security;
+    if (!security.Initialize()) return false;
+    ScopedBrokerPipe pipe{CreateNamedPipeW(
+        BrokerPipeNameForCurrentSession().c_str(),
+        PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED |
+            FILE_FLAG_FIRST_PIPE_INSTANCE,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
+            PIPE_REJECT_REMOTE_CLIENTS,
+        1, kMaximumBrokerFrameBytes + 4, kMaximumBrokerFrameBytes + 4, 0,
+        &security.attributes)};
+    if (pipe.value == INVALID_HANDLE_VALUE) return false;
 
-  const bool connected =
-      ConnectUntil(pipe, GetTickCount64() + accept_timeout_ms);
-  const ULONGLONG request_deadline = GetTickCount64() + request_budget_ms;
-  bool success = false;
-  BrokerResponse response;
-  std::vector<std::uint8_t> request_frame;
-  if (connected && ReadBrokerFrameUntil(
-                       pipe, &request_frame,
-                       request_deadline)) {
-    DWORD client_pid = 0;
-    GetNamedPipeClientProcessId(pipe, &client_pid);
+    bool success = false;
+    BrokerResponse response;
+    std::vector<std::uint8_t> request_frame;
+    std::vector<std::uint8_t> encoded;
+    std::vector<std::uint8_t> ignored_followup;
     OpaqueEnvelope offer;
     ContextBinding arm_latest;
     ConsumeRequest consume;
     crypto::UuidBytes dismiss{};
+    crypto::UuidBytes revoke_session{};
+    SensitiveRequestState sensitive{
+        &response,      &request_frame, &encoded, &ignored_followup,
+        &offer,         &arm_latest,    &consume, &dismiss,
+        &revoke_session};
+
+    const bool connected =
+        ConnectUntil(pipe.value, GetTickCount64() + accept_timeout_ms);
+    const ULONGLONG request_deadline = GetTickCount64() + request_budget_ms;
+    if (!connected ||
+        !ReadBrokerFrameUntil(pipe.value, &request_frame, request_deadline)) {
+      return false;
+    }
+
+    DWORD client_pid = 0;
+    GetNamedPipeClientProcessId(pipe.value, &client_pid);
     if (DecodeOffer(request_frame, &offer)) {
       if (authorizer_->Authorize(client_pid,
                                  BrokerClientRole::kOpaqueDesktopOffer)) {
         response.status = service_->Offer(offer, WallNowMilliseconds(),
-                                          GetTickCount64());
+                                          GetTickCount64(), request_deadline);
         if (response.status == BrokerStatus::kAccepted && prompt_ != nullptr)
           prompt_->NotifyOtpReady();
       } else {
@@ -146,7 +221,9 @@ bool BrokerPipeServer::ServeOne(DWORD accept_timeout_ms,
       if (authorizer_->Authorize(client_pid,
                                  BrokerClientRole::kImeHostControl)) {
         response = service_->ArmLatest(
-            arm_latest, window.process_id, window.thread_id, GetTickCount64());
+            arm_latest, window.process_id, window.thread_id, GetTickCount64(),
+            BoundedDeadline(request_deadline,
+                            kImeOtpBrokerOperationBudgetMilliseconds));
       } else {
         response.status = BrokerStatus::kDenied;
       }
@@ -154,8 +231,10 @@ bool BrokerPipeServer::ServeOne(DWORD accept_timeout_ms,
       const auto window = WindowOwner(consume.context);
       if (authorizer_->Authorize(client_pid,
                                  BrokerClientRole::kImeHostControl)) {
-        response = service_->Consume(consume, window.process_id,
-                                     window.thread_id, GetTickCount64());
+        response = service_->Consume(
+            consume, window.process_id, window.thread_id, GetTickCount64(),
+            BoundedDeadline(request_deadline,
+                            kImeOtpBrokerOperationBudgetMilliseconds));
       } else {
         response.status = BrokerStatus::kDenied;
       }
@@ -165,31 +244,33 @@ bool BrokerPipeServer::ServeOne(DWORD accept_timeout_ms,
                                  BrokerClientRole::kImeHostControl)
               ? service_->Dismiss(dismiss)
               : BrokerStatus::kDenied;
+    } else if (DecodeRevokeSession(request_frame, &revoke_session)) {
+      response.status =
+          authorizer_->Authorize(client_pid,
+                                 BrokerClientRole::kDesktopControl)
+              ? service_->RevokeSession(revoke_session, request_deadline)
+              : BrokerStatus::kDenied;
     } else {
       response.status = BrokerStatus::kRejected;
     }
-    auto encoded = EncodeResponse(response);
+    encoded = EncodeResponse(response);
     success = !encoded.empty() && WriteBrokerFrameUntil(
-                                      pipe, encoded, request_deadline);
+                                      pipe.value, encoded, request_deadline);
     if (success) {
       // DisconnectNamedPipe discards unread pipe buffers. Keep the instance
       // alive until the peer has read the response and closes its handle, or
       // until the same absolute request deadline expires. This bounded
       // overlapped read is cancellable and avoids an unbounded
       // FlushFileBuffers call.
-      std::vector<std::uint8_t> ignored_followup;
-      ReadBrokerFrameUntil(pipe, &ignored_followup, request_deadline);
+      ReadBrokerFrameUntil(pipe.value, &ignored_followup, request_deadline);
     }
-    // Both objects may contain the detached one-use lease. Erase all
-    // application-owned copies after the pipe handoff completes.
-    crypto::SecureErase(encoded);
-    crypto::SecureErase(response.secret);
+    return success;
+  } catch (...) {
+    // A malformed request, identity-provider failure, allocation failure, or
+    // prompt failure must not terminate the long-running Broker. Stack guards
+    // erase any decoded credential material and close the pipe on unwind.
+    return false;
   }
-
-  CancelIoEx(pipe, nullptr);
-  DisconnectNamedPipe(pipe);
-  CloseHandle(pipe);
-  return success;
 }
 
 }  // namespace clipvault::otp::broker

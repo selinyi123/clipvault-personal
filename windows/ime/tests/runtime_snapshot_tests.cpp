@@ -210,12 +210,82 @@ bool RuntimeFailureDoesNotAffectEngineProtocol() {
                 "SNAP-V007 Runtime failure leaves engine operational");
 }
 
+bool RefreshAndConcurrentSessions() {
+  bool ok = true;
+  std::atomic_int refresh_calls{0};
+  std::atomic_bool release_refresh{false};
+  RuntimeSnapshotCoordinator refresh_coordinator(
+      [&refresh_calls, &release_refresh](std::uint64_t request_id,
+                                        std::uint32_t, std::uint64_t now_ms,
+                                        RuntimeSnapshotResponse* response) {
+        const int current = ++refresh_calls;
+        if (current > 1) {
+          while (!release_refresh.load()) Sleep(1);
+        }
+        *response = MakeResponse(request_id, kEpochA,
+                                 static_cast<std::uint64_t>(current));
+        response->surface.expires_at_ms =
+            now_ms + (current == 1 ? 1'000 : 10'000);
+        return true;
+      });
+  const auto refresh_session = refresh_coordinator.BeginSession(true);
+  ok &= Expect(WaitForSurface(&refresh_coordinator, refresh_session, true),
+               "SNAP-V009 initial surface published");
+  Sleep(1'100);
+  ok &= Expect(refresh_coordinator.Current(refresh_session).empty(),
+               "SNAP-V009 expired surface hidden while refresh starts");
+  release_refresh.store(true);
+  ok &= Expect(WaitForSurface(&refresh_coordinator, refresh_session, true) &&
+                   refresh_calls.load() >= 2 &&
+                   refresh_coordinator.Current(refresh_session).generation >= 2,
+               "SNAP-V009 expired surface refreshes in-session");
+
+  std::atomic_int concurrent_calls{0};
+  std::atomic_bool first_started{false};
+  std::atomic_bool release_first{false};
+  RuntimeSnapshotCoordinator concurrent_coordinator(
+      [&concurrent_calls, &first_started, &release_first](
+          std::uint64_t request_id, std::uint32_t, std::uint64_t,
+          RuntimeSnapshotResponse* response) {
+        const int current = ++concurrent_calls;
+        if (current == 1) {
+          first_started.store(true);
+          while (!release_first.load()) Sleep(1);
+        } else {
+          release_first.store(true);
+        }
+        *response = MakeResponse(request_id, kEpochA,
+                                 static_cast<std::uint64_t>(current));
+        return true;
+      });
+  const auto first = concurrent_coordinator.BeginSession(true);
+  const ULONGLONG start_deadline = GetTickCount64() + 1000;
+  while (!first_started.load() && GetTickCount64() < start_deadline) Sleep(1);
+  const auto second = concurrent_coordinator.BeginSession(true);
+  ok &= Expect(first_started.load() && concurrent_calls.load() == 1,
+               "SNAP-V010 snapshot fetches are globally single-flight");
+  release_first.store(true);
+  ok &= Expect(WaitForSurface(&concurrent_coordinator, first, true),
+               "SNAP-V010 first serialized response is accepted");
+  const ULONGLONG retry_deadline = GetTickCount64() + 2'000;
+  while (concurrent_calls.load() < 2 && GetTickCount64() < retry_deadline) {
+    concurrent_coordinator.Current(second);
+    Sleep(10);
+  }
+  ok &= Expect(concurrent_calls.load() == 2 &&
+                   WaitForSurface(&concurrent_coordinator, second, true) &&
+                   concurrent_coordinator.Current(second).generation == 2,
+               "SNAP-V010 waiting session retries after serialized fetch");
+  return ok;
+}
+
 }  // namespace
 
 int main() {
   return ProtocolAndBounds() && SensitiveAndLate() &&
                  EpochRollbackAndSelection() &&
-                 RuntimeFailureDoesNotAffectEngineProtocol()
+                 RuntimeFailureDoesNotAffectEngineProtocol() &&
+                 RefreshAndConcurrentSessions()
              ? 0
              : 1;
 }

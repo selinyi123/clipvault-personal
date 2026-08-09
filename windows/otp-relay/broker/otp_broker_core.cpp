@@ -30,6 +30,17 @@ bool NewClaimId(crypto::UuidBytes* output) {
   return true;
 }
 
+// Decryption produces the only OTP plaintext buffer in the Broker.  Keep the
+// wipe on the scope rather than relying on the normal return paths: vector
+// allocation or insertion can throw after the durable sequence has advanced.
+struct SensitiveVectorWipe final {
+  std::vector<std::uint8_t>* value = nullptr;
+
+  ~SensitiveVectorWipe() {
+    if (value != nullptr) crypto::SecureErase(*value);
+  }
+};
+
 }  // namespace
 
 struct OtpBrokerCore::Event final {
@@ -46,7 +57,8 @@ struct OtpBrokerCore::ReplayMarker final {
   crypto::NonceBytes nonce{};
 };
 
-OtpBrokerCore::OtpBrokerCore(PairSession session, std::size_t live_capacity,
+OtpBrokerCore::OtpBrokerCore(const PairSession& session,
+                             std::size_t live_capacity,
                              std::size_t replay_capacity,
                              std::uint64_t high_sequence,
                              PersistentSequenceAuthority* sequence_authority)
@@ -55,17 +67,36 @@ OtpBrokerCore::OtpBrokerCore(PairSession session, std::size_t live_capacity,
       replay_capacity_(replay_capacity),
       high_sequence_(high_sequence),
       sequence_authority_(sequence_authority) {
-  events_.reserve(live_capacity_);
-  replay_.reserve(replay_capacity_);
-  ready_ = live_capacity_ != 0 && replay_capacity_ >= live_capacity_ &&
-           !IsZero(session_.session_epoch) && !IsZero(session_.sender_device) &&
-           !IsZero(session_.target_device) &&
-           session_.sender_device != session_.target_device &&
-           crypto::DeriveOtpKey(session_.pair_verifier,
-                                session_.session_epoch,
-                                session_.sender_device,
-                                session_.target_device, &schedule_);
-  crypto::SecureErase(session_.pair_verifier);
+  try {
+    events_.reserve(live_capacity_);
+    replay_.reserve(replay_capacity_);
+    ready_ = live_capacity_ != 0 && replay_capacity_ >= live_capacity_ &&
+             !IsZero(session_.session_epoch) &&
+             !IsZero(session_.sender_device) &&
+             !IsZero(session_.target_device) &&
+             session_.sender_device != session_.target_device &&
+             crypto::DeriveOtpKey(session_.pair_verifier,
+                                  session_.session_epoch,
+                                  session_.sender_device,
+                                  session_.target_device, &schedule_);
+  } catch (...) {
+    // A throwing constructor does not run OtpBrokerCore::~OtpBrokerCore().
+    // Erase copied credential material and any partial key schedule before the
+    // member storage is released by constructor unwinding.
+    crypto::SecureErase(session_.pair_verifier);
+    crypto::SecureErase(schedule_.key);
+    crypto::SecureErase(schedule_.prk);
+    crypto::SecureErase(schedule_.salt);
+    crypto::SecureErase(schedule_.info);
+    throw;
+  }
+  if (!ready_) {
+    crypto::SecureErase(session_.pair_verifier);
+  }
+  // A ready core deliberately retains the verifier until Clear(). The
+  // PersistentSequenceAuthority compares it with the still-leased WinCred
+  // record before advancing the durable replay high-water mark. Clearing it
+  // here would make every production Offer fail with kUnavailable.
 }
 
 OtpBrokerCore::~OtpBrokerCore() {
@@ -77,6 +108,40 @@ OtpBrokerCore::~OtpBrokerCore() {
 }
 
 bool OtpBrokerCore::ready() const noexcept { return ready_; }
+
+bool OtpBrokerCore::MatchesSession(
+    const PairSession& session) const noexcept {
+  std::scoped_lock lock(mutex_);
+  if (!ready_ || session.session_epoch != session_.session_epoch ||
+      session.sender_device != session_.sender_device ||
+      session.target_device != session_.target_device) {
+    return false;
+  }
+  crypto::KeySchedule candidate;
+  try {
+    if (!crypto::DeriveOtpKey(session.pair_verifier, session.session_epoch,
+                              session.sender_device, session.target_device,
+                              &candidate)) {
+      return false;
+    }
+    std::uint8_t difference = 0;
+    for (std::size_t index = 0; index < candidate.key.size(); ++index) {
+      difference |= static_cast<std::uint8_t>(candidate.key[index] ^
+                                              schedule_.key[index]);
+    }
+    crypto::SecureErase(candidate.key);
+    crypto::SecureErase(candidate.prk);
+    crypto::SecureErase(candidate.salt);
+    crypto::SecureErase(candidate.info);
+    return difference == 0;
+  } catch (...) {
+    crypto::SecureErase(candidate.key);
+    crypto::SecureErase(candidate.prk);
+    crypto::SecureErase(candidate.salt);
+    crypto::SecureErase(candidate.info);
+    return false;
+  }
+}
 
 BrokerStatus OtpBrokerCore::Offer(const OpaqueEnvelope& envelope,
                                   std::uint64_t wall_now_ms,
@@ -95,6 +160,13 @@ BrokerStatus OtpBrokerCore::Offer(const OpaqueEnvelope& envelope,
       envelope.expires_at_ms - envelope.issued_at_ms > kMaximumTtlMilliseconds) {
     return BrokerStatus::kRejected;
   }
+  // The sender's persisted sequence is its durable count of nonce
+  // reservations, while this Broker's replay vector resets on process restart.
+  // Return the repair signal even if this final request arrived after its OTP
+  // TTL; an ordinary expired response would strand a full sender nonce ledger.
+  if (replay_capacity_ <= 1 || envelope.sequence >= replay_capacity_) {
+    return BrokerStatus::kRotationRequired;
+  }
   if (envelope.expires_at_ms <= wall_now_ms) return BrokerStatus::kExpired;
   if (envelope.sequence <= high_sequence_) return BrokerStatus::kDuplicate;
   const auto replayed = std::find_if(
@@ -103,7 +175,12 @@ BrokerStatus OtpBrokerCore::Offer(const OpaqueEnvelope& envelope,
                marker.nonce == envelope.nonce;
       });
   if (replayed != replay_.end()) return BrokerStatus::kDuplicate;
-  if (events_.size() >= live_capacity_ || replay_.size() >= replay_capacity_) {
+  // Keep the in-process replay ledger as an independent fail-closed bound for
+  // malformed/non-consecutive senders; markers are never LRU-evicted.
+  if (replay_.size() >= replay_capacity_ - 1) {
+    return BrokerStatus::kRotationRequired;
+  }
+  if (events_.size() >= live_capacity_) {
     return BrokerStatus::kRejected;
   }
 
@@ -119,6 +196,7 @@ BrokerStatus OtpBrokerCore::Offer(const OpaqueEnvelope& envelope,
   };
   const auto aad = crypto::BuildAad(aad_fields);
   std::vector<std::uint8_t> secret;
+  SensitiveVectorWipe wipe_secret{&secret};
   if (!crypto::DecryptOtp(schedule_.key, envelope.nonce, aad,
                           envelope.ciphertext,
                           envelope.authentication_tag, &secret)) {
@@ -130,7 +208,6 @@ BrokerStatus OtpBrokerCore::Offer(const OpaqueEnvelope& envelope,
   // never acknowledge and later accept the same sequence again.
   if (sequence_authority_ != nullptr &&
       !sequence_authority_->AdvanceHighSequence(session_, envelope.sequence)) {
-    crypto::SecureErase(secret);
     return BrokerStatus::kUnavailable;
   }
 
@@ -260,6 +337,13 @@ void OtpBrokerCore::Clear() noexcept {
   replay_.clear();
   ready_ = false;
   crypto::SecureErase(schedule_.key);
+  crypto::SecureErase(schedule_.prk);
+  crypto::SecureErase(schedule_.salt);
+  crypto::SecureErase(schedule_.info);
+  crypto::SecureErase(session_.pair_verifier);
+  crypto::SecureErase(session_.session_epoch);
+  crypto::SecureErase(session_.sender_device);
+  crypto::SecureErase(session_.target_device);
 }
 
 bool OtpBrokerCore::ContextIsValid(
@@ -293,9 +377,14 @@ BrokerResponse OtpBrokerCore::ArmEventLocked(
 
 void OtpBrokerCore::EraseEvent(Event* event) noexcept {
   crypto::SecureErase(event->secret);
+  ReleaseClaim(event);
+  event->deadline_monotonic_ms = 0;
+}
+
+void OtpBrokerCore::ReleaseClaim(Event* event) noexcept {
+  if (event == nullptr) return;
   crypto::SecureErase(event->claim_id);
   event->claimed_context.reset();
-  event->deadline_monotonic_ms = 0;
   event->claim_deadline_monotonic_ms = 0;
 }
 
@@ -303,7 +392,13 @@ void OtpBrokerCore::ExpireDueLocked(std::uint64_t monotonic_now_ms) {
   auto first_expired = std::remove_if(
       events_.begin(), events_.end(), [&](Event& event) {
         const bool expired = monotonic_now_ms >= event.deadline_monotonic_ms;
-        if (expired) EraseEvent(&event);
+        if (expired) {
+          EraseEvent(&event);
+        } else if (event.claimed_context.has_value() &&
+                   monotonic_now_ms >=
+                       event.claim_deadline_monotonic_ms) {
+          ReleaseClaim(&event);
+        }
         return expired;
       });
   events_.erase(first_expired, events_.end());

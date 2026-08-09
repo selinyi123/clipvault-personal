@@ -38,12 +38,17 @@ int main() {
                                  static_cast<std::uint32_t>(
                                      DiagnosticKeyClass::kUnicodePacket),
                                  17);
+  clipvault::ime::EmitDiagnostic(
+      DiagnosticEvent::kEditSessionApplyFailed, 0x80040208u);
   clipvault::ime::SetDiagnosticCallbackForTesting(nullptr, nullptr);
-  return records.size() == 1 &&
+  return records.size() == 2 &&
                  records.front().event == DiagnosticEvent::kTestKeyObserved &&
                  records.front().detail == static_cast<std::uint32_t>(
                                                DiagnosticKeyClass::kUnicodePacket) &&
-                 records.front().duration_milliseconds == 17
+                 records.front().duration_milliseconds == 17 &&
+                 records.back().event ==
+                     DiagnosticEvent::kEditSessionApplyFailed &&
+                 records.back().detail == 0x80040208u
              ? 0
              : 1;
 }

@@ -34,15 +34,17 @@ class AlgorithmHandle final {
 class HashHandle final {
  public:
   HashHandle() = default;
-  ~HashHandle() {
-    if (value_ != nullptr) {
-      BCryptDestroyHash(value_);
-    }
-  }
+  ~HashHandle() { Reset(); }
   HashHandle(const HashHandle&) = delete;
   HashHandle& operator=(const HashHandle&) = delete;
   [[nodiscard]] BCRYPT_HASH_HANDLE* put() noexcept { return &value_; }
   [[nodiscard]] BCRYPT_HASH_HANDLE get() const noexcept { return value_; }
+  void Reset() noexcept {
+    if (value_ != nullptr) {
+      BCryptDestroyHash(value_);
+      value_ = nullptr;
+    }
+  }
 
  private:
   BCRYPT_HASH_HANDLE value_ = nullptr;
@@ -51,18 +53,36 @@ class HashHandle final {
 class KeyHandle final {
  public:
   KeyHandle() = default;
-  ~KeyHandle() {
-    if (value_ != nullptr) {
-      BCryptDestroyKey(value_);
-    }
-  }
+  ~KeyHandle() { Reset(); }
   KeyHandle(const KeyHandle&) = delete;
   KeyHandle& operator=(const KeyHandle&) = delete;
   [[nodiscard]] BCRYPT_KEY_HANDLE* put() noexcept { return &value_; }
   [[nodiscard]] BCRYPT_KEY_HANDLE get() const noexcept { return value_; }
+  void Reset() noexcept {
+    if (value_ != nullptr) {
+      BCryptDestroyKey(value_);
+      value_ = nullptr;
+    }
+  }
 
  private:
   BCRYPT_KEY_HANDLE value_ = nullptr;
+};
+
+class SensitiveVectorWipe final {
+ public:
+  explicit SensitiveVectorWipe(std::vector<std::uint8_t>* value) noexcept
+      : value_(value) {}
+  ~SensitiveVectorWipe() {
+    if (value_ != nullptr && !value_->empty()) {
+      SecureZeroMemory(value_->data(), value_->size());
+    }
+  }
+  SensitiveVectorWipe(const SensitiveVectorWipe&) = delete;
+  SensitiveVectorWipe& operator=(const SensitiveVectorWipe&) = delete;
+
+ private:
+  std::vector<std::uint8_t>* value_ = nullptr;
 };
 
 bool ToUlong(std::size_t size, ULONG* output) {
@@ -90,6 +110,7 @@ bool Hash(bool hmac, std::span<const std::uint8_t> key,
   if (output == nullptr) {
     return false;
   }
+  SecureErase(*output);
 
   ULONG key_size = 0;
   ULONG input_size = 0;
@@ -113,6 +134,7 @@ bool Hash(bool hmac, std::span<const std::uint8_t> key,
   }
 
   std::vector<std::uint8_t> object(object_size);
+  SensitiveVectorWipe object_wipe{&object};
   HashHandle hash;
   PUCHAR key_data = key.empty()
                         ? nullptr
@@ -120,6 +142,10 @@ bool Hash(bool hmac, std::span<const std::uint8_t> key,
   if (!BCRYPT_SUCCESS(BCryptCreateHash(
           algorithm.get(), hash.put(), object.data(), object_size, key_data,
           key_size, 0))) {
+    // BCryptCreateHash retains the caller-owned object buffer until the hash
+    // handle is destroyed.  Destroy the opaque handle before wiping/releasing
+    // that backing storage.
+    hash.Reset();
     SecureErase(object);
     return false;
   }
@@ -132,6 +158,8 @@ bool Hash(bool hmac, std::span<const std::uint8_t> key,
           BCryptHashData(hash.get(), input_data, input_size, 0)) &&
       BCRYPT_SUCCESS(BCryptFinishHash(hash.get(), output->data(),
                                       static_cast<ULONG>(output->size()), 0));
+  // The hash handle still references object even after FinishHash returns.
+  hash.Reset();
   SecureErase(object);
   if (!succeeded) {
     SecureErase(*output);
@@ -279,14 +307,27 @@ bool DeriveOtpKey(const Sha256Bytes& pair_verifier,
     return false;
   }
   KeySchedule derived;
-
   std::vector<std::uint8_t> salt_input;
+  std::vector<std::uint8_t> expand_input;
+  struct DerivationWipeGuard final {
+    KeySchedule* schedule;
+    std::vector<std::uint8_t>* salt;
+    std::vector<std::uint8_t>* expand;
+    ~DerivationWipeGuard() {
+      SecureErase(schedule->key);
+      SecureErase(schedule->prk);
+      SecureErase(schedule->salt);
+      SecureErase(schedule->info);
+      SecureErase(*salt);
+      SecureErase(*expand);
+    }
+  } wipe{&derived, &salt_input, &expand_input};
+
   salt_input.reserve(sizeof(kKdfLabel) + session_epoch.size());
   AppendLiteralWithNull(&salt_input, kKdfLabel);
   AppendArray(&salt_input, session_epoch);
   if (!Sha256(salt_input, &derived.salt) ||
       !HmacSha256(derived.salt, pair_verifier, &derived.prk)) {
-    SecureErase(salt_input);
     return false;
   }
 
@@ -296,20 +337,21 @@ bool DeriveOtpKey(const Sha256Bytes& pair_verifier,
   AppendArray(&derived.info, sender_device);
   AppendArray(&derived.info, target_device);
 
-  std::vector<std::uint8_t> expand_input = derived.info;
+  expand_input = derived.info;
   expand_input.push_back(0x01U);
   if (!HmacSha256(derived.prk, expand_input, &derived.key)) {
-    SecureErase(salt_input);
-    SecureErase(expand_input);
-    SecureErase(derived.info);
-    SecureErase(derived.salt);
-    SecureErase(derived.prk);
     return false;
   }
 
-  SecureErase(salt_input);
-  SecureErase(expand_input);
+  // Callers may reuse an output object during explicit key rotation. Wipe its
+  // prior schedule before move-assignment can release the old vector storage.
+  SecureErase(output->key);
+  SecureErase(output->prk);
+  SecureErase(output->salt);
+  SecureErase(output->info);
   *output = std::move(derived);
+  // std::array move-assignment copies the key bytes. The guard intentionally
+  // wipes the moved-from local schedule as this function returns.
   return true;
 }
 
@@ -332,9 +374,13 @@ bool EncryptOtp(const Sha256Bytes& key, const NonceBytes& nonce,
                 std::span<const std::uint8_t> aad,
                 std::span<const std::uint8_t> plaintext,
                 std::vector<std::uint8_t>* ciphertext, TagBytes* tag) {
-  if (ciphertext == nullptr || tag == nullptr || !IsNormalizedOtp(plaintext)) {
+  if (ciphertext == nullptr || tag == nullptr) {
     return false;
   }
+  SecureErase(*ciphertext);
+  ciphertext->clear();
+  SecureErase(*tag);
+  if (!IsNormalizedOtp(plaintext)) return false;
   ULONG plaintext_size = 0;
   ULONG aad_size = 0;
   if (!ToUlong(plaintext.size(), &plaintext_size) ||
@@ -343,10 +389,12 @@ bool EncryptOtp(const Sha256Bytes& key, const NonceBytes& nonce,
   }
 
   AlgorithmHandle algorithm;
-  KeyHandle key_handle;
   std::vector<std::uint8_t> key_object;
+  SensitiveVectorWipe key_object_wipe{&key_object};
+  KeyHandle key_handle;
   if (!ConfigureAesGcm(&algorithm) ||
-      !CreateAesKey(&algorithm, key, &key_object, &key_handle)) {
+       !CreateAesKey(&algorithm, key, &key_object, &key_handle)) {
+    key_handle.Reset();
     SecureErase(key_object);
     return false;
   }
@@ -367,6 +415,7 @@ bool EncryptOtp(const Sha256Bytes& key, const NonceBytes& nonce,
       key_handle.get(), const_cast<PUCHAR>(plaintext.data()), plaintext_size,
       &authentication_info, nullptr, 0, ciphertext->data(), plaintext_size,
       &bytes_written, 0);
+  key_handle.Reset();
   SecureErase(key_object);
   if (!BCRYPT_SUCCESS(status) || bytes_written != ciphertext->size()) {
     SecureErase(*ciphertext);
@@ -381,9 +430,12 @@ bool DecryptOtp(const Sha256Bytes& key, const NonceBytes& nonce,
                 std::span<const std::uint8_t> aad,
                 std::span<const std::uint8_t> ciphertext,
                 const TagBytes& tag, std::vector<std::uint8_t>* plaintext) {
-  if (plaintext == nullptr || ciphertext.size() < 4 || ciphertext.size() > 8) {
+  if (plaintext == nullptr) {
     return false;
   }
+  SecureErase(*plaintext);
+  plaintext->clear();
+  if (ciphertext.size() < 4 || ciphertext.size() > 8) return false;
   ULONG ciphertext_size = 0;
   ULONG aad_size = 0;
   if (!ToUlong(ciphertext.size(), &ciphertext_size) ||
@@ -392,10 +444,12 @@ bool DecryptOtp(const Sha256Bytes& key, const NonceBytes& nonce,
   }
 
   AlgorithmHandle algorithm;
-  KeyHandle key_handle;
   std::vector<std::uint8_t> key_object;
+  SensitiveVectorWipe key_object_wipe{&key_object};
+  KeyHandle key_handle;
   if (!ConfigureAesGcm(&algorithm) ||
-      !CreateAesKey(&algorithm, key, &key_object, &key_handle)) {
+       !CreateAesKey(&algorithm, key, &key_object, &key_handle)) {
+    key_handle.Reset();
     SecureErase(key_object);
     return false;
   }
@@ -416,6 +470,7 @@ bool DecryptOtp(const Sha256Bytes& key, const NonceBytes& nonce,
       key_handle.get(), const_cast<PUCHAR>(ciphertext.data()), ciphertext_size,
       &authentication_info, nullptr, 0, plaintext->data(), ciphertext_size,
       &bytes_written, 0);
+  key_handle.Reset();
   SecureErase(key_object);
   if (!BCRYPT_SUCCESS(status) || bytes_written != plaintext->size() ||
       !IsNormalizedOtp(*plaintext)) {

@@ -6,7 +6,11 @@
 
 namespace clipvault::otp::broker {
 
-enum class BrokerClientRole { kOpaqueDesktopOffer, kImeHostControl };
+enum class BrokerClientRole {
+  kOpaqueDesktopOffer,
+  kDesktopControl,
+  kImeHostControl,
+};
 
 class BrokerClientAuthorizer {
  public:
@@ -15,8 +19,8 @@ class BrokerClientAuthorizer {
 };
 
 // Production policy: the pipe peer must run as the broker user, from the
-// fixed combined-install path, and both peer and broker binaries must have a
-// valid Authenticode trust result. There is no path/env override.
+// fixed combined-install path, and share one trusted publisher with the
+// Broker binary. There is no production path/env override.
 class ProductionBrokerClientAuthorizer final : public BrokerClientAuthorizer {
  public:
   ProductionBrokerClientAuthorizer();
@@ -26,7 +30,6 @@ class ProductionBrokerClientAuthorizer final : public BrokerClientAuthorizer {
   std::wstring broker_path_;
   std::wstring desktop_path_;
   std::wstring host_path_;
-  bool broker_trusted_ = false;
 };
 
 }  // namespace clipvault::otp::broker

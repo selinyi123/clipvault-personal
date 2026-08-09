@@ -166,7 +166,8 @@ int wmain() {
       L"pipe-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
       std::to_wstring(GetTickCount64());
   if (!SetEnvironmentVariableW(L"CLIPVAULT_OTP_TEST_NAMESPACE",
-                               test_namespace.c_str())) {
+                               test_namespace.c_str()) ||
+      !SetEnvironmentVariableW(L"CLIPVAULT_INSECURE_TEST_PIPE_TRUST", L"1")) {
     return 2;
   }
 
@@ -321,6 +322,27 @@ int wmain() {
   consume_client.Close();
   consume_server.join();
   ok &= Expect(consume_server_result, "consume server completes one exchange");
+
+  std::atomic_bool revoke_server_result = false;
+  std::thread revoke_server(
+      [&] { revoke_server_result = server.ServeOne(3'000, 500); });
+  broker::BrokerPipeClient revoke_client;
+  broker::BrokerResponse revoked;
+  const ULONGLONG revoke_deadline = GetTickCount64() + 1'000;
+  ok &= Expect(
+      revoke_client.ConnectUntil(revoke_deadline) &&
+          revoke_client.ExchangeUntil(
+              broker::EncodeRevokeSession(session.session_epoch), &revoked,
+              revoke_deadline) &&
+          revoked.status == broker::BrokerStatus::kAccepted,
+      "Desktop-authorized revoke clears the cached session idempotently");
+  revoke_client.Close();
+  revoke_server.join();
+  ok &= Expect(revoke_server_result, "revoke server completes one exchange");
+  ok &= Expect(service.ArmLatest(context, GetCurrentProcessId(),
+                                 GetCurrentThreadId(), GetTickCount64())
+                       .status == broker::BrokerStatus::kNotFound,
+               "revoked session has no pending OTP, claim, replay or key slot");
   if (test_window != nullptr) DestroyWindow(test_window);
 
   // A server that accepts but never replies must not outlive the one absolute

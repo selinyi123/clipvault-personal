@@ -42,6 +42,8 @@ def main() -> int:
     candidates = read("tsf/candidate_window.cpp")
     candidate_layout = read("tsf/candidate_layout.cpp")
     candidate_layout_test = read("tests/candidate_layout_tests.cpp")
+    evidence_editor = read("tests/tsf_evidence_editor.cpp")
+    dbwin_capture = read("tests/dbwin_diagnostics_capture.cpp")
     registration = read("tsf/registration.cpp")
     cmake = read("CMakeLists.txt")
     build_script = read("scripts/Build-NativeSlice.ps1")
@@ -118,8 +120,12 @@ def main() -> int:
     require(host, ("CreateNamedPipeW", "PIPE_REJECT_REMOTE_CLIENTS",
                    "PIPE_UNLIMITED_INSTANCES",
                    "ConvertSidToStringSidW", "SDDL_REVISION_1", "ConnectNamedPipe",
-                   "std::jthread", "--deploy-rime", "PromoteEchoSessionToRime"),
+                   "std::jthread", "--deploy-rime", "PromoteEchoSessionToRime",
+                   "kMaximumConcurrentConnections", "ReadClientFrame",
+                   "StopWorkers", "FILE_FLAG_OVERLAPPED"),
             "external Host")
+    if ".detach()" in host or "FlushFileBuffers(pipe)" in host:
+        fail("external Host must use bounded joined workers and deadline I/O")
     require(host, ("ReplayLedger", "LookupResponse", "CacheResponse",
                    "RememberEnded", "DecodeResponseAck", "DecodeEndSession",
                    "Operation::kSetOption", "rime->SetOption"),
@@ -157,7 +163,9 @@ def main() -> int:
                        "ProcessUserMatchesCurrent", "QueryFullProcessImageNameW",
                        "WinVerifyTrust", "kRuntimeSnapshotDeadlineMilliseconds",
                        "FILE_FLAG_OVERLAPPED", "CancelIoEx", "publisher_epoch",
-                       "retired_epochs", "WipeSurface", "Consume"),
+                       "retired_epochs", "WipeSurface", "Consume",
+                       "RequestRefresh", "fetch_in_flight",
+                       "kMaximumConcurrentSnapshotFetches"),
             "Runtime Snapshot V1 client")
     require(rime, ("LoadLibraryExW", "rime_get_api", "process_key",
                    "select_candidate_on_current_page", "change_page",
@@ -165,6 +173,7 @@ def main() -> int:
                    "select_schema", "clipvault_pinyin_private"),
             "librime adapter")
     require(service, ("AdviseKeyEventSink", "RequestEditSession", "TF_ES_SYNC",
+                      "ITfInsertAtSelection", "TF_IAS_QUERYONLY",
                       "StartComposition", "EndComposition", "CreateProcessW",
                       "SelectCandidate", "ChangeCandidatePage", "RecoverPlainKey",
                       "IS_PASSWORD", "RemainingBudget", "ToUnicodeEx",
@@ -194,9 +203,17 @@ def main() -> int:
                                     "TestWorkAreaPlacement", "TestHitTargets",
                                     "left_monitor", "dpi192"),
             "executable candidate layout coverage")
+    require(evidence_editor, ("ClipVault TSF Evidence Editor", "CreateWindowExW",
+                              "L\"EDIT\"", "ES_MULTILINE", "SetFocus"),
+            "manual TSF evidence editor")
+    require(dbwin_capture, ("DBWIN_BUFFER_READY", "DBWIN_DATA_READY",
+                            "DBWIN_BUFFER", "ClipVaultIme event=",
+                            "starts_with"),
+            "content-free TSF DBWIN diagnostics capture")
     require(registration, ("HKEY_LOCAL_MACHINE", "KEY_WOW64_64KEY",
                            "KEY_WOW64_32KEY", "CLIPVAULT_TSF_PROFILE_OWNER",
-                           "AddLanguageProfile", "GUID_TFCAT_TIP_KEYBOARD",
+                           "AddLanguageProfile", "EnableLanguageProfile",
+                           "GUID_TFCAT_TIP_KEYBOARD",
                            "DllRegisterServer", "DllUnregisterServer",
                            "return result"), "machine TSF registration")
     require(cmake, ("ClipVaultImeHost", "ClipVaultTextService", "host-smoke",
@@ -213,7 +230,9 @@ def main() -> int:
                     "CLIPVAULT_TSF_PROFILE_OWNER=0", "/W4", "/WX"),
             "native CMake build")
     require(cmake, ("clipvault_candidate_layout", "clipvault_candidate_layout_tests",
-                    "clipvault-ime-candidate-layout"),
+                    "clipvault-ime-candidate-layout",
+                    "clipvault_tsf_evidence_editor",
+                    "clipvault_dbwin_diagnostics_capture"),
             "candidate layout CTest wiring")
     require(build_script, ("Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
                            "ctest.exe", "--output-on-failure", "RimeSdkDirectory",
@@ -287,6 +306,9 @@ def main() -> int:
                          service.index("void TextService::ResetOtpContext")]
     if otp_insert.index("BuildOtpContext") > otp_insert.index("engine_.InsertOtp"):
         fail("TSF consumes OTP before validating the local interactive context")
+    require(otp_insert, ("const HRESULT projected", "ApplyOtpCommit",
+                         "if (FAILED(projected))", "ResetEngine()"),
+            "fail-closed observable OTP projection")
     if service.count("InsertLatestOtp(context)") != 1:
         fail("TSF OTP insertion is no longer limited to the preserved-key action")
     require(otp_credential, ("CVPK", "CredReadW", "CredWriteW",

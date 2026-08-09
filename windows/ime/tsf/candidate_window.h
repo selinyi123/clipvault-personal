@@ -35,6 +35,11 @@ class CandidateWindow final {
   bool EnsureWindow();
   POINT ResolveAnchor(ITfContext* context, const RECT* text_extent) const;
   LRESULT HandleMessage(UINT message, WPARAM word, LPARAM data);
+  bool ArmSnapshotExpiryTimer();
+  void StopSnapshotExpiryTimer() noexcept;
+  void ClearSnapshotSurface() noexcept;
+  void ExpireSnapshotSurface() noexcept;
+  void ResetSnapshotDeadlineIdentity() noexcept;
   void Paint();
   static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM word,
                                           LPARAM data);
@@ -49,5 +54,9 @@ class CandidateWindow final {
   std::uint32_t page_index_ = 0;
   bool has_previous_page_ = false;
   bool has_next_page_ = false;
+  std::string snapshot_deadline_publisher_epoch_;
+  std::uint64_t snapshot_deadline_generation_ = 0;
+  std::uint64_t snapshot_deadline_expires_at_ms_ = 0;
+  ULONGLONG snapshot_expiry_deadline_tick_ = 0;
   clipvault::ime::candidate_layout::Metrics layout_metrics_;
 };

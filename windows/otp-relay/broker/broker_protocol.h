@@ -13,6 +13,9 @@ namespace clipvault::otp::broker {
 inline constexpr std::uint8_t kBrokerProtocolVersion = 1;
 inline constexpr std::uint32_t kMaximumBrokerFrameBytes = 512;
 inline constexpr DWORD kBrokerForwardBudgetMilliseconds = 250;
+// Arm+consume is invoked from the TSF key path.  Keep its Credential Manager
+// acquisition bounded to the same budget as the Host's absolute deadline.
+inline constexpr DWORD kImeOtpBrokerOperationBudgetMilliseconds = 35;
 
 enum class BrokerOperation : std::uint8_t {
   kOffer = 1,
@@ -20,6 +23,7 @@ enum class BrokerOperation : std::uint8_t {
   kConsume = 3,
   kDismiss = 4,
   kArmLatest = 5,
+  kRevokeSession = 6,
   kResponse = 128,
 };
 
@@ -32,6 +36,9 @@ enum class BrokerStatus : std::uint8_t {
   kDenied = 6,
   kConsumed = 7,
   kUnavailable = 8,
+  // Sender must create a fresh session_epoch/verifier/key before retrying.
+  // Replay markers are never evicted under the current AES-GCM key.
+  kRotationRequired = 9,
 };
 
 struct OpaqueEnvelope final {
@@ -89,6 +96,10 @@ bool DecodeConsume(const std::vector<std::uint8_t>& frame,
 std::vector<std::uint8_t> EncodeDismiss(const crypto::UuidBytes& event_id);
 bool DecodeDismiss(const std::vector<std::uint8_t>& frame,
                    crypto::UuidBytes* event_id);
+std::vector<std::uint8_t> EncodeRevokeSession(
+    const crypto::UuidBytes& session_epoch);
+bool DecodeRevokeSession(const std::vector<std::uint8_t>& frame,
+                         crypto::UuidBytes* session_epoch);
 std::vector<std::uint8_t> EncodeResponse(const BrokerResponse& response);
 bool DecodeResponse(const std::vector<std::uint8_t>& frame,
                     BrokerResponse* response);
