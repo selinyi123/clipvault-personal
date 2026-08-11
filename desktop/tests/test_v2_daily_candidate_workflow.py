@@ -53,6 +53,13 @@ def test_direct_candidate_dispatch_is_locked_without_restricting_reusable_calls(
     assert "workflow_call:" in candidate
 
 
+def test_candidate_concurrency_latest_run_wins():
+    candidate = _text(CANDIDATE)
+
+    assert "group: v2-daily-candidate-${{ github.ref }}" in candidate
+    assert "cancel-in-progress: true" in candidate
+
+
 def test_windows_dictionary_checkout_preserves_locked_lf_bytes():
     windows = _text(WINDOWS)
 
