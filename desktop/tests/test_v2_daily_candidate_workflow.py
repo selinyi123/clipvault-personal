@@ -40,6 +40,20 @@ def test_candidate_can_bootstrap_from_the_registered_ci_workflow():
     assert "github.ref == 'refs/heads/codex/v2-daily-integration'" in ci
 
 
+def test_windows_dictionary_checkout_preserves_locked_lf_bytes():
+    windows = _text(WINDOWS)
+
+    init = windows.index("git init $source")
+    byte_exact_checkout = windows.index(
+        "git -C $source config core.autocrlf false"
+    )
+    checkout = windows.index(
+        "git -C $source checkout FETCH_HEAD -- AUTHORS LICENSE pinyin_simp.dict.yaml"
+    )
+
+    assert init < byte_exact_checkout < checkout
+
+
 def test_candidate_is_read_only_and_only_uploads_unsigned_internal_artifacts():
     candidate = _text(CANDIDATE).casefold()
     execution_surface = "\n".join(

@@ -45,6 +45,7 @@ jobs:
         run: |
           $source = Join-Path $env:RUNNER_TEMP 'rime-pinyin-simp-source'
           git init $source
+          git -C $source config core.autocrlf false
           git -C $source remote add origin https://github.com/rime/rime-pinyin-simp.git
           git -C $source fetch --depth 1 origin 0c6861ef7420ee780270ca6d993d18d4101049d0
           if ((git -C $source rev-parse FETCH_HEAD).Trim() -ne `
