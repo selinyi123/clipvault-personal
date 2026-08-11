@@ -50,7 +50,7 @@ def test_direct_candidate_dispatch_is_locked_without_restricting_reusable_calls(
     assert '"refs/heads/codex/v2-daily-integration"' in candidate
     assert "needs: policy_guard" in candidate
     assert "runner_preflight:" in candidate
-    assert "permissions:\n      contents: read\n      actions: read" in candidate
+    assert "CLIPVAULT_NATIVE_RUNNER_READY" in candidate
     assert "clipvault-android-device" in candidate
     assert "needs: [policy_guard, runner_preflight]" in candidate
     assert "workflow_call:" in candidate
