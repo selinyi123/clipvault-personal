@@ -99,4 +99,7 @@ jobs:
   v2-daily-candidate:
     name: V2 daily-use candidate bootstrap
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/v2-daily-integration' }}
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/v2-daily-candidate.yml
