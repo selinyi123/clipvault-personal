@@ -40,6 +40,19 @@ def test_candidate_can_bootstrap_from_the_registered_ci_workflow():
     assert "github.ref == 'refs/heads/codex/v2-daily-integration'" in ci
 
 
+def test_direct_candidate_dispatch_is_locked_without_restricting_reusable_calls():
+    candidate = _text(CANDIDATE)
+
+    assert "policy_guard:" in candidate
+    assert "WORKFLOW_REF: ${{ github.workflow_ref }}" in candidate
+    assert "REF_NAME: ${{ github.ref }}" in candidate
+    assert "v2-daily-candidate.yml@*" in candidate
+    assert '"refs/heads/codex/v2-daily-integration"' in candidate
+    assert "needs: policy_guard" in candidate
+    assert candidate.count("needs: policy_guard") == 3
+    assert "workflow_call:" in candidate
+
+
 def test_windows_dictionary_checkout_preserves_locked_lf_bytes():
     windows = _text(WINDOWS)
 

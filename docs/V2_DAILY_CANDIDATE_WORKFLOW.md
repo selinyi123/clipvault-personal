@@ -22,10 +22,37 @@ the test machine:
    before uploading one downloadable bundle.
 
 Start it from GitHub Actions with **Run workflow** on
-`.github/workflows/v2-daily-candidate.yml`. A missing self-hosted runner, missing
+`.github/workflows/v2-daily-candidate.yml`, selecting
+`codex/v2-daily-integration`. Direct dispatches from another ref are rejected
+by the workflow policy guard; the `ci.yml` reusable caller remains limited to
+the same integration branch. A missing self-hosted runner, missing
 Android native input, unavailable pinned Windows input, lock/hash mismatch,
 build failure, test failure, or packaging failure leaves the candidate
 **BLOCKED**. There is no Direct-only/native-missing fallback.
+
+## Android native runner preflight
+
+The Owner-controlled repository runner must be a Windows x64 host registered
+with all of these labels:
+
+```text
+self-hosted, Windows, X64, clipvault-native, clipvault-android-device
+```
+
+Before rerunning the candidate, verify that the runner has the JDK 17, Android
+SDK/API 36, NDK/CMake, Gradle wrapper support, and every lock-file-matched
+native archive required by `android/scripts/build-v2-ime.ps1` in the expected
+paths. The device job additionally requires exactly one authorized Android
+device visible to `adb devices -l`; an emulator or a missing device is not a
+substitute for the device gate. The read-only GitHub check is:
+
+```powershell
+gh api repos/<owner>/<repo>/actions/runners
+adb devices -l
+```
+
+Do not put runner registration tokens, keystores, signing keys, or other
+credentials in the repository or candidate evidence.
 
 This workflow has read-only repository permission. It uploads only explicitly
 named, unsigned internal candidate artifacts with a 14-day retention period.
