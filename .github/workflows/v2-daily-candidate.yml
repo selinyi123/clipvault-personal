@@ -35,32 +35,23 @@ jobs:
           fi
 
   runner_preflight:
-    name: V2 Android runner preflight
+    name: V2 Android runner capability attestation
     needs: policy_guard
-    permissions:
-      contents: read
-      actions: read
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require an online native and device runner
+      - name: Require Owner runner capability attestation
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
+          NATIVE_RUNNER_READY: ${{ vars.CLIPVAULT_NATIVE_RUNNER_READY }}
         run: |
           set -euo pipefail
-          required=(self-hosted Windows X64 clipvault-native clipvault-android-device)
-          matching="$(gh api "repos/${REPOSITORY}/actions/runners?per_page=100" --jq '
-            [.runners[] | select(.status == "online") |
-             ([.labels[].name]) as $labels |
-             select((["self-hosted", "Windows", "X64", "clipvault-native", "clipvault-android-device"] - $labels) | length == 0)] | length
-          ')"
-          if [[ "$matching" -lt 1 ]]; then
-            echo "::error title=V2 Android runner missing::No online runner has all required labels: ${required[*]}"
+          required_labels="self-hosted, Windows, X64, clipvault-native, clipvault-android-device"
+          if [[ "${NATIVE_RUNNER_READY:-}" != "true" ]]; then
+            echo "::error title=V2 Android runner not attested::Owner must set repository variable CLIPVAULT_NATIVE_RUNNER_READY=true only after a runner with labels [$required_labels] and one authorized device pass the documented preflight."
             exit 1
           fi
-          echo "Found $matching online runner(s) with the required native/device labels."
+          echo "Owner-attested native/device runner capability is enabled."
 
   desktop_candidate:
     name: Desktop tests and unsigned portable candidate
