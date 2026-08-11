@@ -36,6 +36,13 @@ queued native/device lane cannot indefinitely block a newer candidate. This
 does not cancel a promoted artifact: a candidate is eligible only after the
 new run produces its own receipt-bound bundle and passes the Owner gates.
 
+Before the Android reusable workflow is scheduled, a read-only runner
+preflight checks the repository's online runner labels. Missing
+`self-hosted, Windows, X64, clipvault-native, clipvault-android-device` fails
+the Android lane immediately with an explicit error instead of leaving a
+queued job for hours. Desktop and Windows cloud-hosted gates still run so their
+evidence remains available; the aggregate candidate remains fail-closed.
+
 ## Android native runner preflight
 
 The Owner-controlled repository runner must be a Windows x64 host registered

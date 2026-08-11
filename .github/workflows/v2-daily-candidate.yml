@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: v2-daily-candidate-${{ github.ref }}
@@ -33,6 +34,31 @@ jobs:
             echo "::error title=V2 candidate branch policy::Direct v2-daily candidate dispatch is allowed only from refs/heads/codex/v2-daily-integration (got $REF_NAME)."
             exit 1
           fi
+
+  runner_preflight:
+    name: V2 Android runner preflight
+    needs: policy_guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require an online native and device runner
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          required=(self-hosted Windows X64 clipvault-native clipvault-android-device)
+          matching="$(gh api "repos/${REPOSITORY}/actions/runners?per_page=100" --jq '
+            [.runners[] | select(.status == "online") |
+             ([.labels[].name]) as $labels |
+             select((["self-hosted", "Windows", "X64", "clipvault-native", "clipvault-android-device"] - $labels) | length == 0)] | length
+          ')"
+          if [[ "$matching" -lt 1 ]]; then
+            echo "::error title=V2 Android runner missing::No online runner has all required labels: ${required[*]}"
+            exit 1
+          fi
+          echo "Found $matching online runner(s) with the required native/device labels."
 
   desktop_candidate:
     name: Desktop tests and unsigned portable candidate
@@ -126,7 +152,7 @@ jobs:
 
   android_native:
     name: Android locked native production gate
-    needs: policy_guard
+    needs: [policy_guard, runner_preflight]
     uses: ./.github/workflows/v2-ime-production.yml
 
   windows_native:
