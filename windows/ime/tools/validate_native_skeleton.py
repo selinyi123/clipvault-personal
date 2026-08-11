@@ -33,6 +33,7 @@ def require(text: str, tokens: tuple[str, ...], label: str) -> None:
 
 def main() -> int:
     protocol = read("common/protocol.cpp")
+    peer_trust = read("common/pipe_peer_trust.h")
     host = read("host/main.cpp")
     replay = read("host/replay_ledger.cpp")
     snapshot = read("host/runtime_snapshot.cpp")
@@ -94,6 +95,9 @@ def main() -> int:
     otp_server = (otp_root / "broker" / "broker_server.cpp").read_text(
         encoding="utf-8"
     )
+    otp_client_identity = (
+        otp_root / "broker" / "client_identity.cpp"
+    ).read_text(encoding="utf-8")
     otp_core = (otp_root / "broker" / "otp_broker_core.cpp").read_text(
         encoding="utf-8"
     )
@@ -167,6 +171,12 @@ def main() -> int:
                        "RequestRefresh", "fetch_in_flight",
                        "kMaximumConcurrentSnapshotFetches"),
             "Runtime Snapshot V1 client")
+    require(peer_trust, ('LoadLibraryExW(L"wintrust.dll"',
+                         "ResolveLoadedFunction", "WSS_GET_SECONDARY_SIG_COUNT"),
+            "Broker publisher trust boundary")
+    require(otp_client_identity, ("RetainStaticWinVerifyTrustImport",
+                                  "&WinVerifyTrust"),
+            "Broker static WinTrust import boundary")
     require(rime, ("LoadLibraryExW", "rime_get_api", "process_key",
                    "select_candidate_on_current_page", "change_page",
                    "commit_composition", "clear_composition", "set_option",

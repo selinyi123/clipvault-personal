@@ -5,9 +5,19 @@
 #include <algorithm>
 #include <array>
 #include <cwctype>
+#include <wintrust.h>
 
 namespace clipvault::otp::broker {
 namespace {
+
+void RetainStaticWinVerifyTrustImport() noexcept {
+  // The Broker dependency audit requires a statically visible WinTrust
+  // boundary.  Trust helpers remain resolved through the system32 module in
+  // pipe_peer_trust.h so TSF and Host do not inherit this import.
+  using WinVerifyTrustFunction = decltype(&WinVerifyTrust);
+  volatile WinVerifyTrustFunction function = &WinVerifyTrust;
+  (void)function;
+}
 
 std::wstring FullPath(std::wstring path) {
   std::array<wchar_t, 32768> output{};
@@ -38,6 +48,7 @@ std::wstring CurrentExecutable() {
 }  // namespace
 
 ProductionBrokerClientAuthorizer::ProductionBrokerClientAuthorizer() {
+  RetainStaticWinVerifyTrustImport();
   broker_path_ = CurrentExecutable();
   const auto broker_directory = Parent(broker_path_);
   const auto ime_directory = Parent(broker_directory);
