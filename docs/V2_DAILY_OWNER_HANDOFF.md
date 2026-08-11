@@ -9,7 +9,53 @@ The current project-license governance state is `internal_only` with
 Owner decision for local/internal daily use. It is not a public license and
 must not be represented as permission to distribute the candidate.
 
-## 1. Freeze and verify the source candidate
+## 1. Provision the native/device runner before candidate generation
+
+Complete this section before expecting the candidate workflow to produce a
+unified bundle. Register one repository self-hosted Windows x64 runner with
+all of these labels:
+
+```text
+self-hosted, Windows, X64, clipvault-native, clipvault-android-device
+```
+
+On that runner, verify JDK 17, Android SDK/API 36, NDK/CMake, Gradle wrapper
+support, and all lock-matched native archives required by
+`android/scripts/build-v2-ime.ps1`. Connect exactly one authorized physical
+Android device and verify:
+
+```powershell
+adb devices -l
+```
+
+Using an Owner account that can inspect repository Actions runners, confirm
+the runner is online and has the labels above:
+
+```powershell
+gh api repos/<owner>/<repo>/actions/runners
+```
+
+Only after those checks pass, set the non-secret capability attestation used
+by the candidate workflow:
+
+```powershell
+gh variable set CLIPVAULT_NATIVE_RUNNER_READY `
+  --repo <owner>/<repo> `
+  --body true
+```
+
+This variable is an Owner attestation, not a substitute for runner labels or
+device checks. If it is absent, the Android native lane fails immediately and
+the candidate remains blocked; no runner registration token, device data,
+keystore, or private key belongs in the repository.
+
+Then trigger the candidate workflow from the integration branch:
+
+```powershell
+gh workflow run ci.yml --ref codex/v2-daily-integration
+```
+
+## 2. Freeze and verify the source candidate
 
 1. Check out the exact `BUILD_RECEIPT.json.source_commit` with a clean worktree.
 2. Extract the unified artifact without renaming or replacing files.
@@ -30,7 +76,7 @@ If any command fails, discard the candidate rather than mixing artifacts from
 another run. Keep the bundle's `BUILD_RECEIPT.json`, `RELEASE_MANIFEST.json`,
 `SHA256SUMS.txt`, and workflow URL with the final evidence.
 
-## 2. Owner-only decisions and signing
+## 3. Owner-only decisions and signing
 
 - Confirm that `THIRD_PARTY_MANIFEST.yaml` still records the exact
   `internal_only` / `license_file: null` / `distribution_allowed: false`
@@ -80,7 +126,7 @@ The collector fails unless every required Owner binary has Authenticode status
 `Valid` and the same certificate thumbprint. Its JSON is then rechecked against
 the ZIP member bytes by `tools/v2_daily_readiness.py`.
 
-## 3. Manual daily-use evidence
+## 4. Manual daily-use evidence
 
 Copy `docs/V2_DAILY_USE_OWNER_EVIDENCE.example.json`, replace every placeholder,
 and execute every row in `docs/V2_DAILY_USE_MANUAL_QA.md` against these same

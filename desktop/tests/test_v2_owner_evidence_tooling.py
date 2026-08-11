@@ -52,3 +52,7 @@ def test_owner_handoff_requires_candidate_and_signature_reports():
     assert "Collect-V2WindowsAuthenticodeEvidence.ps1" in handoff
     assert "schema is v3" in handoff
     assert "does not publish" in handoff
+    assert "CLIPVAULT_NATIVE_RUNNER_READY" in handoff
+    assert "clipvault-android-device" in handoff
+    assert "adb devices -l" in handoff
+    assert "gh workflow run ci.yml --ref codex/v2-daily-integration" in handoff
