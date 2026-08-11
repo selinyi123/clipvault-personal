@@ -12,8 +12,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  policy_guard:
+    name: V2 candidate dispatch policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reject direct dispatch outside the integration branch
+        shell: bash
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          REF_NAME: ${{ github.ref }}
+        run: |
+          # A reusable workflow inherits the caller's github context.  Use
+          # workflow_ref to distinguish a direct Run workflow dispatch from a
+          # caller such as ci.yml, so reusable callers remain branch-agnostic.
+          if [[ "$WORKFLOW_REF" == */.github/workflows/v2-daily-candidate.yml@* && \
+                "$REF_NAME" != "refs/heads/codex/v2-daily-integration" ]]; then
+            echo "::error title=V2 candidate branch policy::Direct v2-daily candidate dispatch is allowed only from refs/heads/codex/v2-daily-integration (got $REF_NAME)."
+            exit 1
+          fi
+
   desktop_candidate:
     name: Desktop tests and unsigned portable candidate
+    needs: policy_guard
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -103,10 +124,12 @@ jobs:
 
   android_native:
     name: Android locked native production gate
+    needs: policy_guard
     uses: ./.github/workflows/v2-ime-production.yml
 
   windows_native:
     name: Windows locked native production gate
+    needs: policy_guard
     uses: ./.github/workflows/windows-ime-native-slice.yml
 
   automated_readiness:

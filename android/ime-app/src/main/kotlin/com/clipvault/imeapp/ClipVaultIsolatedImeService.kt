@@ -441,8 +441,38 @@ class ClipVaultIsolatedImeService : InputMethodService() {
             return hotFallback(previous, kind, event, recoveryCommitText)
         }
         val applied = applyTransition(previous, transition)
-        if (applied) updateCompositionHistory(kind, event, transition.state)
-        return applied
+        if (!applied) {
+            // InputConnection reports a potentially ambiguous editor effect.
+            // Do not retry raw composition here: the remote editor may have
+            // accepted the effect before returning false or throwing. Retire
+            // the session so a later input-start creates a fresh identity and
+            // cannot duplicate a commit.
+            retireEngineAfterAmbiguousEditorResult()
+            return false
+        }
+        updateCompositionHistory(kind, event, transition.state)
+        return true
+    }
+
+    /**
+     * Retires the local engine after an uncertain InputConnection result.
+     * The editor is deliberately not touched again; ENG2 requires an
+     * ambiguous platform result to be treated as at-most-once.
+     */
+    private fun retireEngineAfterAmbiguousEditorResult() {
+        val oldEngine = engine
+        val oldId = sessionId
+        val oldSequence = nextSequence
+        engine = null
+        sessionId = null
+        state = EngineState.empty()
+        nextSequence = 0L
+        waitingForRime = false
+        compositionKeys.clear()
+        if (oldEngine != null && oldId != null && oldSequence >= 2) {
+            runCatching { oldEngine.endSession(oldId, oldSequence) }
+        }
+        renderCandidates()
     }
 
     /** Preserves the complete live preedit as one local commit before Direct fallback. */

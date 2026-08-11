@@ -380,3 +380,50 @@ def test_machine_registration_contract_has_unique_x64_profile_owner_and_error_fl
     )
     assert "RepairRequired" in register
     assert "RepairRequired" in unregister
+
+
+def test_unregister_does_not_treat_physical_registration_as_clean_state():
+    unregister = _read(
+        ROOT / "windows" / "ime" / "scripts" / "Unregister-ClipVaultIme.ps1"
+    )
+
+    # A disabled/repair marker is not evidence that both registry views are
+    # clean.  The helper must inspect both 64-bit and 32-bit HKLM views before
+    # taking the state=0 fast path, and must reject a physical registration
+    # when the trusted machine state is missing.
+    for token in (
+        "RegistryView]::Registry64",
+        "RegistryView]::Registry32",
+        "Test-PhysicalImeRegistration",
+        "Refusing to unregister a physical ClipVault TSF registration without trusted machine state.",
+        "RegistrationSchema",
+        "registrationSchema = 2",
+        "RegistrationPresent -notin @(0, 1, 2)",
+        "RegistrationPresent -eq 0 -and -not $physicalRegistrationPresent",
+    ):
+        assert token in unregister
+
+    state_guard = unregister.index("$state = Get-ItemProperty")
+    physical_guard = unregister.index("$physicalRegistrationPresent =")
+    state_zero_fast_path = unregister.index(
+        "RegistrationPresent -eq 0 -and -not $physicalRegistrationPresent"
+    )
+    unregister_calls = unregister.index(
+        "Invoke-Unregister -Executable $regsvr64 -Dll $x64Dll"
+    )
+    assert physical_guard < state_guard < state_zero_fast_path < unregister_calls
+    assert unregister.index("$state.RegistrationSchema -ne $registrationSchema") < state_zero_fast_path
+    assert unregister.index("$state.RegistrationPresent -notin @(0, 1, 2)") < state_zero_fast_path
+
+
+def test_tsf_reset_engine_drops_buffered_preedit_on_context_reset():
+    service = _read(ROOT / "windows" / "ime" / "tsf" / "text_service.cpp")
+    reset = service[service.index("void TextService::ResetEngine() noexcept") :]
+
+    # ResetEngine invalidates both the Host session and the current editor
+    # context.  A local buffer left alive here could be replayed into a later
+    # focus/password context by OnKeyDown -> ReplayBufferedPreedit.
+    assert "pending_preedit_.clear();" in reset
+    assert reset.index("pending_preedit_.clear();") < reset.index(
+        "last_state_ = clipvault::ime::EngineState{}"
+    )

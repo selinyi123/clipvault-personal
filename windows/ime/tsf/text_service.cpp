@@ -1439,6 +1439,11 @@ void TextService::ResetEngine() noexcept {
   engine_.Disconnect();
   session_started_ = false;
   composition_active_ = false;
+  // A reset invalidates the Host session and the editor context together.
+  // Never carry a locally buffered preedit into a later context (including a
+  // password/focus transition), where ReplayBufferedPreedit could otherwise
+  // project the old text into the newly focused control.
+  pending_preedit_.clear();
   last_state_ = clipvault::ime::EngineState{};
   candidate_anchor_valid_ = false;
 }

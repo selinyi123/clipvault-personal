@@ -22,6 +22,12 @@ internal class NativeRimeInputEngineAdapter(
     private var nextSequence = 0L
     private var revision = 0L
     private var candidateIndex = emptyMap<String, Int>()
+    /**
+     * Candidate IDs are transport identities, not an encoding of the current
+     * page or array position. Keep the generated ID stable while Rime pages
+     * the same composition, then discard it when the composition changes.
+     */
+    private val candidateIds = mutableMapOf<CandidateIdentity, String>()
     private var lastState = EngineState.empty()
 
     override fun startSession(
@@ -34,6 +40,7 @@ internal class NativeRimeInputEngineAdapter(
         }
         nativeSession = api.createSession()
         if (nativeSession == 0L) throw EngineProtocolException("native session unavailable")
+        candidateIds.clear()
         val schemaId = if (context.learningAllowed) NORMAL_SCHEMA else PRIVATE_SCHEMA
         if (!api.selectSchema(nativeSession, schemaId)) {
             api.destroySession(nativeSession)
@@ -46,7 +53,15 @@ internal class NativeRimeInputEngineAdapter(
         liveSessionId = sessionId
         nextSequence = 2L
         revision = 0L
-        return transition(requestSequence, snapshotState())
+        return try {
+            transition(requestSequence, snapshotState())
+        } catch (failure: RuntimeException) {
+            destroyAndResetNativeSession()
+            throw failure
+        } catch (failure: LinkageError) {
+            destroyAndResetNativeSession()
+            throw failure
+        }
     }
 
     override fun processKey(
@@ -191,12 +206,7 @@ internal class NativeRimeInputEngineAdapter(
         requireLive(sessionId)
         if (requestSequence != nextSequence) throw EngineProtocolException("native end sequence mismatch")
         api.destroySession(nativeSession)
-        liveSessionId = null
-        nativeSession = 0
-        nextSequence = 0
-        revision = 0
-        candidateIndex = emptyMap()
-        lastState = EngineState.empty()
+        resetNativeSession()
     }
 
     private fun transition(
@@ -221,19 +231,39 @@ internal class NativeRimeInputEngineAdapter(
             ?: throw EngineProtocolException("invalid native caret")
         val page = raw[2].toIntOrNull()
             ?: throw EngineProtocolException("invalid native page")
+        if (caret !in 0..preedit.length ||
+            (caret > 0 && caret < preedit.length &&
+                preedit[caret - 1].isHighSurrogate() && preedit[caret].isLowSurrogate())
+        ) {
+            throw EngineProtocolException("native caret is outside UTF-16 boundaries")
+        }
+        if (page < 0 || raw[3] !in setOf("0", "1")) {
+            throw EngineProtocolException("invalid native page metadata")
+        }
         val lastPage = raw[3] == "1"
-        val candidates = raw.drop(4).chunked(2).mapIndexed { index, pair ->
+        if (preedit != lastState.preedit) candidateIds.clear()
+        val occurrences = mutableMapOf<CandidateText, Int>()
+        val candidates = raw.drop(4).chunked(2).map { pair ->
+            val text = pair[0]
+            val comment = pair[1].ifEmpty { null }
+            val textKey = CandidateText(text, comment)
+            val occurrence = occurrences.getOrDefault(textKey, 0)
+            occurrences[textKey] = occurrence + 1
+            val identity = CandidateIdentity(textKey, occurrence)
+            val candidateId = candidateIds.getOrPut(identity) {
+                "rime:${UUID.randomUUID()}"
+            }
             EngineCandidate(
-                id = "rime:$revision:$page:$index",
-                text = pair[0],
-                comment = pair[1].ifEmpty { null },
+                id = candidateId,
+                text = text,
+                comment = comment,
             )
         }
         candidateIndex = candidates.mapIndexed { index, candidate -> candidate.id to index }.toMap()
         return EngineState(
             revision = revision,
             preedit = preedit,
-            caretUtf16 = caret.coerceIn(0, preedit.length),
+            caretUtf16 = caret,
             candidates = candidates,
             pageIndex = page,
             hasPreviousPage = page > 0,
@@ -255,10 +285,35 @@ internal class NativeRimeInputEngineAdapter(
         }
     }
 
+    private fun resetNativeSession() {
+        liveSessionId = null
+        nativeSession = 0
+        nextSequence = 0
+        revision = 0
+        candidateIndex = emptyMap()
+        candidateIds.clear()
+        lastState = EngineState.empty()
+    }
+
+    private fun destroyAndResetNativeSession() {
+        val session = nativeSession
+        if (session != 0L) {
+            runCatching { api.destroySession(session) }
+        }
+        resetNativeSession()
+    }
+
     private fun String.singleCodePointOrNull(): Int? {
         val count = codePointCount(0, length)
         return if (count == 1) codePointAt(0) else null
     }
+
+    private data class CandidateText(val text: String, val comment: String?)
+
+    private data class CandidateIdentity(
+        val text: CandidateText,
+        val occurrence: Int,
+    )
 
     private companion object {
         const val NORMAL_SCHEMA = "clipvault_pinyin"

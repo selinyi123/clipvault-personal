@@ -12,6 +12,8 @@ $packageDirectory = [System.IO.Path]::GetFullPath($PackageDirectory)
 $x64Dll = Join-Path $packageDirectory 'x64\ClipVaultTextService.dll'
 $x86Dll = Join-Path $packageDirectory 'x86\ClipVaultTextService.dll'
 $stateKey = 'HKLM:\Software\ClipVault\ImeV2'
+$registrationSchema = 2
+$tsfClsid = '{C5CEE00A-05AD-4ABA-93BB-6E76932AF126}'
 foreach ($required in @($x64Dll, $x86Dll)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Missing v2 IME package file: $required"
@@ -26,16 +28,50 @@ if (-not $WhatIfPreference -and
     -not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Machine-wide TSF unregistration requires an elevated administrator token.'
 }
-if (-not $WhatIfPreference -and (Test-Path -LiteralPath $stateKey)) {
+function Test-PhysicalImeRegistration {
+    foreach ($view in @(
+            [Microsoft.Win32.RegistryView]::Registry64,
+            [Microsoft.Win32.RegistryView]::Registry32)) {
+        $base = $null
+        $key = $null
+        try {
+            $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+                [Microsoft.Win32.RegistryHive]::LocalMachine, $view)
+            $key = $base.OpenSubKey(
+                "Software\Classes\CLSID\$tsfClsid", $false)
+            if ($key -ne $null) { return $true }
+        } finally {
+            if ($key -ne $null) { $key.Dispose() }
+            if ($base -ne $null) { $base.Dispose() }
+        }
+    }
+    return $false
+}
+
+if (-not $WhatIfPreference) {
+    $physicalRegistrationPresent = Test-PhysicalImeRegistration
+    $stateExists = Test-Path -LiteralPath $stateKey
+    if (-not $stateExists) {
+        if ($physicalRegistrationPresent) {
+            throw 'Refusing to unregister a physical ClipVault TSF registration without trusted machine state.'
+        }
+        Write-Host 'ClipVault Input v2 machine registration was already clean.'
+        return
+    }
+
     $state = Get-ItemProperty -LiteralPath $stateKey
-    if ($state.PackageDirectory -and
+    if ($state.RegistrationSchema -ne $registrationSchema -or
+        -not $state.PackageDirectory -or
         -not [string]::Equals(
             [System.IO.Path]::GetFullPath([string]$state.PackageDirectory),
             $packageDirectory,
             [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Refusing to unregister a machine profile owned by another package directory.'
+        throw 'Refusing to unregister a machine profile with unsupported or different ownership state.'
     }
-    if ($state.RegistrationPresent -eq 0) {
+    if ($state.RegistrationPresent -notin @(0, 1, 2)) {
+        throw 'Refusing to unregister a machine profile with unsupported registration state.'
+    }
+    if ($state.RegistrationPresent -eq 0 -and -not $physicalRegistrationPresent) {
         Remove-Item -LiteralPath $stateKey -Recurse -Force
         Write-Host 'ClipVault Input v2 machine registration was already clean.'
         return
