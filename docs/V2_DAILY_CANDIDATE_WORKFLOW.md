@@ -30,6 +30,12 @@ Android native input, unavailable pinned Windows input, lock/hash mismatch,
 build failure, test failure, or packaging failure leaves the candidate
 **BLOCKED**. There is no Direct-only/native-missing fallback.
 
+Candidate runs are immutable and latest-run-wins. The workflow concurrency
+group is scoped to the branch and uses `cancel-in-progress: true`, so an older
+queued native/device lane cannot indefinitely block a newer candidate. This
+does not cancel a promoted artifact: a candidate is eligible only after the
+new run produces its own receipt-bound bundle and passes the Owner gates.
+
 ## Android native runner preflight
 
 The Owner-controlled repository runner must be a Windows x64 host registered

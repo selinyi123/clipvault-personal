@@ -9,7 +9,9 @@ permissions:
 
 concurrency:
   group: v2-daily-candidate-${{ github.ref }}
-  cancel-in-progress: false
+  # A candidate is immutable and only the newest run can be promoted. Do not
+  # let a queued native/device lane from an older run block the latest source.
+  cancel-in-progress: true
 
 jobs:
   policy_guard:
