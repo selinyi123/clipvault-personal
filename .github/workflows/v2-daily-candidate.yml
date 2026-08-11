@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
   group: v2-daily-candidate-${{ github.ref }}
@@ -38,6 +37,9 @@ jobs:
   runner_preflight:
     name: V2 Android runner preflight
     needs: policy_guard
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
