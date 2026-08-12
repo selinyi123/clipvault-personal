@@ -50,6 +50,19 @@ retry. A missing, malformed or session-mismatched CVPK is treated as invalid,
 clears that Slot and never ACKs. A process restart therefore cannot replay an
 acknowledged sequence.
 
+Revocation has a second durable authority: before deleting a CVPK, the native
+authority writes and reads back a 24-byte `CVRV` v1 tombstone at
+`ClipVault/OTP/Revoke/v1/<canonical-session-uuid>`, under the same per-session
+mutation mutex. The tombstone contains only the protocol marker and session
+epoch, never a verifier or OTP. A missing CVPK is still an idempotent delete,
+but a failed/transient delete leaves the tombstone in place. The Broker keeps a
+process-local fence for fast rejection before slot lookup and checks the
+durable marker while acquiring the CVPK under the same per-session mutex, so a
+stale CVPK restored after a Broker restart cannot recreate a revoked session.
+Malformed markers are deny-by-default; provider failures return unavailable.
+Tombstones are intentionally not deleted during normal re-pair cleanup because
+every new pair receives a fresh session epoch.
+
 ### Pair lifetime and nonce rotation
 
 One pair epoch has a sealed 4,096-entry nonce-history budget shared with the

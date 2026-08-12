@@ -11,6 +11,8 @@ namespace clipvault::otp::authority {
 namespace {
 
 constexpr std::array<std::uint8_t, 8> kHeader{'C', 'V', 'P', 'K', 1, 0, 0, 0};
+constexpr std::array<std::uint8_t, 8> kRevocationHeader{
+    'C', 'V', 'R', 'V', 1, 0, 0, 0};
 constexpr DWORD kCredentialType = CRED_TYPE_GENERIC;
 constexpr DWORD kCredentialPersist = CRED_PERSIST_LOCAL_MACHINE;
 
@@ -68,6 +70,46 @@ CredentialAcquireStatus ReadCredential(
                : CredentialAcquireStatus::kInvalid;
 }
 
+enum class RevocationReadStatus {
+  kMissing,
+  kValid,
+  kMalformed,
+  kUnavailable,
+};
+
+RevocationReadStatus ReadRevocationCredential(
+    const std::wstring& target, const crypto::UuidBytes& session_epoch) {
+  PCREDENTIALW credential = nullptr;
+  if (!CredReadW(target.c_str(), kCredentialType, 0, &credential)) {
+    return GetLastError() == ERROR_NOT_FOUND
+               ? RevocationReadStatus::kMissing
+               : RevocationReadStatus::kUnavailable;
+  }
+  std::array<std::uint8_t, kPairRevocationBytes> blob{};
+  const bool sized = credential != nullptr &&
+                     credential->CredentialBlobSize == blob.size() &&
+                     credential->CredentialBlob != nullptr;
+  if (sized) {
+    std::copy_n(credential->CredentialBlob, blob.size(), blob.begin());
+  }
+  if (credential != nullptr) {
+    if (credential->CredentialBlob != nullptr &&
+        credential->CredentialBlobSize <= kPairRevocationBytes) {
+      SecureZeroMemory(credential->CredentialBlob,
+                       credential->CredentialBlobSize);
+    }
+    CredFree(credential);
+  }
+  const bool valid = sized &&
+                     std::equal(kRevocationHeader.begin(),
+                                kRevocationHeader.end(), blob.begin()) &&
+                     std::equal(session_epoch.begin(), session_epoch.end(),
+                                blob.begin() + kRevocationHeader.size());
+  SecureZeroMemory(blob.data(), blob.size());
+  return valid ? RevocationReadStatus::kValid
+               : RevocationReadStatus::kMalformed;
+}
+
 bool WriteCredential(const std::wstring& target,
                      std::array<std::uint8_t, kPairCredentialBytes>* blob) {
   CREDENTIALW credential{};
@@ -79,6 +121,25 @@ bool WriteCredential(const std::wstring& target,
   wchar_t user_name[] = L"ClipVault OTP Pair v1";
   credential.UserName = user_name;
   return CredWriteW(&credential, 0) != FALSE;
+}
+
+bool WriteRevocationCredential(const std::wstring& target,
+                               const crypto::UuidBytes& session_epoch) {
+  std::array<std::uint8_t, kPairRevocationBytes> blob{};
+  std::copy(kRevocationHeader.begin(), kRevocationHeader.end(), blob.begin());
+  std::copy(session_epoch.begin(), session_epoch.end(),
+            blob.begin() + kRevocationHeader.size());
+  CREDENTIALW credential{};
+  credential.Type = kCredentialType;
+  credential.TargetName = const_cast<wchar_t*>(target.c_str());
+  credential.CredentialBlobSize = static_cast<DWORD>(blob.size());
+  credential.CredentialBlob = blob.data();
+  credential.Persist = kCredentialPersist;
+  wchar_t user_name[] = L"ClipVault OTP Revoke v1";
+  credential.UserName = user_name;
+  const bool written = CredWriteW(&credential, 0) != FALSE;
+  SecureZeroMemory(blob.data(), blob.size());
+  return written;
 }
 
 HANDLE AcquireNamedMutex(const std::wstring& name,
@@ -93,6 +154,21 @@ HANDLE AcquireNamedMutex(const std::wstring& name,
   CloseHandle(handle);
   return nullptr;
 }
+
+struct ScopedOwnedMutex final {
+  HANDLE value = nullptr;
+
+  explicit ScopedOwnedMutex(HANDLE handle) noexcept : value(handle) {}
+
+  ~ScopedOwnedMutex() {
+    if (value == nullptr) return;
+    ReleaseMutex(value);
+    CloseHandle(value);
+  }
+
+  ScopedOwnedMutex(const ScopedOwnedMutex&) = delete;
+  ScopedOwnedMutex& operator=(const ScopedOwnedMutex&) = delete;
+};
 
 }  // namespace
 
@@ -203,6 +279,18 @@ std::wstring PairCredentialAuthority::TargetForSession(
   return result;
 }
 
+std::wstring PairCredentialAuthority::RevocationTargetForSession(
+    const crypto::UuidBytes& value) {
+  if (!IsCanonicalUuidV4(value)) return {};
+  std::wstring result(kPairRevocationTargetPrefix);
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 4 || index == 6 || index == 8 || index == 10)
+      result.push_back(L'-');
+    AppendHexByte(&result, value[index]);
+  }
+  return result;
+}
+
 std::wstring PairCredentialAuthority::MutexForSession(
     const crypto::UuidBytes& session_epoch) {
   const auto target = TargetForSession(session_epoch);
@@ -233,6 +321,21 @@ CredentialAcquireStatus PairCredentialAuthority::AcquireDetailed(
     // Transfer the acquired handle to RAII immediately so every later failure,
     // including an unexpected C++ exception, releases the recursive mutex.
     lease->mutex_ = mutex;
+
+    // Check the durable tombstone while holding the same mutex as the CVPK
+    // read. This closes the revoke-vs-acquire race where a tombstone is
+    // installed after a process-local fence check and before CredReadW.
+    const auto revocation_status = ReadRevocationCredential(
+        RevocationTargetForSession(session_epoch), session_epoch);
+    if (revocation_status == RevocationReadStatus::kUnavailable) {
+      lease->Reset();
+      return CredentialAcquireStatus::kUnavailable;
+    }
+    if (revocation_status == RevocationReadStatus::kValid ||
+        revocation_status == RevocationReadStatus::kMalformed) {
+      lease->Reset();
+      return CredentialAcquireStatus::kInvalid;
+    }
 
     std::array<std::uint8_t, kPairCredentialBytes> blob{};
     PairCredential decoded;
@@ -284,19 +387,65 @@ bool PairCredentialAuthority::Revoke(
   try {
     if (mutex_budget_milliseconds == 0) return false;
     const auto target = TargetForSession(session_epoch);
+    const auto revocation_target = RevocationTargetForSession(session_epoch);
     const auto mutex_name = MutexForSession(session_epoch);
-    if (target.empty() || mutex_name.empty()) return false;
-    HANDLE mutex = AcquireNamedMutex(mutex_name, mutex_budget_milliseconds);
-    if (mutex == nullptr) return false;
+    if (target.empty() || revocation_target.empty() || mutex_name.empty())
+      return false;
+    ScopedOwnedMutex mutex{AcquireNamedMutex(mutex_name,
+                                             mutex_budget_milliseconds)};
+    if (mutex.value == nullptr) return false;
+
+    // Install and verify the durable tombstone before deleting CVPK.  The
+    // ordering is intentional: a crash or provider failure after this point
+    // leaves a fail-closed marker which a fresh Broker process can observe.
+    const auto tombstone =
+        ReadRevocationCredential(revocation_target, session_epoch);
+    bool tombstone_ready = tombstone == RevocationReadStatus::kValid;
+    if (!tombstone_ready) {
+      if (tombstone == RevocationReadStatus::kUnavailable ||
+          !WriteRevocationCredential(revocation_target, session_epoch) ||
+          ReadRevocationCredential(revocation_target, session_epoch) !=
+              RevocationReadStatus::kValid) {
+        return false;
+      }
+      tombstone_ready = true;
+    }
 
     const BOOL deleted = CredDeleteW(target.c_str(), kCredentialType, 0);
     const DWORD error = deleted ? ERROR_SUCCESS : GetLastError();
-    ReleaseMutex(mutex);
-    CloseHandle(mutex);
-    return deleted != FALSE || error == ERROR_NOT_FOUND;
+    return tombstone_ready && (deleted != FALSE || error == ERROR_NOT_FOUND);
   } catch (...) {
     return false;
   }
+}
+
+RevocationStatus PairCredentialAuthority::CheckRevocation(
+    const crypto::UuidBytes& session_epoch,
+    DWORD mutex_budget_milliseconds) noexcept {
+  try {
+    if (mutex_budget_milliseconds == 0) return RevocationStatus::kUnavailable;
+    const auto target = RevocationTargetForSession(session_epoch);
+    const auto mutex_name = MutexForSession(session_epoch);
+    if (target.empty() || mutex_name.empty())
+      return RevocationStatus::kUnavailable;
+    ScopedOwnedMutex mutex{AcquireNamedMutex(mutex_name,
+                                             mutex_budget_milliseconds)};
+    if (mutex.value == nullptr) return RevocationStatus::kUnavailable;
+    const auto status = ReadRevocationCredential(target, session_epoch);
+    switch (status) {
+      case RevocationReadStatus::kMissing:
+        return RevocationStatus::kNotRevoked;
+      case RevocationReadStatus::kValid:
+      case RevocationReadStatus::kMalformed:
+        // A marker at the canonical target is a deny-by-default condition.
+        return RevocationStatus::kRevoked;
+      case RevocationReadStatus::kUnavailable:
+        return RevocationStatus::kUnavailable;
+    }
+  } catch (...) {
+    return RevocationStatus::kUnavailable;
+  }
+  return RevocationStatus::kUnavailable;
 }
 
 bool PairCredentialAuthority::AdvanceHighSequence(

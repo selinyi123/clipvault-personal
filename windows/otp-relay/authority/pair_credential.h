@@ -12,6 +12,13 @@ namespace clipvault::otp::authority {
 inline constexpr std::size_t kPairCredentialBytes = 96;
 inline constexpr wchar_t kPairCredentialTargetPrefix[] =
     L"ClipVault/OTP/Pair/v1/";
+// A revocation tombstone is kept in a separate current-user Generic
+// Credential.  It is deliberately not a CVPK and therefore never contains a
+// verifier or high-water mark.  Its presence fences a stale CVPK even when a
+// CredDeleteW call was interrupted or failed and the Broker later restarts.
+inline constexpr std::size_t kPairRevocationBytes = 24;
+inline constexpr wchar_t kPairRevocationTargetPrefix[] =
+    L"ClipVault/OTP/Revoke/v1/";
 
 struct PairCredential final {
   broker::PairSession session;
@@ -33,6 +40,12 @@ enum class CredentialAcquireStatus {
   kAcquired,
   kUnavailable,
   kInvalid,
+};
+
+enum class RevocationStatus {
+  kNotRevoked,
+  kRevoked,
+  kUnavailable,
 };
 
 // Holds the per-session cross-process mutation mutex while exposing one
@@ -79,6 +92,12 @@ class PairCredentialAuthority final
   // revoked and therefore count as success.
   bool Revoke(const crypto::UuidBytes& session_epoch,
               DWORD mutex_budget_milliseconds = 100) noexcept;
+  // Reads the durable revocation tombstone under the same per-session mutex
+  // used by CVPK reads/deletes.  A malformed tombstone is fail-closed as
+  // kRevoked; provider failures are kUnavailable.
+  RevocationStatus CheckRevocation(
+      const crypto::UuidBytes& session_epoch,
+      DWORD mutex_budget_milliseconds = 100) noexcept;
   bool AdvanceHighSequence(const broker::PairSession& session,
                            std::uint64_t sequence) noexcept override;
 
@@ -89,6 +108,8 @@ class PairCredentialAuthority final
   static bool Encode(const PairCredential& credential,
                      std::uint8_t* bytes, std::size_t size) noexcept;
   static std::wstring TargetForSession(
+      const crypto::UuidBytes& session_epoch);
+  static std::wstring RevocationTargetForSession(
       const crypto::UuidBytes& session_epoch);
   static std::wstring MutexForSession(
       const crypto::UuidBytes& session_epoch);

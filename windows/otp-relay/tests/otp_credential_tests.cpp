@@ -122,6 +122,9 @@ int main() {
   authority::PairCredentialAuthority::Encode(record, blob.data(), blob.size());
   const auto target = authority::PairCredentialAuthority::TargetForSession(
       record.session.session_epoch);
+  const auto revocation_target =
+      authority::PairCredentialAuthority::RevocationTargetForSession(
+          record.session.session_epoch);
   const auto expected_mutex =
       L"Local\\ClipVaultOtpCredentialV1-" +
       target.substr(std::wcslen(authority::kPairCredentialTargetPrefix));
@@ -129,6 +132,11 @@ int main() {
                    record.session.session_epoch) == expected_mutex,
                "cross-language mutation mutex name is exact");
   CredDeleteW(target.c_str(), CRED_TYPE_GENERIC, 0);
+  CredDeleteW(revocation_target.c_str(), CRED_TYPE_GENERIC, 0);
+  authority::PairCredentialAuthority pre_authority;
+  ok &= Expect(pre_authority.CheckRevocation(record.session.session_epoch) ==
+                   authority::RevocationStatus::kNotRevoked,
+               "missing revocation tombstone is not revoked");
   const bool wrote = WriteTestCredential(target, &blob);
   ok &= Expect(wrote, "write current-user test CVPK");
   if (wrote) {
@@ -137,6 +145,30 @@ int main() {
     ok &= Expect(authority.Load(record.session.session_epoch, &loaded) &&
                      loaded.high_sequence == 0,
                  "load exact target");
+    std::array<std::uint8_t, authority::kPairRevocationBytes>
+        malformed_tombstone{};
+    malformed_tombstone[0] = 'C';
+    malformed_tombstone[1] = 'V';
+    malformed_tombstone[2] = 'R';
+    malformed_tombstone[3] = 'V';
+    CREDENTIALW malformed_credential{};
+    malformed_credential.Type = CRED_TYPE_GENERIC;
+    malformed_credential.TargetName =
+        const_cast<wchar_t*>(revocation_target.c_str());
+    malformed_credential.CredentialBlobSize =
+        static_cast<DWORD>(malformed_tombstone.size());
+    malformed_credential.CredentialBlob = malformed_tombstone.data();
+    malformed_credential.Persist = CRED_PERSIST_SESSION;
+    wchar_t malformed_username[] = L"ClipVault OTP malformed revoke test";
+    malformed_credential.UserName = malformed_username;
+    const bool malformed_written =
+        CredWriteW(&malformed_credential, 0) != FALSE;
+    ok &= Expect(malformed_written &&
+                     authority.CheckRevocation(record.session.session_epoch) ==
+                         authority::RevocationStatus::kRevoked,
+                 "malformed revocation tombstone denies by default");
+    CredDeleteW(revocation_target.c_str(), CRED_TYPE_GENERIC, 0);
+    crypto::SecureErase(malformed_tombstone);
     authority::PairCredentialLease reusable_lease;
     ok &= Expect(authority.Acquire(record.session.session_epoch,
                                    &reusable_lease) &&
@@ -165,6 +197,7 @@ int main() {
     crypto::SecureErase(persisted);
   }
   CredDeleteW(target.c_str(), CRED_TYPE_GENERIC, 0);
+  CredDeleteW(revocation_target.c_str(), CRED_TYPE_GENERIC, 0);
   crypto::SecureErase(blob);
   return ok ? 0 : 1;
 }

@@ -175,7 +175,11 @@ int wmain() {
   const auto credential_target =
       authority::PairCredentialAuthority::TargetForSession(
           session.session_epoch);
+  const auto revocation_target =
+      authority::PairCredentialAuthority::RevocationTargetForSession(
+          session.session_epoch);
   CredDeleteW(credential_target.c_str(), CRED_TYPE_GENERIC, 0);
+  CredDeleteW(revocation_target.c_str(), CRED_TYPE_GENERIC, 0);
   if (!WriteCvpk(session, credential_target)) return 3;
   authority::PairCredentialAuthority credential_authority;
   authority::PairCredential loaded_for_probe;
@@ -339,10 +343,26 @@ int wmain() {
   revoke_client.Close();
   revoke_server.join();
   ok &= Expect(revoke_server_result, "revoke server completes one exchange");
+  ok &= Expect(credential_authority.CheckRevocation(session.session_epoch) ==
+                   authority::RevocationStatus::kRevoked,
+               "revoke persists a durable tombstone");
   ok &= Expect(service.ArmLatest(context, GetCurrentProcessId(),
                                  GetCurrentThreadId(), GetTickCount64())
                        .status == broker::BrokerStatus::kNotFound,
                "revoked session has no pending OTP, claim, replay or key slot");
+  // Fault-model/restart proof: model a stale CVPK surviving external cleanup
+  // after the durable revocation tombstone was installed. A fresh Broker
+  // instance must still reject the old envelope without relying on the
+  // previous process's in-memory revoked_sessions_ fence.
+  ok &= Expect(WriteCvpk(session, credential_target),
+               "fault model restores stale CVPK after revoke");
+  broker::OtpBrokerService tombstone_restarted_service(&credential_authority);
+  ok &= Expect(tombstone_restarted_service.Offer(
+                           envelope, wall_now_ms, GetTickCount64()) ==
+                   broker::BrokerStatus::kRejected,
+               "durable revocation tombstone fences stale offer after restart");
+  CredDeleteW(credential_target.c_str(), CRED_TYPE_GENERIC, 0);
+  CredDeleteW(revocation_target.c_str(), CRED_TYPE_GENERIC, 0);
   if (test_window != nullptr) DestroyWindow(test_window);
 
   // A server that accepts but never replies must not outlive the one absolute

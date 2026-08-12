@@ -43,6 +43,10 @@ OtpBrokerService::AcquireCurrentCredentialLocked(
   if (authority_ == nullptr || lease == nullptr || slot.core == nullptr) {
     return authority::CredentialAcquireStatus::kUnavailable;
   }
+  // AcquireDetailed performs the durable revocation check while holding the
+  // same mutation mutex as the CVPK read.  Do not perform a separate check
+  // here: it would double Credential Manager I/O and could consume the short
+  // Host deadline without adding a stronger ordering guarantee.
   const auto status = authority_->AcquireDetailed(
       slot.session_epoch, lease,
       RemainingCredentialMutexBudget(deadline_tick));
