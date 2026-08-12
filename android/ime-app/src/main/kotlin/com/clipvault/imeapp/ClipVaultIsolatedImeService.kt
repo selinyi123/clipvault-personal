@@ -682,14 +682,24 @@ class ClipVaultIsolatedImeService : InputMethodService() {
     private fun renderCandidates() {
         val host = candidateHost ?: return
         host.removeAllViews()
+        val boundGeneration = inputGeneration
+        val boundSession = sessionId
+        fun isCurrentSurface(): Boolean =
+            boundGeneration == inputGeneration && boundSession != null && boundSession == sessionId
         if (state.hasPreviousPage) {
-            host.addView(key("‹", heightDp = CANDIDATE_KEY_HEIGHT_DP, accessibilityLabel = "上一页") { page(PageDirection.PREVIOUS) })
+            host.addView(key("‹", heightDp = CANDIDATE_KEY_HEIGHT_DP, accessibilityLabel = "上一页") {
+                if (isCurrentSurface()) page(PageDirection.PREVIOUS)
+            })
         }
         state.candidates.forEach { candidate ->
-            host.addView(key(candidate.text, heightDp = CANDIDATE_KEY_HEIGHT_DP) { select(candidate) })
+            host.addView(key(candidate.text, heightDp = CANDIDATE_KEY_HEIGHT_DP) {
+                if (isCurrentSurface()) select(candidate)
+            })
         }
         if (state.hasNextPage) {
-            host.addView(key("›", heightDp = CANDIDATE_KEY_HEIGHT_DP, accessibilityLabel = "下一页") { page(PageDirection.NEXT) })
+            host.addView(key("›", heightDp = CANDIDATE_KEY_HEIGHT_DP, accessibilityLabel = "下一页") {
+                if (isCurrentSurface()) page(PageDirection.NEXT)
+            })
         }
         if (host.childCount == 0) {
             host.addView(TextView(this).apply {
@@ -706,6 +716,7 @@ class ClipVaultIsolatedImeService : InputMethodService() {
     private fun renderRuntimeCandidates() {
         val host = runtimeHost ?: return
         host.removeAllViews()
+        val boundGeneration = inputGeneration
         runtimeCandidates.forEach { candidate ->
             val display = "${candidate.label} ${candidate.text.replace("\n", " ").take(24)}"
             val boundPublisherEpoch = candidate.publisherEpoch
@@ -723,6 +734,7 @@ class ClipVaultIsolatedImeService : InputMethodService() {
                 if (
                     context != null &&
                     context.clipVaultAllowed &&
+                    boundGeneration == inputGeneration &&
                     stillCurrent &&
                     SystemClock.elapsedRealtime() < candidate.expiresAtElapsedMs
                 ) {
