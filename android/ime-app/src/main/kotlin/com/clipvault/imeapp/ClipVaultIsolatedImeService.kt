@@ -879,9 +879,10 @@ class ClipVaultIsolatedImeService : InputMethodService() {
             variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
             variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD ||
             variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        val noSuggestions = (inputType and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS) != 0
         val sensitiveApp = sensitiveAppPolicy.isSensitive(info?.packageName)
-        val incognito = sensitiveApp || (info?.imeOptions ?: 0) and
-            EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING != 0
+        val incognito = sensitiveApp || noSuggestions ||
+            (info?.imeOptions ?: 0) and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING != 0
         val kind = when {
             password -> EngineFieldKind.PASSWORD
             inputType and InputType.TYPE_MASK_CLASS == InputType.TYPE_CLASS_NUMBER -> EngineFieldKind.NUMBER

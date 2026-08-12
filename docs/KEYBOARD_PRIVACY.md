@@ -27,7 +27,7 @@
 
 | 触发 | 判定 | 行为 |
 |---|---|---|
-| 密码/敏感输入域 | `EditorInfo.inputType` 含 password 变体，或 `IME_FLAG_NO_PERSONALIZED_LEARNING`（incognito，API 26+，minSdk 26） | 不展示 ClipVault 候选（KBD-4）、不学习（L2 学习关）、不保存、不同步 |
+| 密码/敏感输入域 | `EditorInfo.inputType` 含 password 变体、`TYPE_TEXT_FLAG_NO_SUGGESTIONS`，或 `IME_FLAG_NO_PERSONALIZED_LEARNING`（incognito，API 26+，minSdk 26） | 不展示 ClipVault 候选（KBD-4）、不学习（L2 学习关）、不保存、不同步 |
 | Secret Guard 命中 | SG-1 判定 is_secret | 该内容禁候选、禁学习、禁同步、禁 AI（P5） |
 | 敏感 App | ⏳ 名单与匹配规则随 v2.2-L 学习阶段冻结 | 同上（占位，不在此盲想具体名单） |
 
@@ -66,7 +66,7 @@
 下列可在 Android host-JVM 单测断言（无需真机），构成 v2.0 隐私门禁的自动化部分：
 
 1. 给定密码 `EditorInfo` → CandidateMixer 输出**无** ClipVault 候选，且**不**发出学习事件。
-2. 给定 `IME_FLAG_NO_PERSONALIZED_LEARNING` → 同上（incognito 抑制）。
+2. 给定 `TYPE_TEXT_FLAG_NO_SUGGESTIONS` 或 `IME_FLAG_NO_PERSONALIZED_LEARNING` → 同上（incognito 抑制）。
 3. 给定一串普通 L0/L1 输入后取消 → Room 无新增行、无同步事件（无键入痕迹）。
 4. 给定 SG-1 命中内容 → 不进候选、不进 outbox（复用既有 SG-1/同步测试）。
 5. 给定 OTP → 不创建 clip/memory/outbox 行；超时、消费、拒绝或撤销后正文不可再取得。
