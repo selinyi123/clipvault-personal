@@ -11,6 +11,7 @@ import android.util.Size
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.HapticFeedbackConstants
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InlineSuggestionsRequest
@@ -144,7 +145,17 @@ class ClipVaultIsolatedImeService : InputMethodService() {
     }
 
     override fun onCreateInputView(): View {
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            // Keep the candidate strip and keyboard inside the IME window's
+            // touchable content area. Android reserves the navigation bar
+            // inset separately, so an unrestricted wrap-content root can be
+            // drawn above the window while its buttons stop receiving taps.
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+        }
         inlineHost = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             visibility = View.GONE
@@ -663,13 +674,13 @@ class ClipVaultIsolatedImeService : InputMethodService() {
         val host = candidateHost ?: return
         host.removeAllViews()
         if (state.hasPreviousPage) {
-            host.addView(key("‹", accessibilityLabel = "上一页") { page(PageDirection.PREVIOUS) })
+            host.addView(key("‹", heightDp = CANDIDATE_KEY_HEIGHT_DP, accessibilityLabel = "上一页") { page(PageDirection.PREVIOUS) })
         }
         state.candidates.forEach { candidate ->
-            host.addView(key(candidate.text) { select(candidate) })
+            host.addView(key(candidate.text, heightDp = CANDIDATE_KEY_HEIGHT_DP) { select(candidate) })
         }
         if (state.hasNextPage) {
-            host.addView(key("›", accessibilityLabel = "下一页") { page(PageDirection.NEXT) })
+            host.addView(key("›", heightDp = CANDIDATE_KEY_HEIGHT_DP, accessibilityLabel = "下一页") { page(PageDirection.NEXT) })
         }
         if (host.childCount == 0) {
             host.addView(TextView(this).apply {
@@ -692,7 +703,7 @@ class ClipVaultIsolatedImeService : InputMethodService() {
             val boundSnapshotGeneration = candidate.snapshotGeneration
             val boundCandidateId = candidate.candidateId
             val boundText = candidate.text
-            host.addView(key(display) {
+            host.addView(key(display, heightDp = CANDIDATE_KEY_HEIGHT_DP) {
                 val context = activeContext
                 val stillCurrent = runtimeCandidates.any { currentCandidate ->
                     currentCandidate.publisherEpoch == boundPublisherEpoch &&
@@ -890,13 +901,14 @@ class ClipVaultIsolatedImeService : InputMethodService() {
     private fun key(
         label: String,
         weight: Float = 1f,
+        heightDp: Int = KEY_HEIGHT_DP,
         accessibilityLabel: String = label,
         action: () -> Unit,
     ) = Button(this).apply {
         text = label
         isAllCaps = false
         contentDescription = accessibilityLabel
-        layoutParams = LinearLayout.LayoutParams(0, dp(48), weight)
+        layoutParams = LinearLayout.LayoutParams(0, dp(heightDp), weight)
         setOnClickListener {
             if (ImePreferences.hapticFeedbackEnabled(this@ClipVaultIsolatedImeService)) {
                 performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -909,7 +921,7 @@ class ClipVaultIsolatedImeService : InputMethodService() {
         text = "⌫"
         isAllCaps = false
         contentDescription = "删除"
-        layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
+        layoutParams = LinearLayout.LayoutParams(0, dp(KEY_HEIGHT_DP), 1f)
         setOnTouchListener { view, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -945,6 +957,11 @@ class ClipVaultIsolatedImeService : InputMethodService() {
     }
 
     private companion object {
+        // The IME window includes the navigation-bar inset. Five 48dp rows
+        // overflow the touchable content area on common 440dpi devices;
+        // reserve headroom so the candidate strip remains clickable.
+        const val KEY_HEIGHT_DP = 42
+        const val CANDIDATE_KEY_HEIGHT_DP = 40
         const val RIME_READY_POLL_MS = 50L
         const val RIME_WAIT_TIMEOUT_MS = 15_000L
     }
