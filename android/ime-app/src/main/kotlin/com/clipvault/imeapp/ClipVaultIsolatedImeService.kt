@@ -97,6 +97,7 @@ class ClipVaultIsolatedImeService : InputMethodService() {
         super.onStartInput(attribute, restarting)
         backspaceRepeater.release()
         finishEngine(clearEditorComposition = true)
+        clearInlineSurface()
         inputGeneration += 1
         runtimeClient?.cancelPending()
         runtimeCandidates = emptyList()
@@ -120,6 +121,7 @@ class ClipVaultIsolatedImeService : InputMethodService() {
     override fun onFinishInput() {
         backspaceRepeater.release()
         commitComposition()
+        clearInlineSurface()
         inputGeneration += 1
         runtimeClient?.cancelPending()
         runtimeCandidates = emptyList()
@@ -131,6 +133,7 @@ class ClipVaultIsolatedImeService : InputMethodService() {
 
     override fun onDestroy() {
         inputGeneration += 1
+        clearInlineSurface()
         backspaceRepeater.release()
         mainHandler.removeCallbacksAndMessages(null)
         runtimeClient?.unbind()
@@ -263,6 +266,12 @@ class ClipVaultIsolatedImeService : InputMethodService() {
             }
         }
         return true
+    }
+
+    private fun clearInlineSurface() {
+        inlineGeneration += 1
+        inlineHost?.removeAllViews()
+        inlineHost?.visibility = View.GONE
     }
 
     private fun startEngine(context: EngineInputContext) {
