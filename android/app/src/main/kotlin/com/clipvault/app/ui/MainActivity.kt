@@ -212,7 +212,7 @@ private fun SetupCard(
         Column(Modifier.padding(14.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                Text(if (allDone) "✅ ClipVault 输入法已就绪" else "开始使用 ClipVault 键盘",
+                Text(if (allDone) "✅ ClipVault 输入法已就绪" else "开始使用 ClipVault 输入法",
                     style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "收起" else "展开") }
             }
@@ -220,15 +220,15 @@ private fun SetupCard(
                 Spacer(Modifier.height(8.dp))
                 Step(1, "启用 ClipVault 输入法", enabled,
                     "在系统设置里把 ClipVault 键盘打开（一次性）。", "去启用", onEnable)
-                Step(2, "切换到 ClipVault 键盘", selected,
-                    "在任意输入框点右下角键盘图标，选 ClipVault。用完切回你常用的输入法。",
+                Step(2, "切换到 ClipVault 输入法", selected,
+                    "在任意输入框点右下角键盘图标，选 ClipVault。它支持中文、英文、数字、符号和快捷内容。",
                     "切换键盘", onSwitch)
                 Step(3, "配对桌面（可选）", paired,
                     "想看电脑同步的剪切板/词库？在电脑面板点「配对设备」拿一次性码。", "配对", onPair)
                 Spacer(Modifier.height(8.dp))
-                Text("它是什么：ClipVault 是一个「面板键盘」——切到它，面板里有最近剪切板、" +
-                    "电脑同步内容、常用词/短语/Prompt/命令，点一下直接粘贴；不是用来打字的，" +
-                    "是用来快速调取你存过的内容的。",
+                Text("它是什么：ClipVault 是一个完整的日常输入法——可以直接输入中文、英文、数字和符号；" +
+                    "同时提供最近剪贴板、电脑同步内容、常用词/短语/Prompt/命令等快捷入口，" +
+                    "所有保存和同步动作都需要明确的用户操作。",
                     style = MaterialTheme.typography.bodySmall)
             }
         }
