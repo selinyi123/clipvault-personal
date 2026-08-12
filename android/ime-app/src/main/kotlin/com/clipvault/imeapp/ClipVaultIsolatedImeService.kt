@@ -684,8 +684,12 @@ class ClipVaultIsolatedImeService : InputMethodService() {
         host.removeAllViews()
         val boundGeneration = inputGeneration
         val boundSession = sessionId
+        val boundRevision = state.revision
         fun isCurrentSurface(): Boolean =
-            boundGeneration == inputGeneration && boundSession != null && boundSession == sessionId
+            boundGeneration == inputGeneration &&
+                boundSession != null &&
+                boundSession == sessionId &&
+                boundRevision == state.revision
         if (state.hasPreviousPage) {
             host.addView(key("‹", heightDp = CANDIDATE_KEY_HEIGHT_DP, accessibilityLabel = "上一页") {
                 if (isCurrentSurface()) page(PageDirection.PREVIOUS)
@@ -693,7 +697,12 @@ class ClipVaultIsolatedImeService : InputMethodService() {
         }
         state.candidates.forEach { candidate ->
             host.addView(key(candidate.text, heightDp = CANDIDATE_KEY_HEIGHT_DP) {
-                if (isCurrentSurface()) select(candidate)
+                if (
+                    isCurrentSurface() &&
+                    state.candidates.any { current ->
+                        current.id == candidate.id && current.text == candidate.text
+                    }
+                ) select(candidate)
             })
         }
         if (state.hasNextPage) {
