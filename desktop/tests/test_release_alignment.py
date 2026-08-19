@@ -1270,55 +1270,24 @@ def test_agent_workflows_status_anchor_avoids_stale_test_counts_and_overclaims()
     assert "Linux/CI 跑通 + 4 项 Windows-only" not in workflows
 
 
-def test_handoff_current_state_anchors_v1_6_gate_before_v1_7_or_v2_work():
+def test_handoff_current_state_tracks_published_v1_6_baseline_only():
     handoff = _read("docs/HANDOFF.md")
 
     current_state = handoff.split("## Current development note", 1)[0]
-    assert "v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning" in current_state
-    assert "Issue #36 remains open" in current_state
-    assert "Owner-controlled final Windows artifacts, signed Android artifacts" in current_state
-    assert "Owner-approved GitHub Release publication" in current_state
-    assert "v1.7 stays planning/stability-only" in current_state
-    assert "v2.0 stays planning/stability-only" in current_state
-    assert "docs/STABILITY_PLAN_V2_0.md" in current_state
-    assert "dedicated Owner-approved v2.0 release-gate issue" in current_state
-    assert "signed Windows/Android artifacts" not in current_state
-    assert "v2.1 V2-S004" not in current_state
+    assert "`v1.6.0` was published on 2026-07-30" in current_state
+    assert "531d177b4485a5f32f97229a8d571969f6edf536" in current_state
+    assert "Issue #36 is closed by explicit Owner risk exception" in current_state
+    assert "15 pass, 0 fail, and 10 blocked" in current_state
+    assert "only resets README, HANDOFF, and Issue #82" in current_state
+    assert "No v1.7 feature implementation, version bump, or later-version work is authorized" in current_state
+    assert "| Last updated | 2026-07-31 |" in current_state
 
     current_development_note = handoff.split("## Current development note", 1)[1].split(
-        "## Recent completed note", 1
+        "## Current development note", 1
     )[0]
-    assert "tools/release_readiness.py" in current_development_note
-    assert re.search(r"without\s+triggering\s+workflows,\s+setting\s+secrets,\s+creating\s+releases", current_development_note)
-    assert re.search(r"prints\s+the\s+exact\s+unchecked\s+release-gate\s+checklist\s+items", current_development_note)
-    assert "docs/STABILITY_PLAN_V2_0.md" in current_development_note
-    assert "dual-IME entrypoint stability milestone" in current_development_note
-    assert "does not claim" in current_development_note
-    assert "v2.0 stable" in current_development_note
-    assert "tools/v2_keyboard_readiness.py" in current_development_note
-    assert "does not call GitHub, trigger workflows" in current_development_note
-
-    current_version = handoff.split("## Current Version Status", 1)[1].split(
-        "## Hardening Support Line Snapshot", 1
-    )[0]
-    assert "`v1.6.0` GitHub Release is not published" in current_version
-    assert "Latest downloadable binaries remain **v1.5.10**" in current_version
-    assert re.search(r"do not cite stale fixed test counts as\s+current release evidence", current_version)
-    assert "Issue #36 remains the release gate" in current_version
-    assert "final Windows artifacts, signed Android" in current_version
-    for stale_release_evidence in (
-        "桌面 134 测试",
-        "166 项 Linux 跑通",
-        "4 项 Windows-only",
-        "signed Windows/Android artifacts",
-    ):
-        assert stale_release_evidence not in current_version
-
-    assert "## v1.6 Release Gate — Issue #36 OPEN" in handoff
-    release_gate = handoff.split("## v1.6 Release Gate — Issue #36 OPEN", 1)[1]
-    assert re.search(r"v1\.6\s+stable/release is not complete", release_gate)
-    assert "Owner-controlled final" in release_gate
-    assert "signed Android artifacts" in release_gate
-    assert "signed Windows/Android artifacts" not in release_gate
-    assert re.search(r"must not claim\s+`v1\.7\.0` stable or published", release_gate)
-    assert "v1.6 Entry Gate" not in handoff
+    assert "post-v1.6.0 baseline reset" in current_development_note
+    assert "Closure records an explicit Owner risk exception, not complete manual QA" in current_development_note
+    assert "only corrects README, this HANDOFF, and Issue #82" in current_development_note
+    assert "does not authorize sync, IME, TLS, Windows TSF" in current_development_note
+    assert "historical evidence" in current_development_note
+    assert "superseded by this note" in current_development_note
