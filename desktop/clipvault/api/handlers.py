@@ -9,6 +9,13 @@ import re
 from clipvault import __version__
 from clipvault.core import origin_metadata, secret_guard
 from clipvault.core import suggest as suggest_core
+from clipvault.otp.ingress import (
+    OTP_BROKER_FORWARD_TIMEOUT_S,
+    OtpOpaqueIngress,
+    OtpOpaqueIngressError,
+    OtpOpaqueIngressPort,
+    OtpPairIdentityPort,
+)
 from clipvault.service import ClipVaultService
 from clipvault.store.backup_queue_repo import BackupQueueRepo
 from clipvault.store.clips_repo import ClipsRepo
@@ -151,13 +158,33 @@ def _lan_reachable(host: str) -> bool:
 
 
 class Api:
-    def __init__(self, service: ClipVaultService, pairing: Pairing | None = None):
+    def __init__(
+        self,
+        service: ClipVaultService,
+        pairing: Pairing | None = None,
+        *,
+        otp_ingress_port: OtpOpaqueIngressPort | None = None,
+        otp_pair_identity_port: OtpPairIdentityPort | None = None,
+        otp_now_ms=None,
+        otp_broker_timeout_s: float = OTP_BROKER_FORWARD_TIMEOUT_S,
+    ):
         self.service = service
         self.conn = service.conn
         self.clips = ClipsRepo(self.conn)
         self.memory = MemoryRepo(self.conn)
         self.peers = PeersRepo(self.conn)
         self.pairing = pairing or Pairing()
+        self.otp_ingress = OtpOpaqueIngress(
+            otp_ingress_port,
+            otp_pair_identity_port,
+            now_ms=otp_now_ms,
+            broker_timeout_s=otp_broker_timeout_s,
+        )
+
+    def close(self) -> None:
+        """Release ephemeral integration buffers; safe to call repeatedly."""
+
+        self.otp_ingress.close()
 
     def health(self) -> tuple[int, dict]:
         try:
@@ -629,6 +656,32 @@ class Api:
 
     def auth_ok(self, token: str | None) -> bool:
         return self._auth_device(token) is not None
+
+    def otp_relay(
+        self,
+        token: str | None,
+        raw_body: bytes | bytearray,
+    ) -> tuple[int, dict]:
+        """Synchronously route one opaque envelope; never persist or decrypt it."""
+
+        peer = self._auth_device(token)
+        if peer is None:
+            return 401, {
+                "error": {"code": "unauthorized", "message": "bad token"}
+            }
+        try:
+            receipt = self.otp_ingress.relay(
+                raw_body,
+                authenticated_sync_device_id=peer["device_id"],
+            )
+        except OtpOpaqueIngressError as exc:
+            return exc.http_status, {
+                "error": {
+                    "code": exc.security_code,
+                    "message": "OTP relay rejected",
+                }
+            }
+        return 202, {"status": "accepted", "event_hash": receipt.event_hash}
 
     def sync_push(self, token: str | None, body: dict) -> tuple[int, dict]:
         peer = self._auth_device(token)

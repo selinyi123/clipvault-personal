@@ -19,6 +19,10 @@ from clipvault.api import server as api_server
 from clipvault.backup import cancellation as backup_cancellation
 from clipvault.backup.github_backup import BackupWorker
 from clipvault.config import Config
+from clipvault.otp.ingress import (
+    DisabledOtpOpaqueIngressPort,
+    DisabledOtpPairIdentityPort,
+)
 from clipvault.runtime.obsidian_worker import ObsidianWorker
 from clipvault.service import ClipVaultService
 from clipvault.store import db
@@ -45,6 +49,8 @@ class RuntimeAdapters:
     connect: Callable = db.connect
     migrate: Callable = db.migrate
     api_serve: Callable = _RUNTIME_API_SERVE
+    otp_ingress_port_factory: Callable = DisabledOtpOpaqueIngressPort
+    otp_pair_identity_port_factory: Callable = DisabledOtpPairIdentityPort
     watcher_factory: Callable = PollingWatcher
     obsidian_worker_factory: Callable = ObsidianWorker
     backup_worker_factory: Callable = BackupWorker
@@ -221,6 +227,10 @@ class ClipVaultRuntime:
             api_serve = partial(
                 api_serve,
                 on_preflight_complete=self._api_preflight_complete.set,
+                otp_ingress_port_factory=self.adapters.otp_ingress_port_factory,
+                otp_pair_identity_port_factory=(
+                    self.adapters.otp_pair_identity_port_factory
+                ),
             )
         else:
             # Injected adapters retain their historical signature and own any

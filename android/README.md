@@ -47,6 +47,24 @@ gradle :core:test        # 仅需 JDK + Gradle + Maven Central，无需 Android 
 - 捕获即过 Secret Guard（gate A）；密钥本地隔离，**不进 outbox、不同步、不入全文**（gate B）。
 - Android 10+ 禁止后台读剪贴板——本应用不申请、不轮询；采集靠分享/手动/输入法显式动作。
 
+## OTP Relay JCA / 在线传输切片
+
+`app/otp/OtpRelayProducer.kt` 使用 JCA AES-256-GCM 和规范化 HKDF-SHA256，
+其 key、AAD、ciphertext 和独立 16-byte tag 与
+`contracts/vectors/otp_aead_v1.json` 逐字节一致。OTP 专用 pair verifier、
+session、sequence 和 `device:<UUIDv4>` 身份只能由显式注入的 pair-material
+port 提供；普通 sync bearer 只由 `app/sync/OtpRelayHttpTransport.kt` 用于认证
+一次严格在线的 `POST /api/otp/relay`，不会参与密钥派生。
+
+所有捕获、pair-material 和 transport port 默认禁用。本切片没有增加
+`READ_SMS`、`RECEIVE_SMS`、Autofill Service、Room/outbox、WorkManager、剪贴板或
+离线重试路径。网络失败会立即丢弃并清零应用层拥有的敏感缓冲。
+
+当前仓库仍是同时承载 Runtime 与 IME service 的单 APK，原有普通同步所需
+`INTERNET` 权限仍属于整个安装包；本切片没有完成“双 APK、IME 包无网络权限”
+的物理权限隔离。真实 SMS Code Autofill/经审核短信捕获、OTP pair-material
+供给与设备端测试仍是启用自动中继前的必要门禁。
+
 ## 构建（已实测）
 
 本仓库已用 Gradle 8.10.2 + JDK 21 + Android SDK(platform-34/build-tools-34.0.0) 实测：
