@@ -15,7 +15,13 @@ AppPublisher={#AppPublisher}
 DefaultDirName={localappdata}\Programs\ClipVault
 DefaultGroupName=ClipVault
 DisableProgramGroupPage=yes
+#ifdef ClipVaultImeV2PackageDir
+; The v2 TSF profile registration is a mixed-scope Windows operation and must
+; be compiled only into the explicitly elevated v2 installer variant.
+PrivilegesRequired=admin
+#else
 PrivilegesRequired=lowest
+#endif
 OutputDir=dist
 OutputBaseFilename=ClipVault-Setup-v{#AppVersion}
 SetupIconFile=..\desktop\packaging\clipvault.ico
@@ -58,3 +64,7 @@ Filename: "{app}\{#AppExe}"; Description: "启动 ClipVault（开始监听剪贴
 
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/C exit /B 0"; Flags: runhidden; RunOnceId: "killcv"
+
+#ifdef ClipVaultImeV2PackageDir
+#include "..\windows\ime\installer\ClipVaultImeV2.iss.inc"
+#endif

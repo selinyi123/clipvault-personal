@@ -1,0 +1,50 @@
+# ClipVault-owned minimal schema over the Apache-2.0 pinyin_simp dictionary.
+# It deliberately has no dependency on rime-prelude or rime-stroke, so every
+# platform can deploy from the same audited canonical asset set.
+schema:
+  schema_id: clipvault_pinyin
+  name: ClipVault Pinyin
+  version: "2"
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [ 中文, English ]
+
+engine:
+  processors:
+    - ascii_composer
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - punct_translator
+    - script_translator
+
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcba
+  delimiter: " '"
+  algebra:
+    - abbrev/^([a-z]).+$/$1/
+    - abbrev/^([zcs]h).+$/$1/
+    - derive/^([nl])ue$/$1ve/
+    - derive/^([jqxy])u/$1v/
+
+translator:
+  dictionary: pinyin_simp
+  enable_completion: true
+  enable_sentence: true
+  enable_user_dict: true
+  preedit_format:
+    - xform/([nl])v/$1ü/
+    - xform/([nl])ue/$1üe/
+    - xform/([jqxy])v/$1u/
+
+punctuator:
+  import_preset: clipvault_punctuation

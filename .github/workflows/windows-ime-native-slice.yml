@@ -1,0 +1,63 @@
+name: Windows IME production native
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'windows/ime/**'
+      - 'windows/otp-relay/**'
+      - 'docs/CONTRACTS_RUNTIME_SNAPSHOT_V1.md'
+      - 'contracts/vectors/runtime_snapshot_v1.json'
+      - 'shared-input/rime/**'
+      - 'spikes/windows-ime/protocol/**'
+      - 'spikes/windows-ime/vectors/**'
+      - 'spikes/windows-ime/tools/**'
+      - '.github/workflows/windows-ime-native-slice.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  x64-host-x86-x64-tsf-production-package:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate protocol and production boundaries
+        shell: pwsh
+        run: |
+          python spikes/windows-ime/tools/validate_bootstrap.py
+          python spikes/windows-ime/tools/run_engine_slice_conformance.py
+          python windows/ime/tools/validate_native_skeleton.py
+      - name: Fetch hash-locked official librime SDK
+        shell: pwsh
+        run: |
+          & windows/ime/scripts/Prepare-RimeSdk.ps1 `
+            -CacheDirectory (Join-Path $env:RUNNER_TEMP 'clipvault-rime')
+      - name: Fetch commit-locked production dictionary
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:RUNNER_TEMP 'rime-pinyin-simp-source'
+          git init $source
+          git -C $source remote add origin https://github.com/rime/rime-pinyin-simp.git
+          git -C $source fetch --depth 1 origin 0c6861ef7420ee780270ca6d993d18d4101049d0
+          if ((git -C $source rev-parse FETCH_HEAD).Trim() -ne `
+              '0c6861ef7420ee780270ca6d993d18d4101049d0') {
+            throw 'rime-pinyin-simp commit lock mismatch'
+          }
+          git -C $source checkout FETCH_HEAD -- AUTHORS LICENSE pinyin_simp.dict.yaml
+      - name: Install Inno Setup compiler
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+      - name: Build x64 Host, x64/x86 TSF clients, and production package
+        shell: pwsh
+        run: |
+          $cache = Join-Path $env:RUNNER_TEMP 'clipvault-rime\librime-1.16.1-msvc-x64\extracted\dist'
+          $dictionary = Join-Path $env:RUNNER_TEMP 'rime-pinyin-simp-source'
+          & windows/ime/scripts/Build-ProductionIme.ps1 `
+            -RimeSdkDirectory $cache -RimeDictionaryDirectory $dictionary `
+            -BuildRoot (Join-Path $env:RUNNER_TEMP 'ime-build') `
+            -PackageDirectory (Join-Path $env:RUNNER_TEMP 'ime-package')

@@ -1,0 +1,10 @@
+{
+  "id": "invalid-surrogate-split",
+  "expected_result": "reject",
+  "preedit": "A😀B",
+  "caret_utf16": 2,
+  "segments": [
+    {"start_utf16": 0, "end_utf16": 2},
+    {"start_utf16": 2, "end_utf16": 4}
+  ]
+}

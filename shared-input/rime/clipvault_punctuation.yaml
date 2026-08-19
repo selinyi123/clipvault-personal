@@ -1,0 +1,46 @@
+# ClipVault-owned punctuation preset. It intentionally has no dependency on
+# rime-prelude or any platform package so Android and Windows behave alike.
+config_version: "1"
+
+punctuator:
+  full_shape:
+    ' ' : { commit: '　' }
+    ',' : { commit: ， }
+    '.' : { commit: 。 }
+    '<' : { commit: 《 }
+    '>' : { commit: 》 }
+    '?' : { commit: ？ }
+    ';' : { commit: ； }
+    ':' : { commit: ： }
+    '''' : { pair: [ '‘', '’' ] }
+    '"' : { pair: [ '“', '”' ] }
+    '\' : { commit: 、 }
+    '!' : { commit: ！ }
+    '(' : （
+    ')' : ）
+    '[' : 【
+    ']' : 】
+    '{' : 〔
+    '}' : 〕
+    '^' : { commit: …… }
+    '_' : { commit: —— }
+  half_shape:
+    ',' : { commit: ， }
+    '.' : { commit: 。 }
+    '<' : { commit: 《 }
+    '>' : { commit: 》 }
+    '?' : { commit: ？ }
+    ';' : { commit: ； }
+    ':' : { commit: ： }
+    '''' : { pair: [ '‘', '’' ] }
+    '"' : { pair: [ '“', '”' ] }
+    '\' : { commit: 、 }
+    '!' : { commit: ！ }
+    '(' : （
+    ')' : ）
+    '[' : 【
+    ']' : 】
+    '{' : 〔
+    '}' : 〕
+    '^' : { commit: …… }
+    '_' : { commit: —— }

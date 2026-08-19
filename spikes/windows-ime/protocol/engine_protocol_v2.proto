@@ -1,0 +1,270 @@
+syntax = "proto3";
+
+package clipvault.windows.ime.v2;
+
+option optimize_for = LITE_RUNTIME;
+
+// Every pipe frame carries an explicit protocol version. Protocol v2 is local
+// IPC only; it does not define network transport or persistence. On the Named
+// Pipe, each serialized protobuf Frame is prefixed by one unsigned 32-bit
+// big-endian byte length. The payload must be 1..1048576 bytes and an exact
+// frame; zero, truncated, oversized, or trailing-byte frames close the
+// connection fail closed. Every connection begins ClientHello -> HostHello;
+// all application frames wait for that handshake, including after Host restart.
+message Frame {
+  uint32 protocol_version = 1;
+
+  oneof payload {
+    ClientHello client_hello = 10;
+    HostHello host_hello = 11;
+    StartSessionRequest start_session_request = 20;
+    ProcessKeyRequest process_key_request = 21;
+    SelectCandidateRequest select_candidate_request = 22;
+    PageCandidatesRequest page_candidates_request = 23;
+    CommitCompositionRequest commit_composition_request = 24;
+    CancelCompositionRequest cancel_composition_request = 25;
+    EndSessionRequest end_session_request = 26;
+    SetOptionRequest set_option_request = 27;
+    EngineState engine_state = 30;
+    SessionEnded session_ended = 31;
+    ErrorResponse error_response = 32;
+  }
+}
+
+message ClientHello {
+  string client_instance_id = 1;
+  repeated uint32 supported_protocol_versions = 2;
+  InputPlatform platform = 3;
+  string architecture = 4;
+  string build_id = 5;
+}
+
+message HostHello {
+  // Semantic equivalent of the shared contract's host_epoch: a fresh opaque,
+  // unpredictable value for every external Host process lifetime.
+  string host_instance_id = 1;
+  uint32 selected_protocol_version = 2;
+  string engine_build_id = 3;
+  repeated string capabilities = 4;
+}
+
+enum InputPlatform {
+  INPUT_PLATFORM_UNSPECIFIED = 0;
+  INPUT_PLATFORM_ANDROID = 1;
+  INPUT_PLATFORM_WINDOWS = 2;
+}
+
+enum InputFieldKind {
+  INPUT_FIELD_KIND_UNKNOWN = 0;
+  INPUT_FIELD_KIND_TEXT = 1;
+  INPUT_FIELD_KIND_MULTILINE = 2;
+  INPUT_FIELD_KIND_EMAIL = 3;
+  INPUT_FIELD_KIND_URL = 4;
+  INPUT_FIELD_KIND_NUMBER = 5;
+  INPUT_FIELD_KIND_PHONE = 6;
+  INPUT_FIELD_KIND_PASSWORD = 7;
+  INPUT_FIELD_KIND_OTP = 8;
+}
+
+enum InputAction {
+  INPUT_ACTION_NONE = 0;
+  INPUT_ACTION_ENTER = 1;
+  INPUT_ACTION_DONE = 2;
+  INPUT_ACTION_GO = 3;
+  INPUT_ACTION_NEXT = 4;
+  INPUT_ACTION_SEARCH = 5;
+  INPUT_ACTION_SEND = 6;
+}
+
+message InputContext {
+  InputPlatform platform = 1;
+  InputFieldKind field_kind = 2;
+  InputAction action = 3;
+  bool incognito = 4;
+  bool learning_allowed = 5;
+  bool clipvault_allowed = 6;
+  // Opaque and local to the active session. It is never networked or written
+  // to content logs and never contains selected/surrounding/typed text.
+  optional string app_scope = 7;
+}
+
+message StartSessionRequest {
+  // The client creates a fresh opaque ID. It is valid only for the current
+  // host_instance_id and becomes invalid when the host process restarts.
+  string host_instance_id = 1;
+  string session_id = 2;
+  uint64 request_seq = 3;
+  InputContext context = 4;
+}
+
+message KeyEvent {
+  uint32 virtual_key = 1;
+  string text = 2;
+  bool key_down = 3;
+  bool repeat = 4;
+  bool shift = 5;
+  bool control = 6;
+  bool alt = 7;
+}
+
+message ProcessKeyRequest {
+  string host_instance_id = 1;
+  string session_id = 2;
+  uint64 request_seq = 3;
+  uint64 expected_revision = 4;
+  KeyEvent event = 5;
+}
+
+message SelectCandidateRequest {
+  string host_instance_id = 1;
+  string session_id = 2;
+  uint64 request_seq = 3;
+  uint64 expected_revision = 4;
+  // Selection is never by array index. The ID is stable for the logical
+  // candidate only within its current composition generation and host/session.
+  // A new composition, session end, or host restart invalidates it. It is
+  // opaque and never encodes plaintext, page number, or array position.
+  string candidate_id = 5;
+}
+
+enum PageDirection {
+  PAGE_DIRECTION_UNSPECIFIED = 0;
+  PAGE_DIRECTION_PREVIOUS = 1;
+  PAGE_DIRECTION_NEXT = 2;
+}
+
+message PageCandidatesRequest {
+  string host_instance_id = 1;
+  string session_id = 2;
+  uint64 request_seq = 3;
+  uint64 expected_revision = 4;
+  PageDirection direction = 5;
+}
+
+message CommitCompositionRequest {
+  string host_instance_id = 1;
+  string session_id = 2;
+  uint64 request_seq = 3;
+  uint64 expected_revision = 4;
+}
+
+message CancelCompositionRequest {
+  string host_instance_id = 1;
+  string session_id = 2;
+  uint64 request_seq = 3;
+  uint64 expected_revision = 4;
+}
+
+message SetOptionRequest {
+  string host_instance_id = 1;
+  string session_id = 2;
+  uint64 request_seq = 3;
+  uint64 expected_revision = 4;
+  string option = 5;
+  bool enabled = 6;
+}
+
+message EndSessionRequest {
+  string host_instance_id = 1;
+  string session_id = 2;
+  uint64 request_seq = 3;
+  // Cleanup is sequenced but intentionally has no revision precondition. The
+  // Host accepts the next request_seq, wipes the live session, and retains at
+  // most a bounded content-free tombstone so an exact retry is idempotent.
+  reserved 4;
+  reserved "expected_revision";
+}
+
+enum CompositionSegmentKind {
+  COMPOSITION_SEGMENT_KIND_UNSPECIFIED = 0;
+  COMPOSITION_SEGMENT_KIND_RAW = 1;
+  COMPOSITION_SEGMENT_KIND_CONVERTED = 2;
+  COMPOSITION_SEGMENT_KIND_SELECTED = 3;
+}
+
+message CompositionSegment {
+  // Offsets use UTF-16 code units, matching Windows text APIs. They are not
+  // UTF-8 byte offsets or Unicode scalar indexes.
+  uint32 start_utf16 = 1;
+  uint32 end_utf16 = 2;
+  CompositionSegmentKind kind = 3;
+}
+
+enum CandidateSource {
+  CANDIDATE_SOURCE_UNSPECIFIED = 0;
+  CANDIDATE_SOURCE_ENGINE = 1;
+}
+
+message EngineCandidate {
+  string candidate_id = 1;
+  string text = 2;
+  optional string comment = 3;
+  CandidateSource source = 4;
+  double engine_score = 5;
+}
+
+enum EngineMode {
+  ENGINE_MODE_UNSPECIFIED = 0;
+  ENGINE_MODE_DIRECT = 1;
+  ENGINE_MODE_COMPOSING = 2;
+  ENGINE_MODE_SELECTING = 3;
+  ENGINE_MODE_DISABLED = 4;
+}
+
+message CandidatePage {
+  uint32 page_index = 1;
+  uint32 page_size = 2;
+  bool has_previous_page = 3;
+  bool has_next_page = 4;
+}
+
+message EngineState {
+  string host_instance_id = 1;
+  string session_id = 2;
+  uint64 ack_request_seq = 3;
+  uint64 revision = 4;
+  bool handled = 5;
+  string preedit = 6;
+  uint32 caret_utf16 = 7;
+  repeated CompositionSegment segments = 8;
+  repeated EngineCandidate candidates = 9;
+  CandidatePage page = 10;
+  // A cached response may repeat this value after transport loss. The TSF
+  // client applies it at most once using bounded state for the typed
+  // (host_instance_id, session_id) and a monotonic ack_request_seq high-water
+  // mark. It reserves a new sequence before the editor effect and retires the
+  // session on an ambiguous edit result. The Host returns a byte-equivalent
+  // cached response; deduplication is a client projection rule and does not
+  // require another wire field. Production cache cleanup still requires the
+  // fail-closed acknowledgement/retry-deadline gate in UPSTREAM_LOCK.json.
+  optional string commit_text = 11;
+  bool composition_active = 12;
+  EngineMode mode = 13;
+}
+
+message SessionEnded {
+  string host_instance_id = 1;
+  string session_id = 2;
+  uint64 ack_request_seq = 3;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_UNSUPPORTED_PROTOCOL = 1;
+  ERROR_CODE_STALE_SESSION = 2;
+  ERROR_CODE_SESSION_NOT_FOUND = 3;
+  ERROR_CODE_STALE_REVISION = 4;
+  ERROR_CODE_OUT_OF_ORDER_REQUEST = 5;
+  ERROR_CODE_INVALID_CANDIDATE = 6;
+  ERROR_CODE_INVALID_ARGUMENT = 7;
+  ERROR_CODE_UNAVAILABLE = 8;
+}
+
+message ErrorResponse {
+  ErrorCode code = 1;
+  string current_host_instance_id = 2;
+  string session_id = 3;
+  uint64 ack_request_seq = 4;
+  uint64 current_revision = 5;
+  bool invalidates_session = 6;
+}

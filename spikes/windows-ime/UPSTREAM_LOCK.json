@@ -1,0 +1,134 @@
+{
+  "format_version": 2,
+  "verified_on": "2026-08-01",
+  "verification_source": "official GitHub release API plus an external recursive checkout of the pinned librime commit",
+  "clipvault": {
+    "repository": "selinyi123/clipvault-personal",
+    "base_sha": "f6785b4db8ed8e4ca1231f53fab369688711ee4a",
+    "authorization": {
+      "development_integration_allowed": true,
+      "local_binary_build_allowed": true,
+      "binary_artifact_upload_allowed": false,
+      "local_hkcu_registration_allowed": true,
+      "system_wide_registration_allowed": false,
+      "external_cache_acquisition_allowed": true,
+      "vendor_upstream_source_allowed": false,
+      "production_release_allowed": false
+    }
+  },
+  "components": [
+    {
+      "id": "typeduc_windows_frontend",
+      "role": "reference baseline for out-of-process Windows TSF architecture",
+      "repository": "TypeDuck-HK/TypeDuck-Windows",
+      "resolved_from_ref": "main",
+      "commit": "1ac3af3b44e7478a0f1c7c153bceabf6aa7efb3b",
+      "commit_date": "2026-06-30",
+      "license": "MIT",
+      "mode": "reference-only-not-in-build",
+      "source_present": false,
+      "root_license_status": "VERIFIED",
+      "submodule_boundary": {
+        "status": "UNRESOLVED_REFERENCE_ONLY",
+        "entries": []
+      }
+    },
+    {
+      "id": "typeduc_windows_backend",
+      "role": "reference baseline for external librime Host architecture",
+      "repository": "TypeDuck-HK/TypeDuck-Windows-backend",
+      "resolved_from_ref": "main",
+      "commit": "af3636a40c9081a7862664e422a6e34ac69fafd6",
+      "commit_date": "2026-06-30",
+      "license": "MIT",
+      "mode": "reference-only-not-in-build",
+      "source_present": false,
+      "root_license_status": "VERIFIED",
+      "submodule_boundary": {
+        "status": "UNRESOLVED_REFERENCE_ONLY",
+        "entries": []
+      }
+    },
+    {
+      "id": "libime2",
+      "role": "reference TSF helper used by TypeDuck, not linked by ClipVault",
+      "repository": "EasyIME/libIME2",
+      "resolved_from_ref": "master",
+      "commit": "717b1901a417667405399cfbf25b25664efcf0e4",
+      "commit_date": "2026-05-17",
+      "license": "LGPL-2.1",
+      "license_variant_status": "EXACT_ONLY_OR_LATER_VARIANT_UNRESOLVED",
+      "mode": "reference-only-not-in-build",
+      "source_present": false,
+      "root_license_status": "VERIFIED",
+      "submodule_boundary": {
+        "status": "UNRESOLVED_REFERENCE_ONLY",
+        "entries": []
+      }
+    },
+    {
+      "id": "librime",
+      "role": "shared local Chinese input engine loaded only by the external Host",
+      "repository": "rime/librime",
+      "resolved_from_ref": "1.16.1",
+      "commit": "de4700e9f6b75b109910613df907965e3cbe0567",
+      "commit_date": "2026-01-20",
+      "license": "BSD-3-Clause",
+      "mode": "official-binary-sdk-external-cache",
+      "source_present": true,
+      "source_location_policy": "external-cache-only",
+      "root_license_status": "VERIFIED",
+      "binary_lock": "windows/ime/rime/RIME_SDK_LOCK.json",
+      "submodule_boundary": {
+        "status": "RESOLVED_RECURSIVE_EXTERNAL_CACHE",
+        "entries": [
+          {"path": "deps/glog", "commit": "7b134a5c82c0c0b5698bb6bf7a835b230c5638e4", "license": "BSD-3-Clause"},
+          {"path": "deps/googletest", "commit": "f8d7d77c06936315286eb55f8de22cd23c188571", "license": "BSD-3-Clause"},
+          {"path": "deps/leveldb", "commit": "99b3c03b3284f5886f9ef9a4ef703d57373e61be", "license": "BSD-3-Clause"},
+          {"path": "deps/leveldb/third_party/benchmark", "commit": "bf585a2789e30585b4e3ce6baf11ef2750b54677", "license": "Apache-2.0"},
+          {"path": "deps/leveldb/third_party/googletest", "commit": "c27acebba3b3c7d94209e0467b0a801db4af73ed", "license": "BSD-3-Clause"},
+          {"path": "deps/marisa-trie", "commit": "3e87d53b78e15f2f43783d5e376561a8c9722051", "license": "BSD-2-Clause OR LGPL-2.1-or-later"},
+          {"path": "deps/opencc", "commit": "556ed22496d650bd0b13b6c163be9814637970ae", "license": "Apache-2.0"},
+          {"path": "deps/yaml-cpp", "commit": "2f86d13775d119edbb69af52e5f566fd65c6953b", "license": "MIT"}
+        ]
+      }
+    }
+  ],
+  "relationship_boundaries": [
+    {
+      "from": "typeduc_windows_frontend",
+      "to": "libime2",
+      "status": "REFERENCE_ONLY_NOT_IN_SELECTED_BUILD",
+      "required_evidence": "required only if the selected project-authored TSF implementation is replaced"
+    },
+    {
+      "from": "typeduc_windows_backend",
+      "to": "librime",
+      "status": "REFERENCE_ONLY_NOT_IN_SELECTED_BUILD",
+      "required_evidence": "required only if the selected project-authored Host is replaced"
+    },
+    {
+      "from": "typeduc_windows_frontend",
+      "to": "typeduc_windows_backend",
+      "status": "REFERENCE_ONLY_NOT_IN_SELECTED_BUILD",
+      "required_evidence": "required only if TypeDuck becomes a production dependency"
+    }
+  ],
+  "protocol_gate": {
+    "review_status": "PRODUCTION_SOURCE_IMPLEMENTED_RELEASE_HARDENING_OPEN",
+    "unresolved_items": [
+      "native byte-equivalent duplicate-response cache and bounded acknowledgement cleanup",
+      "a production installer-supervised Host restart and update handoff",
+      "ARM64 TSF client using the same protocol vectors",
+      "application compatibility evidence beyond automated Host and protocol tests"
+    ]
+  },
+  "license_gate": {
+    "review_status": "LOCAL_POC_ONLY",
+    "unresolved_items": [
+      "package the full official-binary transitive license and NOTICE closure",
+      "owner/legal approval of the hash-locked ClipVault schemas and rime-pinyin-simp dictionary",
+      "connect source/license delivery to the Windows installer and release artifacts"
+    ]
+  }
+}
