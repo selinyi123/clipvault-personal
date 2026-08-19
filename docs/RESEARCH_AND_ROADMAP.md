@@ -7,9 +7,11 @@
 > 为主线提供稳固 Runtime，不替代主线。
 >
 > **版本标签澄清**：下文 "v1.6 / v1.7 / v1.8" 是**里程碑/PR 标签**，**不是**版本号变更。
-> 截至 2026-06-28，源码 `__version__` 已 bump 到 **1.6.0**（Owner 裁定，反映累计加固；未切 Release），最新已发布二进制仍为 **v1.5.10**。
+> `v1.6.0` 已于 2026-07-30 发布；Issue #36 按 Owner 风险豁免关闭，不能把 10 个 blocked 人工项描述成通过。
 > 各项落地状态见 [docs/HANDOFF.md](HANDOFF.md) 的 *Hardening Support Line Snapshot*（PRs #4–#15）。
 > 是否 bump 版本号 + 切新 Release 由 Owner 裁决。
+> 2026-08-01 起的 Android/Windows/OTP/ASR 扩大研究使用
+> [THIRD_PARTY_INPUT_RESEARCH_MATRIX](THIRD_PARTY_INPUT_RESEARCH_MATRIX.md)；本文继续只记录 v1.x 加固支线，避免混账。
 
 ## Core goal (the anchor for all research)
 

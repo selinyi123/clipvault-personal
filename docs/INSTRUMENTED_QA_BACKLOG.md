@@ -1,8 +1,9 @@
 # Instrumented QA backlog (residual device-only checks)
 
 The historical IME manual QA residuals were automated as far as the host JVM
-allows, then carried forward into the current Issue #36 / v1.6.0 manual QA
-gate (`docs/MANUAL_QA_V1_6_0.md`). Five checks still exercise live IME
+allows, then carried forward from the Issue #36 / v1.6.0 manual QA
+gate (`docs/MANUAL_QA_V1_6_0.md`). Issue #36 was closed by Owner risk exception,
+not by turning blocked rows into passes. Five checks still exercise live IME
 behaviour and on-screen rendering; they cannot run on the host JVM and need an
 instrumented (`androidTest`) run on a device or emulator.
 
@@ -13,7 +14,8 @@ Until a device/emulator cycle is picked up, the checks are encoded as
 CI now compiles the `androidTest` source set with AndroidX Test dependencies so
 the residual QA scaffolds cannot drift out of buildability. It still does not run
 `connectedDebugAndroidTest`, does not enable/select the IME on a device, and does
-not satisfy the Owner/manual QA gate for Issue #36.
+not supply the missing device evidence. These checks remain v2.0 stability debt
+despite the historical release-gate exception.
 
 ## Residual checks
 
@@ -154,12 +156,10 @@ cd android
 
 - The five `@Ignore` annotations are removed and the assertions are real.
 - `connectedDebugAndroidTest` passes on a device/emulator.
-- `docs/MANUAL_QA_V1_6_0.md` and the Issue #36 evidence comment are updated to
-  point at the now-live instrumented tests instead of this backlog.
+- The v2.0 device-evidence record points at the now-live instrumented tests;
+  historical v1.6 evidence remains immutable and is not rewritten as passing.
 - The current IME sprint acceptance checklist is executed against the exact
   recorded commit, with no clip contents or device serials included in evidence.
-- Issue #36 still requires the final signed APK declared-device lane. An
-  official emulator is eligible only when the exact signed release APK and all
-  strict Draft/commit/digest/signer bindings are recorded; an unsigned debug
-  APK result does not close the release gate, and emulator evidence does not
-  claim OEM or physical-hardware coverage.
+- A debug/emulator result does not prove signed-release behavior, OEM coverage
+  or physical-hardware coverage. Any future release gate must bind its exact
+  signed APK, commit, digest, signer and declared device lane.

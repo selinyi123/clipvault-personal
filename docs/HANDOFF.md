@@ -8,15 +8,47 @@
 |---|---|
 | Project | ClipVault Personal |
 | Mode | Personal / non-commercial |
-| Primary platform | Windows Desktop (Python 3.12) |
-| Mobile platform | Android (Kotlin) |
+| Primary platform | Windows Desktop Runtime (Python) + native TSF PoC |
+| Mobile platform | Android Runtime/IME (Kotlin) + librime PoC |
 | Knowledge base | Obsidian |
 | Repo | github.com/selinyi123/clipvault-personal（public；源码仓库不含个人数据，运行时备份用独立 private 仓库） |
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
-| Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
-| Last updated | 2026-07-23 |
+| Current slice | v2.1 cross-platform input foundation: isolated Android engine, Windows TSF/Host protocol and OTP memory-core PoCs on separate branches. No production integration, merge, release or stability claim follows from the PoCs. |
+| Last updated | 2026-08-01 |
+
+## Current development note - 2026-08-01 / v2 input foundation authorized
+
+- [`v1.6.0`](https://github.com/selinyi123/clipvault-personal/releases/tag/v1.6.0) was published on
+  2026-07-30 from `531d177b4485a5f32f97229a8d571969f6edf536`. Issue #36 was closed with state reason
+  `NOT_PLANNED` by explicit Owner risk exception. The final worksheet remains 15 pass, 0 fail and
+  10 blocked; this is not complete manual QA evidence.
+- Owner authorized the next-stage design and isolated development on 2026-08-01. The common base is
+  `f6785b4db8ed8e4ca1231f53fab369688711ee4a`, which already contains the v2.1 librime Android PoC
+  bootstrap. The original dirty `main` worktree is intentionally preserved.
+- Four independent branches/worktrees are active: `codex/v2-next-foundation`, `codex/v2-android-ime`,
+  `codex/v2-windows-ime` and `codex/v2-otp-relay`. They may produce local changes and focused test
+  evidence, but this authorization does not by itself authorize commit, push, merge, release, version
+  bump, production package split, TSF registration or publishing third-party binary artifacts.
+- The accepted next-stage boundary is documented in `NEXT_PHASE_V2_INPUT_FOUNDATION.md`, ADR-0013
+  through ADR-0016, `CONTRACTS_INPUT_ENGINE_V2.md` and `CONTRACTS_OTP_RELAY.md`.
+- Branch-local PoC evidence recorded on 2026-08-01:
+  - Foundation contract/governance checks passed: 6 input-foundation tests plus 53 release-alignment
+    tests. The stable `ENG2-V001..V008` assertion manifest contains 32 assertion IDs and is checked
+    against the canonical JSON byte-for-byte by both the foundation and Android PoC evidence paths.
+  - Android session-contract static validation passed. Gradle `check` executed 8 canonical Engine
+    Protocol V2 semantic groups plus `verifySessionContract`: 17 synthetic cases / 94 steps.
+  - Windows Engine Protocol V2 conformance passed 17/17 tests and its static validator passed.
+    `--require-build-ready` intentionally remains fail-closed because native TSF/Host integration,
+    upstream source/submodule review and transitive-license review are not complete.
+  - OTP Relay memory-core/coordinator tests passed: 54 focused tests. This core has no SMS capture,
+    E2EE transport, platform UI or production integration.
+- These results validate contracts and test doubles only. They are not evidence of real librime/JNI,
+  Android IME, Windows TSF registration/compatibility, SMS permission approval, E2EE transport or release
+  readiness.
+- Older notes below remain historical evidence. Statements that v1.6.0 is unpublished or Issue #36 is
+  open are superseded by this note and must not be used as current release status.
 
 ## Current development note - 2026-07-23 / v1.6 clipboard privacy probe markers
 
@@ -1279,9 +1311,9 @@ Issue #3 closed 2026-06-26（state_reason: completed，closed_by: selinyi123，A
 - visible version metadata aligned — ✅ 全对齐 1.5.16；
 - no v1.5 blocker open — ✅。
 
-## v1.6 Release Gate — Issue #36 OPEN
+## Historical snapshot before v1.6 publication — Issue #36 was open
 
-Issue #3 is closed, so v1.6 source-tree hardening may proceed; however v1.6 stable/release is not complete. Issue #36 remains open until the repository has
+At the time of this historical snapshot, Issue #3 was closed and v1.6 source-tree hardening could proceed, but v1.6 stable/release was not complete. Issue #36 remained open until the repository had
 current-main CI and release-candidate dry-run evidence, Owner-controlled final
 Windows artifacts, signed Android artifacts, recorded manual QA evidence, and
 Owner-approved final GitHub Release publication.

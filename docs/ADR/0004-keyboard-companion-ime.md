@@ -1,6 +1,7 @@
 # ADR-0004: Keyboard Personal 是伴随式 IME（companion IME）
 
-状态：Accepted（2026-06-12）
+状态：Accepted for v1（2026-06-12）；v2 产品目标已由 ADR-0008 与 ADR-0013 修订为主输入法，
+本文只保留 Panel IME 的历史行为与迁移兼容依据。
 
 ## 背景
 不做拼音引擎（Non-goal），但 Android 的 IME 是全有或全无：成为当前输入法才能读剪切板、commitText。中文用户不可能把无拼音的键盘设为默认。

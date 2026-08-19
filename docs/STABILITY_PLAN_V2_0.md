@@ -1,10 +1,11 @@
 # ClipVault Personal v2.0 Stability Plan
 
-Date: 2026-07-04
+Date: 2026-08-01
 
-This plan defines what "v2.0 stable" means for the keyboard mainline. It does
-not change the current release authority: Issue #36 remains the v1.6.0 release
-gate, and `docs/STABILITY_PLAN_V1_6_V1_7.md` remains the v1.7 stability gate.
+This plan defines what "v2.0 stable" means for the keyboard mainline. `v1.6.0`
+was published and Issue #36 was closed by explicit Owner risk exception with
+15 pass, 0 fail and 10 blocked manual rows. Those blocked rows remain inherited
+stability debt; `docs/STABILITY_PLAN_V1_6_V1_7.md` remains the v1.7 stability gate.
 
 ## Scope lock
 
@@ -24,10 +25,9 @@ The authoritative v2.0 scope is `ROADMAP_V2_KEYBOARD.md` and `GATES.md`:
 Do not claim v2.0 stable until all prerequisites are true and recorded in
 `docs/HANDOFF.md` plus a dedicated v2.0 release-gate issue:
 
-1. Issue #36 / v1.6.0 is closed with current-main CI, current-main
-   release-candidate dry run, Owner-controlled final Windows artifacts, signed
-   Android artifacts, manual QA evidence, and Owner-approved GitHub Release
-   publication.
+1. Issue #36 / v1.6.0 is closed by recorded Owner risk exception and the
+   published Release exists. The ten blocked manual rows remain explicitly
+   visible and cannot be treated as satisfying v2.0 device evidence.
 2. The v1.7 stable exit criteria in
    `docs/STABILITY_PLAN_V1_6_V1_7.md` are satisfied, or Owner explicitly
    defers a listed v1.7 row in the v2.0 release-gate issue.
@@ -53,8 +53,9 @@ Do not claim v2.0 stable until all prerequisites are true and recorded in
 Use this order. Do not start a later lane to avoid evidence missing in an earlier
 lane.
 
-1. **Release-gate lane:** keep Issue #36 and v1.7 exit evidence current. This
-   lane blocks any stable v2.0 claim but does not block planning.
+1. **Inherited-evidence lane:** preserve the Issue #36 risk-exception record and
+   keep v1.7 exit evidence current. Missing device evidence blocks any stable
+   v2.0 claim but does not block isolated planning or PoCs.
 2. **V2.0 audit lane:** compare current Panel IME and Keyboard Lab behavior
    against `GATES.md`, `CONTRACTS_KEYBOARD.md`, and `KEYBOARD_PRIVACY.md`.
 3. **Static guard lane:** add tests for any claim that can be proven without a
@@ -75,8 +76,8 @@ lane.
 
 - Do not wire librime/fcitx5 into the production IME. That is v2.1 and remains
   gated by `docs/SLICES/V2-S004-librime-build-poc.md`.
-- Do not start v2.2 CandidateMixer until the v2.1 engine choice is proven and
-  approved.
+- Do not start the v2.2 Android production engine/candidate surfaces until the
+  v2.1 engine choice and Engine Protocol V2 are proven and approved.
 - Do not add typed-text learning, analytics, behavior profiling, cloud AI, or
   automatic saving of committed text.
 - Do not add network work inside any IME service.

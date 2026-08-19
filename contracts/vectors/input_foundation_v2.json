@@ -1,0 +1,262 @@
+{
+  "format_version": 1,
+  "source": "project-authored synthetic semantics",
+  "contains_personal_data": false,
+  "typed_text_persistence_allowed": false,
+  "network_allowed": false,
+  "suites": {
+    "engine_protocol_v2": {
+      "protocol_version": 2,
+      "required_platforms": [
+        "android",
+        "windows"
+      ],
+      "cases": [
+        {
+          "id": "ENG2-V001",
+          "name": "composition candidate selection and commit",
+          "platforms": [
+            "android",
+            "windows"
+          ],
+          "assertions": [
+            "client-provided opaque session starts idempotently at request sequence one and revision zero",
+            "a lost Start response is retried with the same session identity and sequence",
+            "candidate selection uses a stable opaque ID",
+            "successful selection commits exactly once",
+            "composition and candidate state are cleared after commit"
+          ]
+        },
+        {
+          "id": "ENG2-V002",
+          "name": "paging and stale state rejection",
+          "platforms": [
+            "android",
+            "windows"
+          ],
+          "assertions": [
+            "paging advances revision monotonically",
+            "stale revision produces no editor effect",
+            "expired candidate ID produces no editor effect",
+            "candidate array position is never a selection identity"
+          ]
+        },
+        {
+          "id": "ENG2-V003",
+          "name": "duplicate response editor projection",
+          "platforms": [
+            "android",
+            "windows"
+          ],
+          "assertions": [
+            "duplicate request receives the cached transition",
+            "client reserves the response sequence before editor mutation",
+            "cached commit response is projected at most once",
+            "a contiguous response with stale or malformed state retires before editor projection",
+            "applied-response state is bounded per live typed session"
+          ]
+        },
+        {
+          "id": "ENG2-V004",
+          "name": "ambiguous editor result retires session",
+          "platforms": [
+            "android",
+            "windows"
+          ],
+          "assertions": [
+            "ambiguous editor result retires the current session",
+            "unconfirmed key streams are not replayed automatically",
+            "old response cannot mutate the editor after retirement"
+          ]
+        },
+        {
+          "id": "ENG2-V005",
+          "name": "host restart isolation",
+          "platforms": [
+            "android",
+            "windows"
+          ],
+          "assertions": [
+            "new host epoch invalidates all prior sessions",
+            "same-epoch transport session loss also returns stale session and opens a new identity",
+            "old candidate IDs fail closed",
+            "client clears preedit candidates and applied-response state",
+            "new input requires a new session"
+          ]
+        },
+        {
+          "id": "ENG2-V006",
+          "name": "UTF-16 caret and segment boundaries",
+          "platforms": [
+            "android",
+            "windows"
+          ],
+          "assertions": [
+            "caret uses UTF-16 code units",
+            "segments form a contiguous ordered preedit partition",
+            "segment boundaries do not split a surrogate pair"
+          ]
+        },
+        {
+          "id": "ENG2-V007",
+          "name": "password and incognito privacy context",
+          "platforms": [
+            "android",
+            "windows"
+          ],
+          "assertions": [
+            "ClipVault candidate surface is disabled",
+            "learning is disabled",
+            "no typed content is logged persisted or networked"
+          ]
+        },
+        {
+          "id": "ENG2-V008",
+          "name": "session cleanup and bounded response cache",
+          "platforms": [
+            "android",
+            "windows"
+          ],
+          "assertions": [
+            "end session wipes content-bearing state",
+            "response cache is removed after authenticated acknowledgement or retry deadline",
+            "duplicate request fingerprints never retain raw key text",
+            "session tombstones contain no input content and remain bounded"
+          ]
+        }
+      ]
+    },
+    "otp_relay_v1": {
+      "protocol_version": 1,
+      "required_platforms": [
+        "core"
+      ],
+      "cases": [
+        {
+          "id": "OTP-V001",
+          "name": "single claim use consume and acknowledgement",
+          "platforms": [
+            "core"
+          ],
+          "assertions": [
+            "one claim can expose one bounded mutable lease",
+            "all later use attempts fail",
+            "payload is wiped before terminal acknowledgement"
+          ]
+        },
+        {
+          "id": "OTP-V002",
+          "name": "authenticated replay rejection",
+          "platforms": [
+            "core"
+          ],
+          "assertions": [
+            "duplicate event nonce identity is rejected",
+            "same or lower sender sequence remains rejected for the session",
+            "independent authenticated senders have independent high-water marks"
+          ]
+        },
+        {
+          "id": "OTP-V003",
+          "name": "monotonic expiry",
+          "platforms": [
+            "core"
+          ],
+          "assertions": [
+            "wire expiry is authenticated before admission",
+            "one local absolute monotonic deadline is derived",
+            "retry cannot extend expiry",
+            "expired payload is wiped and never queued"
+          ]
+        },
+        {
+          "id": "OTP-V004",
+          "name": "target and claim-context binding",
+          "platforms": [
+            "core"
+          ],
+          "assertions": [
+            "wrong target is rejected",
+            "wrong nonce is rejected",
+            "claim context uses a strong sink kind and canonical opaque token",
+            "the same claim context is revalidated at secret use",
+            "stale or mismatched claim context is rejected before lease creation"
+          ]
+        },
+        {
+          "id": "OTP-V005",
+          "name": "bounded capacity",
+          "platforms": [
+            "core"
+          ],
+          "assertions": [
+            "global and per-target capacity are bounded",
+            "overflow fails closed without evicting a live credential",
+            "rejected transferred input buffer is wiped"
+          ]
+        },
+        {
+          "id": "OTP-V006",
+          "name": "concurrent terminal operations",
+          "platforms": [
+            "core"
+          ],
+          "assertions": [
+            "use acknowledgement dismissal revocation and expiry cannot consume twice",
+            "consumer callback runs outside the global store lock",
+            "detached lease is wiped in a finally path"
+          ]
+        },
+        {
+          "id": "OTP-V007",
+          "name": "process lock and target cleanup",
+          "platforms": [
+            "core"
+          ],
+          "assertions": [
+            "lock process-stop clear and target revocation wipe live payloads",
+            "terminal events do not enter an offline outbox",
+            "session replacement rejects envelopes from the old epoch"
+          ]
+        },
+        {
+          "id": "OTP-V008",
+          "name": "cross-device transport fails closed before E2EE",
+          "platforms": [
+            "core"
+          ],
+          "assertions": [
+            "unpaired target cannot receive an envelope",
+            "missing authenticated E2EE capability rejects transmission",
+            "local synthetic flow cannot be labeled cross-device Beta"
+          ]
+        },
+        {
+          "id": "OTP-V009",
+          "name": "redaction and no persistence",
+          "platforms": [
+            "core"
+          ],
+          "assertions": [
+            "OTP plaintext ciphertext and nonce are absent from repr and diagnostics",
+            "sender target and claim metadata accept only canonical content-free identifiers",
+            "no database file clipboard history or ordinary sync event is created",
+            "only bounded non-content diagnostics are allowed"
+          ]
+        },
+        {
+          "id": "OTP-V010",
+          "name": "monotonic clock regression",
+          "platforms": [
+            "core"
+          ],
+          "assertions": [
+            "clock regression wipes all live payloads",
+            "store instance closes permanently",
+            "new events require a fresh authenticated session"
+          ]
+        }
+      ]
+    }
+  }
+}

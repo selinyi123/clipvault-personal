@@ -1,7 +1,28 @@
 # ClipVault Personal — 系统架构（ARCHITECTURE）
 
-> 状态：v1.0 冻结（2026-06-12，Architect: Claude Fable 5）
+> 状态：v1.0 已实现拓扑冻结；v2 输入基础目标边界于 2026-08-01 增补。
 > 所有数据结构、协议、格式的精确定义在 CONTRACTS.md；本文件回答"系统长什么样、为什么这么分、出错时怎么办"。
+
+## 0. v2 输入基础目标边界
+
+下文 §1–§12 继续描述已实现的 v1.6 Runtime。v2 不把复杂输入逻辑塞进这些既有进程，而是在
+保持 Runtime 的前提下增加隔离入口：
+
+```text
+Android IME APK (no network/SMS) ──signature Binder── Android Companion Runtime
+
+Windows app ──TSF── thin ClipVaultTextService.dll
+                         │ per-user ACL pipe / Engine Protocol V2
+                         ▼
+                  external librime Host
+                         │ asynchronous filtered snapshot
+                         ▼
+                  existing Python Desktop Runtime
+```
+
+系统 Inline Autofill、Rime 引擎候选与 ClipVault 工具栏首版分层显示。OTP 使用独立临时协议，
+不进入下文的 SQLite/Room/outbox/clipboard 历史。完整目标、版本与停止条件见
+`NEXT_PHASE_V2_INPUT_FOUNDATION.md`。
 
 ## 1. 系统拓扑
 
@@ -42,7 +63,7 @@
 |---|---|---|
 | Desktop | 监听、分类、入库 Obsidian、备份 GitHub、同步服务端、Memory 主存 | — |
 | Android App | 采集（分享/手动）、本地缓存、同步客户端 | 后台监听剪切板（系统不允许）、直接写 Obsidian、直接推 GitHub |
-| Keyboard IME | 展示面板、一键粘贴、显式保存 | 记录按键流、自动上传、网络请求 |
+| Keyboard IME | v1 面板；v2 本地基础输入、Rime 候选与 ClipVault 工具栏 | 记录按键流、自动上传、逐键访问网络/数据库 |
 | GitHub | 灾难恢复备份 | 同步、实时通道 |
 
 ## 2. 核心架构决策（详见 docs/ADR/）
@@ -52,10 +73,16 @@
 | 0001 | 桌面是主节点 | 只有桌面能稳定后台监听剪切板 + 直接访问 Vault 与 git |
 | 0002 | 事件日志式同步，不做状态同步 | clip 是追加型事实，按设备单调序号复制即可，避免 CRDT/冲突复杂度 |
 | 0003 | GitHub 备份只存 JSONL，不存 Markdown 镜像 | 单一可恢复事实源，避免双写漂移；Vault 想备份就自己做 git 仓库 |
-| 0004 | Keyboard 是伴随式 IME | 不做拼音就当不了默认键盘；按需切入、用完切回是唯一现实路径 |
+| 0004 | v1 Keyboard 是伴随式 IME | v1 Panel 的历史边界；v2 已由 0008/0013 演进为主输入法目标 |
 | 0005 | Desktop=Python，Android=Kotlin | 自用规模性能足够，Codex 产出质量最高，用户可维护 |
 | 0006 | Secret Guard 三道闸门 | 捕获、出口、备份序列化三处独立拦截，单点失效不漏 |
 | 0007 | v1 推荐引擎纯确定性 | 可解释、可测、零延迟焦虑；AI 是 P2 且仅显式触发 |
+| 0008 | v1 演进为 Runtime，允许主输入法 | 键入用于输入，显式保存才成为资产 |
+| 0010 | 中文引擎采用 librime，Android 壳 A/B 待证据 | 复用成熟引擎但不跳过构建、许可与集成验证 |
+| 0013 | Android 包与 Windows 进程隔离 | 网络、数据库、Python 和复杂引擎不进入 IME/TSF 宿主关键路径 |
+| 0014 | Engine Protocol V2 + 分层候选面 | 用 session/revision/stable ID 取代异步不安全的数组下标 |
+| 0015 | Windows 第一 PoC 评估 TypeDuck/libIME2 边界 | 先复用并验证 TSF/Host 分离，不提前宣称 production 选型 |
+| 0016 | OTP Relay 是临时凭据通道 | 不污染剪切板、持久化、学习和普通同步 |
 
 ## 3. 桌面端模块分解
 

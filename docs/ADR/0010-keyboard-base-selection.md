@@ -4,6 +4,11 @@
 2026-07-02 工具链/许可/验证增补见 [V2-S004](../SLICES/V2-S004-librime-build-poc.md) 与
 [build PoC 去重调研](../RESEARCH_V2_1_BUILD_POC_2026_07_02.md)。
 
+> 2026-08-01 修订：本 ADR 的 `engine=librime` 与 A/B build-PoC 裁决继续有效；“单一 APK”与
+> “Rime/ClipVault 立即统一混排”不再是 A 路线优势或终裁条件。包/进程目标由 ADR-0013 修订为
+> 无网络 IME APK + Companion Runtime，首版候选面由 ADR-0014 修订为分层展示。V2-S004 评分时
+> 必须删除这两个已 superseded 的假设。
+
 ## 背景
 
 Full Keyboard Lab（PR4）已有可用英文键盘 + ClipVault 工具栏，但无中文。范围刹车规定
@@ -32,8 +37,8 @@ ClipVault **不从零做拼音引擎**，要接成熟开源引擎。需裁决：
 
 3. **长期键盘底座 = 二选一，待 build PoC 终裁：**
    - **(A) 自建 librime 前端（推荐）**：librime 经 JNI 嵌进 `ClipVaultFullKeyboardService`。
-     - 优：最契合 Runtime/CandidateMixer（Rime 候选 + ClipVault 候选**同一管线排序**，PRODUCT_SPEC P7/CandidateMixer）；
-       BSD 全程友好；ClipVault 全控 UI 与许可；单一 APK。
+     - 优：BSD 全程友好；ClipVault 全控 UI 与许可。原列“Rime/ClipVault 同一管线排序”和“单一 APK”
+       已由 ADR-0013/0014 supersede，A/B 终裁不得再为这两项加分。
      - 劣：成本最高（为 Android NDK 编 librime + 打包 Rime 数据/方案 + 写 JNI 桥）。
    - **(B) fcitx5-android 插件（务实回退）**：ClipVault 作为独立 APK 插件，给 fcitx5 提供候选/工具栏。
      - 优：LGPL 分发友好；借力活跃维护的框架；成本更低。

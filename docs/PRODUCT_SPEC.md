@@ -1,14 +1,15 @@
 # ClipVault Personal — 产品规格（PRODUCT_SPEC）
 
-> 状态：v1.0 冻结（2026-06-12，Architect: Claude Fable 5）
+> 状态：v1.0 行为冻结；v2 输入中枢演进于 2026-08-01 经 Owner 授权启动。
 > 本文件是产品层面的事实源。功能取舍以本文件为准；技术实现以 ARCHITECTURE.md 与 CONTRACTS.md 为准。
 
 ## 1. 定位
 
-**中文**：个人自用的输入法级剪切板知识采集系统。
-**英文**：Personal Input-Aware Clipboard Knowledge System.
+**中文**：个人自用的跨端输入中枢。
+**英文**：Personal Cross-device Input Hub.
 
-一句话：ClipVault Personal 是一个专为单个用户工作流设计的双端剪切板、输入法片段、个人词库、Obsidian 入库和 GitHub 备份系统。
+一句话：ClipVault Personal 以 Android 与 Windows 原生输入入口连接中文输入、双端剪切板、
+Personal Memory、临时 OTP Relay、Obsidian 入库和 GitHub 备份；v1 Runtime 继续作为数据基础。
 
 **非商业。** 永远只服务一个用户。所有设计决策以"自用舒适度"为最高优先级，而不是功能完整度、可扩展性或市场竞争力。
 
@@ -16,9 +17,10 @@
 
 ```text
 双端剪切板同步
-+ Android 输入法快捷面板
++ Android 主输入法 + Windows TSF 输入法
 + 个人常用词/短语/Prompt/命令记忆
-+ 续词/续动作推荐
++ librime 中文输入 + 本地候选增强
++ 一次性 OTP 临时中继
 + Obsidian 自动入库
 + GitHub 私有备份
 + Secret Guard
@@ -41,6 +43,7 @@
 | P6 | GitHub 只做备份 | 批量 commit + 定时 push；永远不是同步通道 |
 | P7 | 输入法是知识面板 | （v1）不做拼音引擎。（v2 演进：允许成为主输入法入口，接 Rime/Fcitx5，见 ADR-0008） |
 | P8 | 自用舒适度 > 商业完整度 | 少打字、少切换、少选择、少重复输入、少手动归档 |
+| P9 | 输入与 Runtime 故障隔离 | Android IME 与 Windows TSF 按键路径不等待网络、Python、数据库或同步；Runtime 故障不阻断基本输入 |
 
 ## 4. 角色与终态体验
 
@@ -81,17 +84,17 @@
 > **平台约束（写死）**：Android 10+ 禁止后台读剪切板。只有前台应用或当前默认输入法能读。
 > 因此 Android 端**不存在**自动剪切板监听；采集路径只有：分享、手动保存、输入法面板内保存。
 
-### 5.3 ClipVault Keyboard Personal（Android IME）
+### 5.3 ClipVault Android IME
 
-伴随式输入法（companion IME）：用户通过输入法切换键临时切入，用完切回主输入法。不做拼音。
+v2.0 双入口是迁移结构：Panel 保留既有能力，Full Keyboard Lab 用于验证主输入法生命周期。
+正式目标是单一主 IME，Panel 演进为键盘内部工具页，而不是长期维护两个并列输入法入口。
 
-面板：
-- Suggestion Bar（续词/常用推荐）
-- 最近剪切板面板
-- 电脑同步内容面板
-- 常用词 / 短语 / Prompt / 命令 / 关键信息面板
-- 一键粘贴（commitText）
-- 一键保存当前剪切板 / 一键同步到桌面
+- librime 负责中文解码，不自研拼音分词、长句解码和基础用户词频；
+- 英文、数字、符号、网址、密码、多行和物理键盘具备可日用输入路径；
+- 系统 Inline Autofill、Rime 候选和 ClipVault 工具栏首版分层展示；
+- ClipVault 工具栏提供最近剪切板、同步内容、Personal Memory、模板与临时 OTP；
+- IME 不记录普通按键/组字/完整上屏正文，按键关键路径不访问网络；
+- 最终权限目标是无 INTERNET/SMS 权限的 IME APK，通过签名级本地 IPC 访问 Companion Runtime。
 
 ### 5.4 Personal Memory Layer
 
@@ -104,7 +107,8 @@
 
 - 输入前缀 → 推荐 memory 项与高频 clip
 - 评分 = 固定加权 + 前缀匹配 + 频率（对数）× 时间衰减 + 当前 App 匹配
-- **IME 内的推荐只查本地 Room 缓存，绝不按键发网络请求**
+- **推荐只读本地缓存，绝不按键发网络请求**：v2.0 单包兼容面经 `ClipVaultFacade` 查 Room；
+  ADR-0013 双包目标由 Companion Runtime 持有 Room，IME 只读签名级 Binder 的有界过滤快照。
 - 确定性、可解释、权重可在配置中调
 
 ### 5.6 Context Action Engine（v0.7，规则版）
@@ -122,6 +126,21 @@
 
 AI 增强（摘要、解释、改写）全部属于 P2，且只能由用户显式触发。
 
+### 5.7 Windows 原生输入法
+
+- 使用 TSF，而不是剪切板模拟、全局键盘 Hook 或把桌面弹窗冒充系统输入法；
+- 原生 TSF DLL 只承载 COM/编辑会话/组字/候选 UI，通过每用户本地 IPC 连接外置 librime Host；
+- 现有 Python Desktop Runtime 保留剪切板、Memory、同步、设置和诊断职责，只异步发布本地候选快照；
+- x86/x64、ARM64 发行设计、宿主进程隔离、DPI、安装/升级/卸载与签名属于正式门禁。
+
+### 5.8 OTP Relay
+
+- OTP 是一次性临时凭据，不是 clip、Memory 或永久 Secret；
+- 默认在线、内存态、120 秒 TTL、目标设备绑定、单次消费、ACK 后销毁；
+- 不进入剪切板历史、Room/SQLite、普通 outbox、搜索、学习、Obsidian、GitHub 或内容日志；
+- Android 先支持系统 Inline Autofill；明文捕获只能在独立 Companion Runtime 经明确授权实现；
+- Windows 默认显示非激活式确认卡片并通过 TSF 直接插入，不盲目注入、不自动按 Enter。
+
 ## 6. 版本路线（细节见 ROADMAP.md）
 
 | 版本 | 内容 |
@@ -134,6 +153,13 @@ AI 增强（摘要、解释、改写）全部属于 P2，且只能由用户显�
 | v0.6 | Suggestion Engine：前缀推荐、建议栏 |
 | v0.7 | Context Action（规则版） |
 | v1.0 | 稳定自用版：加固、恢复工具、全量验收 |
+| v2.0 | Android 双 IME 迁移入口与真机稳定证据 |
+| v2.1 | Android/Windows 输入底座 PoC + Engine Protocol V2 |
+| v2.2 | Android 中文日用 Beta + 分层候选面 |
+| v2.3 | Windows 原生 TSF Beta |
+| v2.4 | 本机/合成 OTP Relay PoC；内存核心与两端平台面分别验证 |
+| v2.5 | 最小配对/E2EE 后的跨设备 OTP Beta 与通用传输硬化 |
+| v3.0 | 显式语音、纠错和 AI |
 
 ## 7. 明确不做（Non-goals）
 
@@ -141,10 +167,12 @@ AI 增强（摘要、解释、改写）全部属于 P2，且只能由用户显�
 商业 SaaS / 账号系统 / 支付 / 多用户
 公有云同步作为首选路径
 iOS（第一阶段）
-完整拼音输入法
+从零自研拼音/长句解码引擎
 广告 / 皮肤商店 / 社交
 上架应用商店（自用侧载）
-浏览器扩展、Obsidian 插件、OCR、语音（P2 之后再议）
+浏览器扩展、Obsidian 插件、OCR（后续另议）
+自动保存/上传普通键入、行为画像、输入法分析 SDK
+把 OTP 放进普通剪切板历史或离线补传
 ```
 
 ## 8. 参考产品吸收结论

@@ -1,30 +1,31 @@
 # ClipVault Personal v1.6/v1.7 Stability Plan
 
-Date: 2026-07-03
+Date: 2026-08-01
 
-This plan is the execution map for turning the current source tree into stable
-v1.6 and then a stable v1.7 line. It follows `AGENTS.md`: do not start feature
-work that bypasses the current release gate, keep the Android IME local-first,
-do not log typed text, do not add analytics, keep network work outside the IME
-service, and require explicit user action for saving content.
+This plan now records the published v1.6 baseline and carries its unresolved
+evidence into the v1.7 stability line. It follows `AGENTS.md`: keep the Android
+IME local-first, do not log typed text, do not add analytics, keep network work
+outside the IME service, and require explicit user action for saving content.
 
 ## Current release posture
 
 | Area | Current evidence | Status |
 |---|---|---|
 | Source metadata | `docs/VERSION_SYNC.md`, `desktop/tests/test_release_alignment.py` | Aligned at `1.6.0` / Android `versionCode=13` |
-| CI | Main CI for the current main commit | Automated gate is available |
-| Packaging dry run | `Release candidate dry run` workflow | Unsigned packaging evidence; PR path-filtered and main-push automated |
-| Signed Android APK | `Release artifact build` workflow + `release` environment | Blocked until Owner configures environment secrets |
-| GitHub Release | `v1.6.0` release asset publication | Blocked until Owner approves release creation/publication |
-| Manual QA | `docs/MANUAL_QA_V1_6_0.md` | Blocked until Owner/device evidence is recorded |
+| CI and packaging | Historical release workflow evidence for the published commit | Publication evidence exists; it is not current-main CI evidence |
+| Signed artifacts | `v1.6.0` Release assets | Published on 2026-07-30 |
+| GitHub Release | `v1.6.0` release asset publication | Published; remote state is Owner-controlled |
+| Manual QA | `docs/MANUAL_QA_V1_6_0.md` | 15 pass, 0 fail, 10 blocked; blocked rows remain evidence debt |
 
-## v1.6 stable definition
+## v1.6 published baseline and inherited evidence debt
 
-v1.6 stable means the `1.6.0` source tree can be safely published as signed
-artifacts without weakening the local-first/privacy boundaries.
+`v1.6.0` was published on 2026-07-30 from
+`531d177b4485a5f32f97229a8d571969f6edf536`. Issue #36 was closed with state
+reason `NOT_PLANNED` by explicit Owner risk exception. Publication is a fact;
+it does not convert the ten blocked manual rows into passes or complete device
+evidence.
 
-Required evidence before closing Issue #36:
+The historical desired evidence was:
 
 1. Current-main CI success is recorded.
 2. Current-main release-candidate dry run success is recorded.
@@ -39,7 +40,12 @@ Required evidence before closing Issue #36:
    privacy QA are recorded on Issue #36.
 8. Only after Owner approval, a draft GitHub Release may be created and reviewed.
 
-Agent-executable work while the Owner gate remains blocked:
+Issue #36 is already closed and must not be reopened, edited, or retroactively
+described as fully passing without fresh Owner authorization. Every unmet row
+above is inherited stability debt for v1.7/v2.0 rather than a pending v1.6
+publication action.
+
+Agent-executable work on the inherited stability debt:
 
 - Keep release/runbook docs free of stale commit IDs and stale run URLs.
 - Keep README and architecture docs honest about the difference between current
@@ -55,13 +61,13 @@ Agent must not claim:
 
 - signed release completion without the signed APK and `apksigner` evidence;
 - device/manual QA completion without Owner/device evidence;
-- release publication without a real GitHub Release or draft release URL.
+- that the published release retroactively proves the ten blocked manual rows.
 
 ## v1.7 stable design
 
-v1.7 should be a stability line, not a scope expansion. Until the v1.6 release
-gate has a clear Owner decision, autonomous work must stay limited to
-planning/tests/docs or verified safety/reliability defects that do not change
+v1.7 should be a stability line, not a scope expansion. The v1.6 Owner decision
+is recorded above; its blocked evidence remains debt. Autonomous v1.7 work must
+stay limited to planning/tests/docs or verified safety/reliability defects that do not change
 product semantics, privacy boundaries, sync payloads, schema semantics, runtime
 dependencies, signing authority, or release publication state.
 
