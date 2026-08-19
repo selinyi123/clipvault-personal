@@ -1,0 +1,35 @@
+# format_version=1
+# source=clipvault-input-foundation
+semantic_id	assertion_id	assertion
+ENG2-V001	ENG2-V001-A01	client-provided opaque session starts idempotently at request sequence one and revision zero
+ENG2-V001	ENG2-V001-A02	a lost Start response is retried with the same session identity and sequence
+ENG2-V001	ENG2-V001-A03	candidate selection uses a stable opaque ID
+ENG2-V001	ENG2-V001-A04	successful selection commits exactly once
+ENG2-V001	ENG2-V001-A05	composition and candidate state are cleared after commit
+ENG2-V002	ENG2-V002-A01	paging advances revision monotonically
+ENG2-V002	ENG2-V002-A02	stale revision produces no editor effect
+ENG2-V002	ENG2-V002-A03	expired candidate ID produces no editor effect
+ENG2-V002	ENG2-V002-A04	candidate array position is never a selection identity
+ENG2-V003	ENG2-V003-A01	duplicate request receives the cached transition
+ENG2-V003	ENG2-V003-A02	client reserves the response sequence before editor mutation
+ENG2-V003	ENG2-V003-A03	cached commit response is projected at most once
+ENG2-V003	ENG2-V003-A04	a contiguous response with stale or malformed state retires before editor projection
+ENG2-V003	ENG2-V003-A05	applied-response state is bounded per live typed session
+ENG2-V004	ENG2-V004-A01	ambiguous editor result retires the current session
+ENG2-V004	ENG2-V004-A02	unconfirmed key streams are not replayed automatically
+ENG2-V004	ENG2-V004-A03	old response cannot mutate the editor after retirement
+ENG2-V005	ENG2-V005-A01	new host epoch invalidates all prior sessions
+ENG2-V005	ENG2-V005-A02	same-epoch transport session loss also returns stale session and opens a new identity
+ENG2-V005	ENG2-V005-A03	old candidate IDs fail closed
+ENG2-V005	ENG2-V005-A04	client clears preedit candidates and applied-response state
+ENG2-V005	ENG2-V005-A05	new input requires a new session
+ENG2-V006	ENG2-V006-A01	caret uses UTF-16 code units
+ENG2-V006	ENG2-V006-A02	segments form a contiguous ordered preedit partition
+ENG2-V006	ENG2-V006-A03	segment boundaries do not split a surrogate pair
+ENG2-V007	ENG2-V007-A01	ClipVault candidate surface is disabled
+ENG2-V007	ENG2-V007-A02	learning is disabled
+ENG2-V007	ENG2-V007-A03	no typed content is logged persisted or networked
+ENG2-V008	ENG2-V008-A01	end session wipes content-bearing state
+ENG2-V008	ENG2-V008-A02	response cache is removed after authenticated acknowledgement or retry deadline
+ENG2-V008	ENG2-V008-A03	duplicate request fingerprints never retain raw key text
+ENG2-V008	ENG2-V008-A04	session tombstones contain no input content and remain bounded

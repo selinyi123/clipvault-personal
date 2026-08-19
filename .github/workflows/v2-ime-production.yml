@@ -1,0 +1,33 @@
+name: Android v2 native production gate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-production-gate:
+    # This fail-closed runner is deliberately separate from ordinary debug CI.
+    # It must provision the lock-file-matched native inputs adjacent to the
+    # checkout and carry this explicit label. A missing runner is a blocked
+    # production gate, never a silently Direct-only success.
+    runs-on: [self-hosted, Windows, X64, clipvault-native]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build and verify native standalone IME
+        shell: pwsh
+        run: .\android\scripts\build-v2-ime.ps1

@@ -1,38 +1,75 @@
 package com.clipvault.app.ime
 
 import android.inputmethodservice.InputMethodService
+import android.os.Build
+import android.os.Bundle
+import android.util.Size
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
+import android.widget.inline.InlinePresentationSpec
+import android.view.inputmethod.InlineSuggestionsRequest
+import android.view.inputmethod.InlineSuggestionsResponse
 import android.widget.Button
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.annotation.RequiresApi
 import androidx.core.view.ViewCompat
 import com.clipvault.app.runtime.ClipVaultFacade
 import com.clipvault.app.runtime.ClipVaultRuntime
+import com.clipvault.app.ime.rime.RimeEngineFactory
+import com.clipvault.ime.engine.EngineFieldKind
+import com.clipvault.ime.engine.EngineInputContext
 import kotlin.concurrent.thread
 
 /**
- * ClipVault Full Keyboard Lab (ROADMAP_V2 PR4 — experimental second IME).
+ * Local-first ClipVault keyboard shell.
  *
- * A real (if basic) English keyboard so ClipVault can be a primary input entry,
- * plus a ClipVault toolbar/candidate strip that pastes Runtime candidates.
+ * Every printable key is routed through the production Engine Protocol V2
+ * session boundary before it reaches InputConnection. The current local direct
+ * adapter keeps the keyboard usable without Runtime, network, or native engine
+ * availability; a licensed native librime adapter can replace that factory
+ * without changing this service or its editor/privacy boundary.
  *
- * PRIVACY: this service never persists keystrokes. Keys only drive the current
- * InputConnection. ClipVault candidates are hidden in sensitive fields.
+ * PRIVACY: this service never persists or logs typed text, never observes
+ * surrounding text, and hides personal ClipVault candidates in sensitive
+ * fields. Runtime candidates are an independent toolbar and are never required
+ * for ordinary keyboard input.
  */
 class ClipVaultFullKeyboardService : InputMethodService() {
 
     private val runtime: ClipVaultFacade by lazy { ClipVaultRuntime.facade(this) }
+    private val privacySession = ImePrivacySession()
+    private var activeEngineContext = EngineInputContext(
+        fieldKind = EngineFieldKind.UNKNOWN,
+        incognito = true,
+        learningAllowed = false,
+        clipVaultAllowed = false,
+    )
+    private val engineController by lazy {
+        EngineSessionController(
+            engineFactory = { RimeEngineFactory.create(this, activeEngineContext) },
+            editor = AndroidInputConnectionEngineEditor { currentInputConnection },
+            render = ::onEngineUiState,
+        )
+    }
+
     private var shifted = false
     private var symbols = false
-    private val privacySession = ImePrivacySession()
-    private lateinit var keys: LinearLayout
-    private lateinit var candidates: LinearLayout
     private var editorAction = ImeEditorAction.NEW_LINE
+    private var engineUiState = EngineUiState(
+        candidates = emptyList(),
+        composing = false,
+        engineAvailable = false,
+    )
+    private lateinit var keys: LinearLayout
+    private var inlineSuggestionHost: LinearLayout? = null
+    private var inlineSuggestionGeneration = 0L
+    private lateinit var engineCandidates: LinearLayout
+    private lateinit var candidates: LinearLayout
 
     private val letterRows = listOf("qwertyuiop", "asdfghjkl", "zxcvbnm")
     private val symbolRows = listOf("1234567890", "@#\$%&-+()/", "*\"':;!?,.")
@@ -44,6 +81,8 @@ class ClipVaultFullKeyboardService : InputMethodService() {
         )
         val wasAllowed = privacySession.allowsPersonalData()
         privacySession.begin(PrivacyAwareFilter.shouldSuppressCandidates(attribute))
+        activeEngineContext = AndroidEngineInputContext.from(attribute)
+        engineController.begin(activeEngineContext)
         if (::keys.isInitialized) renderKeys()
         if (::candidates.isInitialized) {
             if (!privacySession.allowsPersonalData()) {
@@ -51,13 +90,13 @@ class ClipVaultFullKeyboardService : InputMethodService() {
                 candidates.addView(hint(PrivacyAwareFilter.suppressionMessage()))
             } else if (!wasAllowed) {
                 candidates.removeAllViews()
-                candidates.addView(hint("点 ClipVault 调取候选 →"))
+                candidates.addView(hint("点击 ClipVault 调取候选 →"))
             }
-            // Same ordinary editor generation keeps already-rendered candidates.
         }
     }
 
     override fun onFinishInput() {
+        engineController.finish()
         privacySession.end()
         editorAction = ImeEditorAction.NEW_LINE
         if (::candidates.isInitialized) {
@@ -67,24 +106,59 @@ class ClipVaultFullKeyboardService : InputMethodService() {
         super.onFinishInput()
     }
 
+    override fun onDestroy() {
+        engineController.finish()
+        privacySession.end()
+        super.onDestroy()
+    }
+
     override fun onCreateInputView(): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(2), dp(4), dp(2), dp(6))
         }
 
+        inlineSuggestionHost = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            visibility = View.GONE
+            contentDescription = "System Autofill suggestions"
+        }
+        root.addView(inlineSuggestionHost)
+
+        val engineStrip = HorizontalScrollView(this)
+        engineCandidates = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        engineStrip.addView(engineCandidates)
+        root.addView(engineStrip)
+        renderEngineCandidates()
+
         val toolbar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        toolbar.addView(key("📋 ClipVault", weight = 2f, accessibilityLabel = "打开 ClipVault 候选") { showCandidates() })
-        toolbar.addView(key("切回", weight = 1f, accessibilityLabel = "切回上一个输入法") {
-            switchToPreviousInputMethodCompat()
-        })
+        toolbar.addView(
+            key(
+                "📋 ClipVault",
+                weight = 2f,
+                accessibilityLabel = "打开 ClipVault 候选",
+            ) { showCandidates() },
+        )
+        toolbar.addView(
+            key("切回", weight = 1f, accessibilityLabel = "切回上一个输入法") {
+                switchToPreviousInputMethodCompat()
+            },
+        )
         root.addView(toolbar)
 
-        val strip = HorizontalScrollView(this)
+        val clipVaultStrip = HorizontalScrollView(this)
         candidates = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        candidates.addView(hint(if (privacySession.allowsPersonalData()) "点 ClipVault 调取候选 →" else PrivacyAwareFilter.suppressionMessage()))
-        strip.addView(candidates)
-        root.addView(strip)
+        candidates.addView(
+            hint(
+                if (privacySession.allowsPersonalData()) {
+                    "点击 ClipVault 调取候选 →"
+                } else {
+                    PrivacyAwareFilter.suppressionMessage()
+                },
+            ),
+        )
+        clipVaultStrip.addView(candidates)
+        root.addView(clipVaultStrip)
 
         keys = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(keys)
@@ -92,29 +166,88 @@ class ClipVaultFullKeyboardService : InputMethodService() {
         return root
     }
 
+    /**
+     * Requests opaque, system-rendered Autofill chips on Android 11+.
+     * The IME controls only size/count; it never receives suggestion text.
+     */
+    @RequiresApi(Build.VERSION_CODES.R)
+    override fun onCreateInlineSuggestionsRequest(uiExtras: Bundle): InlineSuggestionsRequest {
+        check(InlineSuggestionPolicy.isSupported())
+        val presentation = InlinePresentationSpec.Builder(
+            Size(dp(48), dp(36)),
+            Size(dp(320), dp(52)),
+        ).build()
+        return InlineSuggestionsRequest.Builder(listOf(presentation))
+            .setMaxSuggestionCount(3)
+            .setExtras(uiExtras)
+            .build()
+    }
+
+    /** Hosts protected Views returned by Autofill; no text extraction is attempted. */
+    @RequiresApi(Build.VERSION_CODES.R)
+    override fun onInlineSuggestionsResponse(response: InlineSuggestionsResponse): Boolean {
+        if (!InlineSuggestionPolicy.isSupported()) return false
+        val host = inlineSuggestionHost ?: return false
+        val generation = ++inlineSuggestionGeneration
+        val suggestions = response.inlineSuggestions
+        if (suggestions.isEmpty()) {
+            host.removeAllViews()
+            host.visibility = View.GONE
+            return false
+        }
+
+        val views = arrayOfNulls<View>(suggestions.size)
+        var completed = 0
+        suggestions.forEachIndexed { index, suggestion ->
+            suggestion.inflate(this, Size(dp(320), dp(48)), mainExecutor) { view ->
+                if (generation != inlineSuggestionGeneration) return@inflate
+                views[index] = view
+                completed += 1
+                if (completed == suggestions.size) {
+                    host.removeAllViews()
+                    views.filterNotNull().forEach(host::addView)
+                    host.visibility = if (host.childCount == 0) View.GONE else View.VISIBLE
+                }
+            }
+        }
+        return true
+    }
+
     private fun renderKeys() {
         keys.removeAllViews()
         val rows = if (symbols) symbolRows else letterRows
-        rows.forEachIndexed { i, row ->
-            val r = rowLayout()
-            if (!symbols && i == rows.lastIndex) {
-                r.addView(key("⇧", weight = 1.5f, accessibilityLabel = "大写", active = shifted) {
-                    shifted = !shifted
-                    renderKeys()
-                })
+        rows.forEachIndexed { index, row ->
+            val keyRow = rowLayout()
+            if (!symbols && index == rows.lastIndex) {
+                keyRow.addView(
+                    key("⇧", weight = 1.5f, accessibilityLabel = "大写", active = shifted) {
+                        shifted = !shifted
+                        renderKeys()
+                    },
+                )
             }
-            row.forEach { ch ->
-                val label = if (!symbols && shifted) ch.uppercaseChar() else ch
-                r.addView(key(label.toString(), weight = 1f) {
-                    commit(label.toString())
-                    if (shifted && !symbols) { shifted = false; renderKeys() }
-                })
+            row.forEach { character ->
+                val label = if (!symbols && shifted) character.uppercaseChar() else character
+                keyRow.addView(
+                    key(label.toString(), weight = 1f) {
+                        engineController.inputText(label.toString())
+                        if (shifted && !symbols) {
+                            shifted = false
+                            renderKeys()
+                        }
+                    },
+                )
             }
-            if (i == rows.lastIndex) {
-                r.addView(key("⌫", weight = 1.5f, accessibilityLabel = "删除") { backspace() })
+            if (index == rows.lastIndex) {
+                keyRow.addView(
+                    key("⌫", weight = 1.5f, accessibilityLabel = "删除") {
+                        engineController.backspace()
+                    },
+                )
             }
-            keys.addView(r)
+            keys.addView(keyRow)
         }
+
         val bottom = rowLayout()
         bottom.addView(
             key(
@@ -127,9 +260,13 @@ class ClipVaultFullKeyboardService : InputMethodService() {
                 renderKeys()
             },
         )
-        bottom.addView(key(",", weight = 1f) { commit(",") })
-        bottom.addView(key("空格", weight = 4f, accessibilityLabel = "空格") { commit(" ") })
-        bottom.addView(key(".", weight = 1f) { commit(".") })
+        bottom.addView(key(",", weight = 1f) { engineController.inputText(",") })
+        bottom.addView(
+            key("空格", weight = 4f, accessibilityLabel = "空格") {
+                engineController.inputText(" ")
+            },
+        )
+        bottom.addView(key(".", weight = 1f) { engineController.inputText(".") })
         bottom.addView(
             key(
                 editorAction.keyLabel,
@@ -138,6 +275,27 @@ class ClipVaultFullKeyboardService : InputMethodService() {
             ) { enter() },
         )
         keys.addView(bottom)
+    }
+
+    private fun onEngineUiState(state: EngineUiState) {
+        engineUiState = state
+        if (::engineCandidates.isInitialized) renderEngineCandidates()
+    }
+
+    private fun renderEngineCandidates() {
+        engineCandidates.removeAllViews()
+        when {
+            engineUiState.candidates.isNotEmpty() -> engineUiState.candidates.forEach { candidate ->
+                engineCandidates.addView(
+                    key(
+                        label = candidate.comment?.let { "${candidate.text}  $it" } ?: candidate.text,
+                        weight = 0f,
+                    ) { engineController.selectCandidate(candidate.id) },
+                )
+            }
+            engineUiState.engineAvailable -> engineCandidates.addView(hint("本地直输模式"))
+            else -> engineCandidates.addView(hint("引擎不可用，已降级为直接输入"))
+        }
     }
 
     private fun showCandidates() {
@@ -149,7 +307,11 @@ class ClipVaultFullKeyboardService : InputMethodService() {
         }
         thread {
             if (!privacySession.allowsPersonalData(token)) return@thread
-            val items = runtime.listCandidates(limit = 20)
+            val items = try {
+                runtime.listCandidates(limit = 20)
+            } catch (_: RuntimeException) {
+                emptyList()
+            }
             runOnMain {
                 if (!privacySession.isCurrent(token)) return@runOnMain
                 if (!privacySession.allowsPersonalData(token)) {
@@ -159,31 +321,37 @@ class ClipVaultFullKeyboardService : InputMethodService() {
                 }
                 candidates.removeAllViews()
                 if (items.isEmpty()) {
-                    candidates.addView(hint("（暂无候选，先在桌面添加记忆或复制内容并同步）"))
+                    candidates.addView(hint("Runtime 暂不可用或暂无候选；键盘输入不受影响"))
                 } else {
-                    items.forEach { c ->
-                        candidates.addView(key("${c.label} " + c.text.replace("\n", " ").take(24), weight = 0f) {
-                            if (privacySession.allowsPersonalData()) commit(c.text)
-                        })
+                    items.forEach { candidate ->
+                        candidates.addView(
+                            key(
+                                "${candidate.label} ${candidate.text.replace("\n", " ").take(24)}",
+                                weight = 0f,
+                            ) {
+                                if (privacySession.allowsPersonalData()) {
+                                    currentInputConnection?.commitText(candidate.text, 1)
+                                }
+                            },
+                        )
                     }
                 }
             }
         }
     }
 
-    private fun commit(s: String) { currentInputConnection?.commitText(s, 1) }
-    private fun backspace() { currentInputConnection?.deleteSurroundingText(1, 0) }
     private fun enter() {
-        val ic = currentInputConnection ?: return
+        val connection = currentInputConnection ?: return
+        if (!engineController.commitComposition()) return
         editorAction.perform(
-            performEditorAction = { actionId -> ic.performEditorAction(actionId) },
-            sendEnter = { sendEnterKeyEvent(ic) },
+            performEditorAction = { actionId -> connection.performEditorAction(actionId) },
+            sendEnter = { sendEnterKeyEvent(connection) },
         )
     }
 
-    private fun sendEnterKeyEvent(ic: InputConnection) {
-        ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
-        ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
+    private fun sendEnterKeyEvent(connection: InputConnection) {
+        connection.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
+        connection.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
     }
 
     private fun rowLayout() = LinearLayout(this).apply {
@@ -197,25 +365,33 @@ class ClipVaultFullKeyboardService : InputMethodService() {
         accessibilityLabel: String = label,
         active: Boolean? = null,
         onClick: () -> Unit,
-    ): Button =
-        Button(this).apply {
-            text = label; isAllCaps = false; textSize = 16f
-            contentDescription = accessibilityLabel
-            active?.let { isActive ->
-                isActivated = isActive
-                isSelected = isActive
-                ViewCompat.setStateDescription(this, if (isActive) "已开启" else "已关闭")
-            }
-            setPadding(dp(2), 0, dp(2), 0)
-            layoutParams = if (weight > 0f) LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight)
-                else LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40))
-            setOnClickListener { onClick() }
+    ): Button = Button(this).apply {
+        text = label
+        isAllCaps = false
+        textSize = 16f
+        contentDescription = accessibilityLabel
+        active?.let { isActive ->
+            isActivated = isActive
+            isSelected = isActive
+            ViewCompat.setStateDescription(this, if (isActive) "已开启" else "已关闭")
         }
-
-    private fun hint(text: String) = TextView(this).apply {
-        this.text = text; textSize = 12f; setPadding(dp(8), dp(8), dp(8), dp(8))
+        setPadding(dp(2), 0, dp(2), 0)
+        layoutParams = if (weight > 0f) {
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight)
+        } else {
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40))
+        }
+        setOnClickListener { onClick() }
     }
 
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-    private fun runOnMain(block: () -> Unit) = android.os.Handler(mainLooper).post(block)
+    private fun hint(text: String) = TextView(this).apply {
+        this.text = text
+        textSize = 12f
+        setPadding(dp(8), dp(8), dp(8), dp(8))
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun runOnMain(block: () -> Unit) =
+        android.os.Handler(mainLooper).post(block)
 }

@@ -82,6 +82,24 @@
       "content_sha256": "edcc5cf7ba1e384d5b4ffa83459c1ed423fd1c0b5aa643cdf60e6a4d5c81fed4",
       "license": "LicenseRef-ClipVault-Owner-Approval-Pending",
       "status": "PINNED_PROJECT_OWNED_LICENSE_REVIEW_PENDING"
+    },
+    "session_contract_vectors": {
+      "path": "vectors/session-contract-vectors.tsv",
+      "content_sha256": "112dda724b3591525a8d4f028b6f17206127b5e981b91110dd5450848afd30e3",
+      "license": "LicenseRef-ClipVault-Owner-Approval-Pending",
+      "status": "PINNED_PROJECT_OWNED_LICENSE_REVIEW_PENDING"
+    },
+    "android_ime_slice_vectors": {
+      "path": "vectors/android-ime-slice-vectors.tsv",
+      "content_sha256": "6e1692064ad6e10df3e2d8cc0cd47e52056f552d8a357a142722e9876de025fb",
+      "license": "LicenseRef-ClipVault-Owner-Approval-Pending",
+      "status": "PINNED_PROJECT_OWNED_LICENSE_REVIEW_PENDING"
+    },
+    "foundation_engine_assertions": {
+      "path": "vectors/foundation-engine-assertions.tsv",
+      "content_sha256": "fbf216e04d2be8d88526738edba86dff6f99c4b505d698bb55678fa640d4d957",
+      "license": "LicenseRef-ClipVault-Owner-Approval-Pending",
+      "status": "PINNED_PROJECT_OWNED_LICENSE_REVIEW_PENDING"
     }
   },
   "license_gate": {

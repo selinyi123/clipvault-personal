@@ -44,5 +44,6 @@ object PrivacyAwareFilter {
         }
     }
 
-    fun suppressionMessage(): String = "当前输入框为密码/敏感或禁建议字段，ClipVault 候选已隐藏。"
+    fun suppressionMessage(): String =
+        "当前输入框为密码、敏感或禁用建议字段；ClipVault 候选已隐藏。"
 }

@@ -13,4 +13,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "ClipVaultPersonal"
-include(":core", ":app")
+include(":core", ":ime-engine", ":rime-engine-android", ":ime-app", ":app")

@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <permission
+        android:name="com.clipvault.permission.RUNTIME_SNAPSHOT"
+        android:protectionLevel="signature" />
+
     <!-- Sync talks to the desktop over LAN/Tailscale. No background clipboard
          polling: Android 10+ forbids it, and we never request it (ADR-0004). -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -18,6 +22,13 @@
         android:usesCleartextTraffic="true"
         android:supportsRtl="true">
 
+        <!-- Explicit Binder/Messenger bridge for the separately installed,
+             networkless IME APK. Signature permission is enforced before bind. -->
+        <service
+            android:name=".runtime.ClipVaultSnapshotBrokerService"
+            android:exported="true"
+            android:permission="com.clipvault.permission.RUNTIME_SNAPSHOT" />
+
         <!-- Main UI: history, search, pairing, settings -->
         <activity
             android:name=".ui.MainActivity"
@@ -27,6 +38,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".otp.OtpRelaySettingsActivity"
+            android:exported="false"
+            android:label="OTP Relay" />
 
         <!-- Share Target: the PRIMARY capture path on Android -->
         <activity
@@ -67,6 +83,7 @@
         <!-- ClipVault Panel IME (companion knowledge panel, ADR-0004 / ROADMAP_V2 PR3) -->
         <service
             android:name=".ime.ClipVaultPanelImeService"
+            android:enabled="false"
             android:exported="true"
             android:label="ClipVault 面板"
             android:permission="android.permission.BIND_INPUT_METHOD">
@@ -78,12 +95,13 @@
                 android:resource="@xml/ime_panel_config" />
         </service>
 
-        <!-- ClipVault Full Keyboard Lab (ROADMAP_V2 PR4, experimental): basic
-             English keyboard + ClipVault toolbar. Enable separately in settings. -->
+        <!-- ClipVault v2 local-first keyboard. Engine input remains independent
+             from Runtime, database, and network availability. -->
         <service
             android:name=".ime.ClipVaultFullKeyboardService"
+            android:enabled="false"
             android:exported="true"
-            android:label="ClipVault 键盘(实验)"
+            android:label="ClipVault 键盘 (v2)"
             android:permission="android.permission.BIND_INPUT_METHOD">
             <intent-filter>
                 <action android:name="android.view.InputMethod" />

@@ -1,8 +1,11 @@
-# ADR-0010: 中文输入底座选型 — librime 为引擎，长期底座二选一
+# ADR-0010: 中文输入底座选型 — ClipVault 自有 Android 壳 + librime
 
-状态：Accepted（2026-06-20，engine=librime）；A/B 长期底座终裁仍待 build PoC。
-2026-07-02 工具链/许可/验证增补见 [V2-S004](../SLICES/V2-S004-librime-build-poc.md) 与
-[build PoC 去重调研](../RESEARCH_V2_1_BUILD_POC_2026_07_02.md)。
+状态：Accepted（2026-08-01，A 路线已终裁）。
+
+历史 PoC 与筛选依据见 [V2-S004](../SLICES/V2-S004-librime-build-poc.md) 和
+[build PoC 去重调研](../RESEARCH_V2_1_BUILD_POC_2026_07_02.md)。生产输入由
+`android/ime-app`、`android/rime-engine-android` 和仓库根 `shared-input/rime`
+承载；`spikes/librime-android` 不再是生产事实来源。
 
 ## 背景
 
@@ -30,31 +33,33 @@ ClipVault **不从零做拼音引擎**，要接成熟开源引擎。需裁决：
    - 价值在于：它是"librime + Rime 数据 + JNI 在 Android 跑起来"的最佳活参考。**读它学接法可以**
      （学习/研究），**不把其 GPL 代码拷进 ClipVault**。
 
-3. **长期键盘底座 = 二选一，待 build PoC 终裁：**
-   - **(A) 自建 librime 前端（推荐）**：librime 经 JNI 嵌进 `ClipVaultFullKeyboardService`。
-     - 优：最契合 Runtime/CandidateMixer（Rime 候选 + ClipVault 候选**同一管线排序**，PRODUCT_SPEC P7/CandidateMixer）；
-       BSD 全程友好；ClipVault 全控 UI 与许可；单一 APK。
-     - 劣：成本最高（为 Android NDK 编 librime + 打包 Rime 数据/方案 + 写 JNI 桥）。
-   - **(B) fcitx5-android 插件（务实回退）**：ClipVault 作为独立 APK 插件，给 fcitx5 提供候选/工具栏。
-     - 优：LGPL 分发友好；借力活跃维护的框架；成本更低。
-     - 劣：候选混合发生在 fcitx5 管线内、ClipVault 不全控；用户需装两个 App（fcitx5 + ClipVault 插件）。
+3. **长期 Android 底座 = A 路线：ClipVault 自有最小 `InputMethodService` + 自有 JNI + librime。**
+   - 独立无网络 IME APK 只承载键盘、Rime 会话、候选与签名级 Runtime Snapshot 客户端。
+   - Runtime APK 继续承载 Room、同步、Personal Memory 与网络；两包由签名级 Binder 隔离。
+   - Rime 与 ClipVault 候选保持两个独立 surface。第一阶段不修改 Rime 原生排序，也不让 Runtime
+     故障进入中文按键关键路径。
+   - normal/private schema、`default.yaml` 和标点只维护在 `shared-input/rime/`；Android Gradle
+     直接从该 canonical 目录打包，Windows 可复用同一资产。外部词典按生产锁定 hash 注入。
 
-4. **HeliBoard（GPL）** 仅作键盘布局/手感/隐私参考，不取代引擎。
+4. **B 路线不进入生产依赖。** Fcitx5 Android、YuyanIme、Trime、HeliBoard 继续作为交互、兼容性、
+   构建与测试参考。当前 APK 不包含它们的运行时或复制代码。构建所用 fcitx5-android prebuilt
+   仓库只提供锁定的 yaml-cpp/LevelDB/OpenCC/marisa 静态输入，并由生产 lock 与 NOTICE 单独治理。
 
-## 后果与下一步
+5. **Trime/HeliBoard（GPL）** 仅作架构、键盘布局、手感和隐私参考，不复制代码、不作为底座。
 
-- v2.1 下一子片 = **V2-S004 build PoC**（需 16KB emulator/device + NDK）：分别验证 (A) 最小
-  librime JNI 与 (B) 外部 fcitx5 addon 候选注入，两边证据齐全后按冻结算法终裁；A 通过全部硬门和
-  工程预算则选 A，A 失败而 B 全部通过才选 B，两边都失败则保持未裁定/阻塞。
-- Build PoC 固定 **NDK r28** 并验证所有传递 `.so`/APK 的 16KB page-size 对齐；输出逐 ABI 构建元数据。
-- “librime=BSD-3”不等于“中文数据整包 BSD”：schema/dictionary 分别钉 SHA、license、NOTICE，
-  未许可内容不复制，浮动 `master` 不进入构建。
-- (B) 回退需先证明独立 fcitx5 addon 能注入候选；现有插件以 native addon 为主，不能预设 Kotlin facade
-  有现成候选提供器 API。
-- License 红线覆盖 A/B spike APK、addon、全部传递依赖和 Rime 数据：逐项确认 license/NOTICE/源码或
-  relink 等交付义务；清单未经 reviewer 批准前不上传二进制 artifact，不向 production APK 合入。
-- 不变量延续：无论 (A)/(B)，主输入法处理普通键入仍遵守 L0–L4（ADR-0008），普通键入不持久化；
-  Secret/密码框不出候选（CandidateMixer 的 PrivacyAwareFilter，v2.2）。
+## 验证证据与剩余发布门禁
+
+- 生产入口 `android/scripts/build-v2-ime.ps1` fail closed：先核对 librime、词典、prebuilt Git HEAD 和
+  每个 native archive/data 文件 SHA-256，再构建双 ABI release。
+- 自动验证已覆盖 API 36 x86_64 与 Android 15 API 35 16 KB AVD：全拼 `nihao → 你好`、normal/private
+  中文标点、URL ASCII 标点、会话清理与一次上屏。
+- release APK 检查 API 36、唯一 IME service、无网络/SMS/通知监听权限、arm64-v8a+x86_64、Rime
+  canonical assets、NOTICE/许可证、zipalign `-P16` 与每个 ELF 的 16 KB LOAD 对齐。
+- `RIME_PRODUCTION_LOCK.json` 是 production 构建事实；历史 `POC_LOCK.json` 只治理 spike。
+- 未签名 release APK、模拟器测试和本地构建仍不是稳定发布证据。Owner 证书、同证书 Runtime/IME
+  安装、真实手机/常用应用手工矩阵、升级/卸载与发布门禁仍需独立完成。
+- 隐私不变量延续：普通键入不持久化；密码/敏感/无痕 context 不请求 Runtime Snapshot；IME 无网络；
+  Snapshot 超时、Runtime 崩溃或 Binder 饱和只清空 ClipVault surface，不影响 Rime/Direct 输入。
 
 ## 关联
 [[0008-v1-as-runtime]]（P7 允许主输入法；CandidateMixer 是其落点）、

@@ -7,15 +7,16 @@ plugins {
 
 android {
     namespace = "com.clipvault.app"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.clipvault.app"
         minSdk = 26          // Android 8.0: Quick Settings Tile + modern clipboard rules
-        targetSdk = 34
+        targetSdk = 36
         versionCode = 13
         versionName = "1.6.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("boolean", "OTP_SMS_CAPTURE_INCLUDED", "false")
     }
     // Release signing reads from -P properties (or ~/.gradle), so the keystore
     // and passwords never live in the repo. Falls back gracefully when unset.
@@ -37,9 +38,17 @@ android {
                 signingConfig = signingConfigs.getByName("release")
             }
         }
+        create("otpSmsRelay") {
+            initWith(getByName("release"))
+            matchingFallbacks += listOf("release")
+            buildConfigField("boolean", "OTP_SMS_CAPTURE_INCLUDED", "true")
+        }
     }
 
-    buildFeatures { compose = true }   // compiler managed by kotlin.plugin.compose
+    buildFeatures {
+        compose = true   // compiler managed by kotlin.plugin.compose
+        buildConfig = true
+    }
     kotlinOptions { jvmTarget = "17" }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -47,10 +56,41 @@ android {
     }
 }
 
+val otpSmsApprovalGate = tasks.register("otpSmsRelayApprovalGate") {
+    group = "verification"
+    description = "Owner/Play/signing gate for the restricted RECEIVE_SMS release lane"
+    doLast {
+        val approval = providers.gradleProperty("CLIPVAULT_PLAY_SMS_APPROVAL_REF").orNull
+        require(!approval.isNullOrBlank()) {
+            "CLIPVAULT_PLAY_SMS_APPROVAL_REF is required for an approved OTP SMS release"
+        }
+        require(project.findProperty("CV_KEYSTORE") != null) {
+            "Owner release signing is required for an approved OTP SMS release"
+        }
+    }
+}
+
+tasks.register("buildApprovedOtpSmsRelay") {
+    group = "build"
+    description = "Build the Owner-approved, signed RECEIVE_SMS Runtime lane"
+    dependsOn("assembleOtpSmsRelay")
+}
+
+val approvedOtpSmsBuildRequested = gradle.startParameter.taskNames.any {
+    it.substringAfterLast(':') == "buildApprovedOtpSmsRelay"
+}
+if (approvedOtpSmsBuildRequested) {
+    tasks.configureEach {
+        if (name == "preOtpSmsRelayBuild") dependsOn(otpSmsApprovalGate)
+    }
+}
+
 repositories { google(); mavenCentral() }
 
 dependencies {
     implementation(project(":core"))   // the VEC-1-proven normalize/classify/secret-guard
+    implementation(project(":ime-engine"))
+    implementation(project(":rime-engine-android"))
 
     val room = "2.6.1"
     implementation("androidx.room:room-runtime:$room")
@@ -76,6 +116,7 @@ dependencies {
     // Compile the residual IME manual-QA scaffolds without running them.
     // Device/emulator execution remains an explicit Owner/manual QA gate.
     androidTestImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")

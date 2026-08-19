@@ -1,5 +1,12 @@
 # ClipVault librime Android PoC
 
+> Historical scope: this directory preserves the original A/B experiment and
+> its synthetic data. Route A has since been selected for production. Current
+> implementation and distribution evidence live in `android/ime-app`,
+> `android/rime-engine-android/RIME_PRODUCTION_LOCK.json`, and
+> `shared-input/rime`; restrictions below apply to artifacts built from this
+> historical PoC, not to the separately audited production entrypoint.
+
 This directory starts the **isolated v2.1 build PoC** defined by
 `docs/SLICES/V2-S004-librime-build-poc.md`.
 
@@ -25,20 +32,67 @@ reference revision, the toolchain, ABIs, and 16 KB emulator. The repository also
 contains a project-authored table schema and four-entry synthetic dictionary,
 locked by SHA-256.
 
-The data is ready for local/CI compilation only. Its redistribution license and
+The historical PoC data is ready for local/CI compilation only. Its redistribution license and
 all transitive native obligations remain unapproved. Therefore:
 
-- no production integration is allowed;
+- no production integration may consume these synthetic PoC artifacts;
 - no APK, AAB, `.so`, or addon artifact may be uploaded;
 - no user dictionary, clipboard item, typed text, Room row, or network input may
   enter the PoC;
 - passing the static check is not evidence that either native route builds.
 
-Run the local static guard:
+`session-contract/` is a standalone Java 17/JVM protocol PoC with no external
+runtime dependencies. It adds an in-memory fake engine host, a client-created
+session/start-sequence contract, and a JVM-testable Android IME client seam.
+The client owns a strict applied-response ledger, a three-result editor-effect
+abstraction suitable for a later `InputConnection` adapter, fail-closed session
+retirement, host-restart recovery without key replay, and strongly separated
+engine/ClipVault candidate surfaces. Password/incognito mode never invokes the
+ClipVault candidate source. Locked synthetic vectors cover request ordering,
+the content-free `FULL_SHAPE` option whitelist, paging, at-most-once commit,
+UTF-16 boundaries, and cleanup. It is not included from
+`android/settings.gradle.kts` and does not change either production APK or the
+frozen KBD-1 contract. See
+`session-contract/CONTRACT.md` for the exact invariants.
+
+### Windows PowerShell verification
+
+Prerequisites: JDK 17, the checked-in Gradle wrapper, its Gradle 8.10.2 cache
+available for offline use, and a real CPython interpreter. Run from the
+repository root. Prefer the repository virtual environment; if it lives in a
+different checkout, replace the first path with that interpreter's absolute
+path.
+
+```powershell
+$PythonExe = (Resolve-Path -LiteralPath '.\desktop\.venv\Scripts\python.exe' -ErrorAction Stop).Path
+if ($PythonExe -like '*\WindowsApps\python*.exe') {
+    throw 'Microsoft Store Python aliases are not valid PoC interpreters.'
+}
+& $PythonExe -c "import sys; assert sys.version_info >= (3, 10); print(sys.executable)"
+if ($LASTEXITCODE -ne 0) { throw 'A working CPython 3.10+ interpreter is required.' }
+& $PythonExe '.\spikes\librime-android\tools\validate_poc.py'
+if ($LASTEXITCODE -ne 0) { throw 'PoC static validation failed.' }
+
+.\android\gradlew.bat -p '.\spikes\librime-android\session-contract' `
+    check --offline --no-daemon --console=plain
+if ($LASTEXITCODE -ne 0) { throw 'Session-contract verification failed.' }
+```
+
+Do not treat the bare Windows `python` application-execution alias as a
+successful prerequisite: it may only open the Microsoft Store and execute no
+validator.
+
+### POSIX verification
 
 ```bash
 python spikes/librime-android/tools/validate_poc.py
+./android/gradlew -p spikes/librime-android/session-contract \
+  check --offline --no-daemon --console=plain
 ```
+
+The standard Gradle `check` task depends on both `verifySessionContract` and
+`verifyAndroidImeSlice`; neither custom task depends back on `check`, avoiding
+a task cycle.
 
 It checks exact upstream Git SHAs, rejects floating tags, verifies every pinned
 data file byte-for-byte, and binds the synthetic vectors to those data hashes.
@@ -64,7 +118,8 @@ adb shell getconf PAGE_SIZE  # must print 16384 on the locked emulator
    production APK.
 5. Run arm64-v8a and x86_64 builds, 16 KB runtime checks, two clean reproducible
    builds, size/time/patch/bootstrap measurements, and the fixed upgrade drill.
-6. Update ADR-0010 only after both routes have complete pass-or-fail evidence.
+6. Preserve the measurements as historical evidence; ADR-0010 now records the
+   production A-route decision.
 
-The final decision algorithm remains: choose A if A passes; choose B only if A
-fails and B passes; otherwise remain blocked.
+The historical decision algorithm was: choose A if A passes; choose B only if A
+fails and B passes. Route A is now the production decision.

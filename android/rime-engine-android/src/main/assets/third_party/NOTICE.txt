@@ -1,0 +1,18 @@
+ClipVault Android IME native input notices
+==========================================
+
+This APK embeds project-authored JNI code and the following locked components:
+
+- librime 1.16.1 (de4700e9f6b75b109910613df907965e3cbe0567), BSD-3-Clause
+- yaml-cpp 0.9.0, MIT
+- LevelDB 1.23.0, BSD-3-Clause
+- OpenCC 1.2.0, Apache-2.0
+- marisa-trie 0.3.1, BSD-2-Clause
+- rime-pinyin-simp (0c6861ef7420ee780270ca6d993d18d4101049d0), Apache-2.0
+
+Native archives for yaml-cpp, LevelDB, OpenCC and marisa-trie are sourced from
+fcitx5-android/prebuilt commit 86ce2c95d42f1132746fbf60c278193aa1f4b758.
+Fcitx5 itself is not linked into or shipped by the ClipVault IME.
+
+The full license texts are adjacent to this NOTICE inside assets/third_party.
+Exact source and archive hashes are recorded in RIME_PRODUCTION_LOCK.json.

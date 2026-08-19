@@ -10,7 +10,7 @@ class AppPrivacyBoundaryTest {
     private val mainSourceDir: Path = Path.of("src", "main", "kotlin")
 
     @Test
-    fun networkCodeStaysOutsideImeAndInsideSyncPackage() {
+    fun networkCodeStaysOutsideImeAndInsideReviewedRuntimeTransports() {
         assertTrue("Android main source directory is missing: $mainSourceDir", Files.isDirectory(mainSourceDir))
 
         val networkPatterns = listOf(
@@ -19,6 +19,9 @@ class AppPrivacyBoundaryTest {
             Regex("""\b(HttpURLConnection|HttpsURLConnection|Socket|DatagramSocket|InetAddress)\b"""),
         )
         val allowedPrefix = Path.of("com", "clipvault", "app", "sync")
+        val otpOnlineTransport = Path.of(
+            "com", "clipvault", "app", "otp", "OtpNetwork.kt",
+        )
         val violations = mutableListOf<String>()
 
         val stream = Files.walk(mainSourceDir)
@@ -28,12 +31,12 @@ class AppPrivacyBoundaryTest {
                 .collect(Collectors.toList())
                 .forEach { path ->
                     val relative = mainSourceDir.relativize(path)
-                    val allowed = relative.startsWith(allowedPrefix)
+                    val allowed = relative.startsWith(allowedPrefix) || relative == otpOnlineTransport
                     Files.readAllLines(path).forEachIndexed { index, line ->
                         val trimmed = line.trim()
                         if (trimmed.startsWith("//") || trimmed.startsWith("*")) return@forEachIndexed
                         if (!allowed && networkPatterns.any { it.containsMatchIn(line) }) {
-                            violations += "$relative:${index + 1}: network code must stay in app/sync"
+                            violations += "$relative:${index + 1}: network code must stay in app/sync or reviewed OTP online transport"
                         }
                     }
                 }

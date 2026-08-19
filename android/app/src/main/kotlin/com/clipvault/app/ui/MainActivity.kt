@@ -20,6 +20,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.clipvault.app.ClipVaultApp
 import com.clipvault.app.data.ClipEntity
+import com.clipvault.app.otp.OtpRelaySettingsActivity
 import com.clipvault.app.sync.Settings
 import com.clipvault.app.sync.SyncClient
 import com.clipvault.app.sync.SyncPushBlockedState
@@ -119,7 +120,12 @@ private fun Home() {
         topBar = {
             TopAppBar(
                 title = { Text("ClipVault Personal") },
-                actions = { TextButton(onClick = { pairing = true }) { Text("配对") } },
+                actions = {
+                    TextButton(onClick = {
+                        ctx.startActivity(Intent(ctx, OtpRelaySettingsActivity::class.java))
+                    }) { Text("OTP") }
+                    TextButton(onClick = { pairing = true }) { Text("配对") }
+                },
             )
         }
     ) { pad ->

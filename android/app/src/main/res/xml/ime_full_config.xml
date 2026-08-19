@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Full Keyboard Lab (ROADMAP_V2 PR4): experimental primary input + ClipVault
-     toolbar. English only for now; Chinese engine is a later spike. -->
+<!-- Local-first production keyboard shell. Engine and ClipVault candidates are
+     separate; the keyboard remains usable when Runtime or native code is down. -->
 <input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:supportsInlineSuggestions="true"
     android:supportsSwitchingToNextInputMethod="true" />
