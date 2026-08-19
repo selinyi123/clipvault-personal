@@ -27,11 +27,15 @@ cd android
 gradle :core:test        # 仅需 JDK + Gradle + Maven Central，无需 Android SDK
 ```
 
-## app 构建与真机验证（需 Android SDK + 设备）
+## app 构建与设备验证（需 Android SDK）
 
 1. 用 **Android Studio** 打开 `android/`（首次会提示生成 Gradle wrapper / 安装 SDK）。
 2. 配置 Android SDK（compileSdk 34，minSdk 26）。
-3. Build → 在真机/模拟器安装。
+3. 日常安装、启动、调试、logcat 和自动化验证一律默认使用 Android Emulator / AVD。
+   在仓库根目录运行
+   `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\android-test.ps1`；
+   如安装了多个 AVD，再附加 `-AvdName <名称>`。`Bypass` 只作用于这个子进程，不会修改
+   用户级或系统级执行策略。脚本只接受 `emulator-####`，不会回退到已连接的真机。
 4. 启用输入法：系统设置 → 语言和输入法 → 启用 “ClipVault”。
 5. 配对：先确保桌面端与 Android 为当前兼容版本；桌面 Web UI 点「配对设备」得到
    一次性码 → App「配对」里填桌面 IP + 码。重新配对会协商 Android 本地 outbox 的
@@ -40,6 +44,10 @@ gradle :core:test        # 仅需 JDK + Gradle + Maven Central，无需 Android 
    - 任意 App 分享文本 → ClipVault → 历史出现、同步到桌面。
    - 通知栏 Quick Settings 「Save to ClipVault」保存当前剪贴板。
    - 切到 ClipVault 键盘 → 点最近内容一键粘贴 / 保存剪贴板 / 切回。
+
+如需显示模拟器窗口，可传入 `-ShowEmulator`；默认使用无窗口模式。设备测试可按需加
+`-RunInstrumentationTests`。真机仅用于 Owner 明确执行的残余人工 QA / 发布门禁，Codex
+不得因为 `adb devices` 中出现真机就对其安装、启动、读 logcat 或执行任何其他操作。
 
 ## 隐私不变量（与桌面一致）
 
@@ -63,4 +71,5 @@ gradle :app:assembleDebug → BUILD SUCCESSFUL，产出 app/build/outputs/apk/de
 
 - core VEC-1：**已通过（100/100）**，且经 Gradle `:core:test` 再次确认。
 - app：**整体编译通过并产出可安装 APK**（Share/Tile/Room/Compose/Sync/IME 全部编译）。
-- **唯一剩余**：把 APK 装到手机、启用输入法、配对，做设备端体验确认（需物理设备，由 Owner 完成）。
+- **剩余发布门禁**：由 Owner 在明确控制的物理设备上安装 APK、启用输入法、配对并完成
+  设备端体验确认；模拟器结果不能替代这项真机证据。

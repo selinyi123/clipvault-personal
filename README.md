@@ -14,6 +14,7 @@
 最终人工工作表记录为 **15 pass / 0 fail / 10 blocked**；未执行项及已知限制以 Release notes 为准，不能视为全部 QA 已通过。
 当前 main 的自动化证据以 GitHub Actions 的 current-main CI 与 release-candidate dry run 为准；本地测试数量会随补丁变化，请以实际命令输出为准。
 [v1.7 field-test gate（Issue #82）](https://github.com/selinyi123/clipvault-personal/issues/82) 已关闭，但没有发布或宣称 `v1.7.0` 稳定版。
+v1.7 尚未开始实现；本次 baseline reset 不进行版本 bump 或其他功能开发。
 发布后的 main 已加入隔离的 [v2.1 librime Android PoC](docs/RESEARCH_V2_1_ENGINE_POC_2026_07_31.md) 静态脚手架；它尚未接入生产 IME、APK 依赖图、Room、同步或网络路径，也不构成 v2.1 稳定功能。
 
 ---

@@ -34,6 +34,27 @@ satisfied and a dedicated v2.0 release-gate issue has Owner approval. v2.0 is
 the dual-IME-entrypoint stability line; do not relabel v2.1 librime work or the
 optional TLS hardening branch as v2.0 stable evidence.
 
+## Android runtime target policy
+
+- Use an Android Emulator / AVD by default for installation, launch, debugging,
+  instrumentation, UI interaction, screenshots, and logcat inspection.
+- Do not connect to, install on, launch on, inspect, modify, reboot, or otherwise
+  interact with a physical Android device unless the user explicitly authorizes
+  physical-device use in the current task. A device appearing in `adb devices`
+  is not authorization.
+- Never fall back to a physical device when no emulator is available. Start an
+  appropriate AVD or stop and report the missing emulator/AVD.
+- For runtime validation, prefer
+  `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/android-test.ps1`.
+  The process-scoped bypass does not change persistent policy. The script
+  accepts only an `emulator-####` target and binds child processes through
+  `ANDROID_SERIAL`.
+- Outside that script, use `adb -s emulator-#### ...` for every target-specific
+  command. Do not issue ambiguous bare `adb shell`, `adb install`, `adb logcat`,
+  or equivalent commands.
+- Owner-controlled physical-device QA remains a separate release-gate activity;
+  emulator evidence must not be presented as physical-device evidence.
+
 ## Test commands
 
 Desktop:

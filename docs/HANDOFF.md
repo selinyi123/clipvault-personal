@@ -15,8 +15,23 @@
 | Backup | GitHub private repo (JSONL only) |
 | Realtime sync | LAN / Tailscale HTTP push-pull sync |
 | Source of truth | SQLite local store |
-| Current slice | v1.6.0 release gate, v1.7 stability planning, and v2.0 dual-IME stability planning. Issue #36 remains open until current-main CI/dry-run evidence, Owner-controlled final Windows artifacts, signed Android artifacts, manual QA evidence, and Owner-approved GitHub Release publication are recorded. v1.7 stays planning/stability-only until this v1.6 gate closes and a dedicated Owner-approved release issue exists. v2.0 stays planning/stability-only until `docs/STABILITY_PLAN_V2_0.md` exit criteria and a dedicated Owner-approved v2.0 release-gate issue exist. |
-| Last updated | 2026-07-23 |
+| Current slice | `v1.6.0` was published on 2026-07-30 from commit `531d177b4485a5f32f97229a8d571969f6edf536`. Issue #36 is closed by explicit Owner risk exception with a final manual worksheet of 15 pass, 0 fail, and 10 blocked. The current task only resets README, HANDOFF, and Issue #82 to that released baseline. No v1.7 feature implementation, version bump, or later-version work is authorized by this reset. |
+| Last updated | 2026-07-31 |
+
+## Current development note - 2026-07-31 / post-v1.6.0 baseline reset
+
+- [`v1.6.0`](https://github.com/selinyi123/clipvault-personal/releases/tag/v1.6.0)
+  was published on 2026-07-30. Tag `v1.6.0` resolves to
+  `531d177b4485a5f32f97229a8d571969f6edf536`, and Issue #36 is closed.
+- Closure records an explicit Owner risk exception, not complete manual QA.
+  The final worksheet remains 15 pass, 0 fail, and 10 blocked; those blocked
+  rows must not be relabeled as passing evidence.
+- This baseline reset only corrects README, this HANDOFF, and Issue #82.
+  It does not authorize sync, IME, TLS, Windows TSF, release, version-bump, or
+  other implementation work.
+- Older dated notes below are retained as historical evidence. Any historical
+  statement that `v1.6.0` is unpublished or Issue #36 remains open is
+  superseded by this note.
 
 ## Current development note - 2026-07-23 / v1.6 clipboard privacy probe markers
 
