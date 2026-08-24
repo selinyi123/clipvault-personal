@@ -1,0 +1,26 @@
+name: LMCMR ZIP Rechunk
+
+on:
+  push:
+    paths:
+      - '.github/workflows/lmcmr-rechunk.yml'
+      - 'tmp/lmcmr_rechunk.py'
+  workflow_dispatch:
+
+jobs:
+  rechunk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tmp/lmcmr_rechunk.py
+      - run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tmp/lmcmr-title-export/zip_chunks_large
+          git commit -m 'Add large LMCMR ZIP chunks' || exit 0
+          git push
