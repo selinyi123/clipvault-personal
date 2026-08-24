@@ -30,8 +30,8 @@ jobs:
           git add tmp/sohu-lm-crawl/status.json
           git commit -m 'Sohu LM crawl running' || true
           git push
-      - name: Install dependency
-        run: python -m pip install --quiet requests
+      - name: Install dependencies
+        run: python -m pip install --quiet requests beautifulsoup4
       - name: Crawl public Sohu author history
         run: python tmp/sohu_lm_crawl.py
       - name: Persist results
