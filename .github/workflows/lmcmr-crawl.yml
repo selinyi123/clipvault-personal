@@ -16,6 +16,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install crawler deps
+        run: python -m pip install --quiet requests beautifulsoup4
       - name: Crawl LMCMR search index
         run: |
           python - <<'PY'
@@ -37,71 +39,100 @@ jobs:
           max_pages=700
           empty_streak=0
           oldest=None
-
           date_re=re.compile(r'\b(20\d{2}-\d{2}-\d{2})\b')
+
           while page < max_pages:
               url=f'{BASE}/e/search/result/?page={page}&searchid={SEARCHID}'
               r=s.get(url,timeout=30)
               r.raise_for_status()
               soup=BeautifulSoup(r.text,'html.parser')
               page_rows=[]
-              # Each result title is an h2 link; nearby text contains path - YYYY-MM-DD - category.
               for h2 in soup.find_all('h2'):
                   a=h2.find('a',href=True)
-                  if not a: continue
+                  if not a:
+                      continue
                   title=' '.join(a.get_text(' ',strip=True).split())
                   href=urljoin(BASE,a['href'])
-                  if href in seen: continue
-                  block=h2.parent.get_text(' ',strip=True)
-                  m=date_re.search(block)
-                  if not m:
-                      # expand to next sibling texts as fallback
-                      text=block
-                      sib=h2.next_sibling
-                      for _ in range(5):
-                          if sib is None: break
-                          try: text += ' ' + (sib.get_text(' ',strip=True) if hasattr(sib,'get_text') else str(sib))
-                          except: pass
+                  if href in seen:
+                      continue
+                  # Search the smallest nearby ancestor/sibling text that contains the update date.
+                  candidate_text=''
+                  node=h2
+                  for _ in range(5):
+                      node=node.parent
+                      if node is None:
+                          break
+                      txt=' '.join(node.get_text(' ',strip=True).split())
+                      if date_re.search(txt):
+                          candidate_text=txt
+                          break
+                  if not candidate_text:
+                      parts=[]
+                      sib=h2
+                      for _ in range(8):
                           sib=sib.next_sibling
-                      m=date_re.search(text)
-                  if not m: continue
+                          if sib is None:
+                              break
+                          try:
+                              parts.append(sib.get_text(' ',strip=True) if hasattr(sib,'get_text') else str(sib))
+                          except Exception:
+                              pass
+                      candidate_text=' '.join(parts)
+                  m=date_re.search(candidate_text)
+                  if not m:
+                      continue
                   dt=datetime.strptime(m.group(1),'%Y-%m-%d')
                   page_rows.append((dt,title,href))
                   seen.add(href)
                   if START <= dt <= END:
                       rows.append({'date':dt.strftime('%Y-%m-%d'),'title':title,'url':href,'source_page':page})
+
               if not page_rows:
                   empty_streak += 1
+                  print(f'page={page} no parsed rows',flush=True)
               else:
                   empty_streak = 0
                   oldest=min(x[0] for x in page_rows)
                   newest=max(x[0] for x in page_rows)
                   print(f'page={page} count={len(page_rows)} range={oldest.date()}..{newest.date()} total_kept={len(rows)}',flush=True)
-                  # Results are descending by update date; after an entire page is older than cutoff, stop.
                   if newest < START:
                       break
-              if empty_streak >= 3: break
+              if empty_streak >= 3:
+                  break
               page += 1
-              time.sleep(0.25)
+              time.sleep(0.20)
 
           rows.sort(key=lambda x:(x['date'],x['title']),reverse=True)
-          # de-duplicate by URL/title-date
           out=[]; keys=set()
           for x in rows:
               k=(x['url'],x['date'])
-              if k in keys: continue
+              if k in keys:
+                  continue
               keys.add(k); out.append(x)
+
           with open('lmcmr_2025-01-01_2026-08-19.json','w',encoding='utf-8') as f:
               json.dump(out,f,ensure_ascii=False,indent=2)
           with open('lmcmr_2025-01-01_2026-08-19.csv','w',encoding='utf-8-sig',newline='') as f:
-              w=csv.DictWriter(f,fieldnames=['date','title','url','source_page']); w.writeheader(); w.writerows(out)
-          print('FINAL_COUNT',len(out))
-          print('LAST_PAGE',page,'OLDEST',oldest.date() if oldest else None)
+              w=csv.DictWriter(f,fieldnames=['date','title','url','source_page'])
+              w.writeheader(); w.writerows(out)
+          with open('lmcmr_summary.json','w',encoding='utf-8') as f:
+              json.dump({'count':len(out),'last_page':page,'oldest_seen':oldest.strftime('%Y-%m-%d') if oldest else None},f,ensure_ascii=False,indent=2)
+          print('FINAL_COUNT',len(out),flush=True)
+          print('LAST_PAGE',page,'OLDEST',oldest.date() if oldest else None,flush=True)
           PY
+      - name: Persist results to repository
+        run: |
+          mkdir -p tmp/lmcmr-crawl
+          cp lmcmr_2025-01-01_2026-08-19.json tmp/lmcmr-crawl/
+          cp lmcmr_2025-01-01_2026-08-19.csv tmp/lmcmr-crawl/
+          cp lmcmr_summary.json tmp/lmcmr-crawl/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tmp/lmcmr-crawl
+          git commit -m 'Update LMCMR crawl results' || exit 0
+          git push
       - uses: actions/upload-artifact@v4
         with:
           name: lmcmr-crawl
-          path: |
-            lmcmr_2025-01-01_2026-08-19.json
-            lmcmr_2025-01-01_2026-08-19.csv
+          path: tmp/lmcmr-crawl/
           retention-days: 7
