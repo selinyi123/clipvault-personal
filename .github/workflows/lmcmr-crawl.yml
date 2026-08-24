@@ -1,0 +1,107 @@
+name: LMCMR Crawl
+
+on:
+  push:
+    paths:
+      - '.github/workflows/lmcmr-crawl.yml'
+  workflow_dispatch:
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Crawl LMCMR search index
+        run: |
+          python - <<'PY'
+          import csv, json, re, time
+          from datetime import datetime
+          from urllib.parse import urljoin
+          import requests
+          from bs4 import BeautifulSoup
+
+          BASE='https://www.lmcmr.com'
+          SEARCHID='12031'
+          START=datetime(2025,1,1)
+          END=datetime(2026,8,19,23,59,59)
+          s=requests.Session()
+          s.headers.update({'User-Agent':'Mozilla/5.0 (compatible; LMCMR-index-research/1.0)'})
+          rows=[]
+          seen=set()
+          page=0
+          max_pages=700
+          empty_streak=0
+          oldest=None
+
+          date_re=re.compile(r'\b(20\d{2}-\d{2}-\d{2})\b')
+          while page < max_pages:
+              url=f'{BASE}/e/search/result/?page={page}&searchid={SEARCHID}'
+              r=s.get(url,timeout=30)
+              r.raise_for_status()
+              soup=BeautifulSoup(r.text,'html.parser')
+              page_rows=[]
+              # Each result title is an h2 link; nearby text contains path - YYYY-MM-DD - category.
+              for h2 in soup.find_all('h2'):
+                  a=h2.find('a',href=True)
+                  if not a: continue
+                  title=' '.join(a.get_text(' ',strip=True).split())
+                  href=urljoin(BASE,a['href'])
+                  if href in seen: continue
+                  block=h2.parent.get_text(' ',strip=True)
+                  m=date_re.search(block)
+                  if not m:
+                      # expand to next sibling texts as fallback
+                      text=block
+                      sib=h2.next_sibling
+                      for _ in range(5):
+                          if sib is None: break
+                          try: text += ' ' + (sib.get_text(' ',strip=True) if hasattr(sib,'get_text') else str(sib))
+                          except: pass
+                          sib=sib.next_sibling
+                      m=date_re.search(text)
+                  if not m: continue
+                  dt=datetime.strptime(m.group(1),'%Y-%m-%d')
+                  page_rows.append((dt,title,href))
+                  seen.add(href)
+                  if START <= dt <= END:
+                      rows.append({'date':dt.strftime('%Y-%m-%d'),'title':title,'url':href,'source_page':page})
+              if not page_rows:
+                  empty_streak += 1
+              else:
+                  empty_streak = 0
+                  oldest=min(x[0] for x in page_rows)
+                  newest=max(x[0] for x in page_rows)
+                  print(f'page={page} count={len(page_rows)} range={oldest.date()}..{newest.date()} total_kept={len(rows)}',flush=True)
+                  # Results are descending by update date; after an entire page is older than cutoff, stop.
+                  if newest < START:
+                      break
+              if empty_streak >= 3: break
+              page += 1
+              time.sleep(0.25)
+
+          rows.sort(key=lambda x:(x['date'],x['title']),reverse=True)
+          # de-duplicate by URL/title-date
+          out=[]; keys=set()
+          for x in rows:
+              k=(x['url'],x['date'])
+              if k in keys: continue
+              keys.add(k); out.append(x)
+          with open('lmcmr_2025-01-01_2026-08-19.json','w',encoding='utf-8') as f:
+              json.dump(out,f,ensure_ascii=False,indent=2)
+          with open('lmcmr_2025-01-01_2026-08-19.csv','w',encoding='utf-8-sig',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=['date','title','url','source_page']); w.writeheader(); w.writerows(out)
+          print('FINAL_COUNT',len(out))
+          print('LAST_PAGE',page,'OLDEST',oldest.date() if oldest else None)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lmcmr-crawl
+          path: |
+            lmcmr_2025-01-01_2026-08-19.json
+            lmcmr_2025-01-01_2026-08-19.csv
+          retention-days: 7
