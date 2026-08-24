@@ -6,6 +6,10 @@ on:
       - '.github/workflows/lmcmr-crawl.yml'
   workflow_dispatch:
 
+concurrency:
+  group: lmcmr-crawl
+  cancel-in-progress: true
+
 jobs:
   crawl:
     runs-on: ubuntu-latest
@@ -16,12 +20,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Mark crawl running
+        run: |
+          mkdir -p tmp/lmcmr-crawl
+          printf '{"status":"running","started_at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > tmp/lmcmr-crawl/status.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tmp/lmcmr-crawl/status.json
+          git commit -m 'LMCMR crawl running' || true
+          git push
       - name: Install crawler deps
         run: python -m pip install --quiet requests beautifulsoup4
       - name: Crawl LMCMR search index
         run: |
           python - <<'PY'
-          import csv, json, re, time
+          import csv, json, re, time, threading
+          from concurrent.futures import ThreadPoolExecutor, as_completed
           from datetime import datetime
           from urllib.parse import urljoin
           import requests
@@ -31,104 +45,111 @@ jobs:
           SEARCHID='12031'
           START=datetime(2025,1,1)
           END=datetime(2026,8,19,23,59,59)
-          s=requests.Session()
-          s.headers.update({'User-Agent':'Mozilla/5.0 (compatible; LMCMR-index-research/1.0)'})
-          rows=[]
-          seen=set()
-          page=0
-          max_pages=700
-          empty_streak=0
-          oldest=None
-          newest=None
+          LAST_PAGE=667
+          WORKERS=6
           date_re=re.compile(r'\b(20\d{2}-\d{2}-\d{2})\b')
+          local=threading.local()
 
-          while page < max_pages:
+          def session():
+              if not hasattr(local,'s'):
+                  s=requests.Session()
+                  s.headers.update({'User-Agent':'Mozilla/5.0 (compatible; LMCMR-index-research/1.0)'})
+                  local.s=s
+              return local.s
+
+          def fetch_page(page):
               url=f'{BASE}/e/search/result/?page={page}&searchid={SEARCHID}'
-              r=s.get(url,timeout=30)
-              r.raise_for_status()
-              soup=BeautifulSoup(r.text,'html.parser')
-              page_rows=[]
+              last=None
+              for attempt in range(4):
+                  try:
+                      r=session().get(url,timeout=30)
+                      r.raise_for_status()
+                      soup=BeautifulSoup(r.text,'html.parser')
+                      out=[]
+                      for h2 in soup.select('h2.r'):
+                          a=h2.find('a',class_='l',href=True)
+                          if not a:
+                              continue
+                          table=h2.find_next_sibling('table')
+                          if table is None:
+                              continue
+                          span=table.find('span',class_='a')
+                          if span is None:
+                              continue
+                          matches=date_re.findall(span.get_text(' ',strip=True))
+                          if not matches:
+                              continue
+                          update_date=matches[-1]
+                          out.append({
+                              'date':update_date,
+                              'title':' '.join(a.get_text(' ',strip=True).split()),
+                              'url':urljoin(BASE,a['href']),
+                              'source_page':page,
+                          })
+                      return page,out,None
+                  except Exception as e:
+                      last=repr(e)
+                      time.sleep(0.5*(attempt+1))
+              return page,[],last
 
-              for h2 in soup.select('h2.r'):
-                  a=h2.find('a',class_='l',href=True)
-                  if not a:
-                      continue
-                  title=' '.join(a.get_text(' ',strip=True).split())
-                  href=urljoin(BASE,a['href'])
-                  if href in seen:
-                      continue
+          pages={}
+          errors={}
+          done=0
+          with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+              futs={ex.submit(fetch_page,p):p for p in range(LAST_PAGE+1)}
+              for fut in as_completed(futs):
+                  page,items,err=fut.result()
+                  pages[page]=items
+                  if err:
+                      errors[page]=err
+                  done+=1
+                  if done % 50 == 0 or done == LAST_PAGE+1:
+                      print(f'PROGRESS {done}/{LAST_PAGE+1} errors={len(errors)}',flush=True)
 
-                  table=h2.find_next_sibling('table')
-                  if table is None:
-                      continue
-                  span=table.find('span',class_='a')
-                  if span is None:
-                      continue
-                  meta=' '.join(span.get_text(' ',strip=True).split())
-                  matches=date_re.findall(meta)
-                  if not matches:
-                      continue
-                  # In LMCMR search results the final YYYY-MM-DD in span.a is the update date;
-                  # the path before it may itself contain a creation-date segment.
-                  update_date=matches[-1]
-                  dt=datetime.strptime(update_date,'%Y-%m-%d')
-                  page_rows.append((dt,title,href))
-                  seen.add(href)
-                  if START <= dt <= END:
-                      rows.append({'date':update_date,'title':title,'url':href,'source_page':page})
+          all_rows=[]
+          for p in range(LAST_PAGE+1):
+              all_rows.extend(pages.get(p,[]))
 
-              if not page_rows:
-                  empty_streak += 1
-                  print(f'page={page} no parsed rows',flush=True)
-              else:
-                  empty_streak = 0
-                  oldest=min(x[0] for x in page_rows)
-                  newest=max(x[0] for x in page_rows)
-                  print(f'page={page} count={len(page_rows)} range={oldest.date()}..{newest.date()} total_kept={len(rows)}',flush=True)
-                  if newest < START:
-                      break
+          # Deduplicate by URL and keep the update date observed in the search index.
+          by_url={}
+          for x in all_rows:
+              prev=by_url.get(x['url'])
+              if prev is None or x['date'] > prev['date']:
+                  by_url[x['url']]=x
+          all_rows=list(by_url.values())
+          all_rows.sort(key=lambda x:(x['date'],x['title']),reverse=True)
+          selected=[x for x in all_rows if START <= datetime.strptime(x['date'],'%Y-%m-%d') <= END]
 
-              if empty_streak >= 3:
-                  break
-              page += 1
-              time.sleep(0.15)
-
-          rows.sort(key=lambda x:(x['date'],x['title']),reverse=True)
-          out=[]; keys=set()
-          for x in rows:
-              k=(x['url'],x['date'])
-              if k in keys:
-                  continue
-              keys.add(k)
-              out.append(x)
-
+          with open('lmcmr_all_index.json','w',encoding='utf-8') as f:
+              json.dump(all_rows,f,ensure_ascii=False,indent=2)
           with open('lmcmr_2025-01-01_2026-08-19.json','w',encoding='utf-8') as f:
-              json.dump(out,f,ensure_ascii=False,indent=2)
+              json.dump(selected,f,ensure_ascii=False,indent=2)
           with open('lmcmr_2025-01-01_2026-08-19.csv','w',encoding='utf-8-sig',newline='') as f:
               w=csv.DictWriter(f,fieldnames=['date','title','url','source_page'])
-              w.writeheader(); w.writerows(out)
+              w.writeheader(); w.writerows(selected)
           summary={
-              'count':len(out),
-              'last_page':page,
-              'oldest_seen':oldest.strftime('%Y-%m-%d') if oldest else None,
-              'newest_seen':newest.strftime('%Y-%m-%d') if newest else None,
-              'searchid':SEARCHID,
+              'status':'complete' if not errors else 'complete_with_errors',
+              'index_count':len(all_rows),
+              'selected_count':len(selected),
+              'pages_expected':LAST_PAGE+1,
+              'pages_fetched':(LAST_PAGE+1)-len(errors),
+              'failed_pages':errors,
+              'newest_index_date':all_rows[0]['date'] if all_rows else None,
+              'oldest_index_date':all_rows[-1]['date'] if all_rows else None,
               'range_start':'2025-01-01',
               'range_end':'2026-08-19'
           }
           with open('lmcmr_summary.json','w',encoding='utf-8') as f:
               json.dump(summary,f,ensure_ascii=False,indent=2)
-          print('FINAL_COUNT',len(out),flush=True)
-          print('LAST_PAGE',page,'OLDEST',oldest.date() if oldest else None,'NEWEST',newest.date() if newest else None,flush=True)
+          print(json.dumps(summary,ensure_ascii=False),flush=True)
           PY
       - name: Persist results to repository
         run: |
-          mkdir -p tmp/lmcmr-crawl
+          cp lmcmr_all_index.json tmp/lmcmr-crawl/
           cp lmcmr_2025-01-01_2026-08-19.json tmp/lmcmr-crawl/
           cp lmcmr_2025-01-01_2026-08-19.csv tmp/lmcmr-crawl/
           cp lmcmr_summary.json tmp/lmcmr-crawl/
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          cp lmcmr_summary.json tmp/lmcmr-crawl/status.json
           git add tmp/lmcmr-crawl
           git commit -m 'Update LMCMR crawl results' || exit 0
           git push
