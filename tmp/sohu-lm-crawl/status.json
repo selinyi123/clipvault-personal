@@ -1,1 +1,239 @@
-{"status":"running","started_at":"2026-08-24T09:29:01Z"}
+{
+  "status": "complete",
+  "profile_status": 200,
+  "profile_content_count": 8448,
+  "pv_id": "1787563746644_nq3l2Xi",
+  "has_suv": true,
+  "probe": {
+    "selected_cookie_mode": "standard",
+    "variants": [
+      {
+        "mode": "standard",
+        "count": 20,
+        "error": null,
+        "diagnostic": {
+          "http_status": 200,
+          "cookie_mode": "standard",
+          "payload_code": 0,
+          "data_keys": [
+            "FeedSlideloadAuthor_2_0_pc_1655965929143_data2"
+          ],
+          "node_keys": [
+            "meta",
+            "fixed",
+            "list",
+            "backups",
+            "dataSource",
+            "adExt"
+          ],
+          "node_list_count": 20,
+          "first_item_keys": [
+            "brief",
+            "icon",
+            "columnNewsIds",
+            "label",
+            "title",
+            "url",
+            "cover",
+            "extraInfoList",
+            "tagList",
+            "total",
+            "id",
+            "extraInfo",
+            "resourceType"
+          ],
+          "first_item_id": 1066919674,
+          "first_item_title": "中国垃圾焚烧发电市场预测与投资战略报告（2026版）",
+          "first_item_extraInfoList": [
+            {
+              "image": "time",
+              "text": "32分钟前",
+              "url": ""
+            },
+            {
+              "image": "pv",
+              "text": "0阅读",
+              "url": ""
+            },
+            {
+              "image": "comment",
+              "text": "0评论",
+              "url": ""
+            }
+          ]
+        }
+      },
+      {
+        "mode": "rsshub_double",
+        "count": 20,
+        "error": null,
+        "diagnostic": {
+          "http_status": 200,
+          "cookie_mode": "rsshub_double",
+          "payload_code": 0,
+          "data_keys": [
+            "FeedSlideloadAuthor_2_0_pc_1655965929143_data2"
+          ],
+          "node_keys": [
+            "meta",
+            "fixed",
+            "list",
+            "backups",
+            "dataSource",
+            "adExt"
+          ],
+          "node_list_count": 20,
+          "first_item_keys": [
+            "brief",
+            "icon",
+            "columnNewsIds",
+            "label",
+            "title",
+            "url",
+            "cover",
+            "extraInfoList",
+            "tagList",
+            "total",
+            "id",
+            "extraInfo",
+            "resourceType"
+          ],
+          "first_item_id": 1066919674,
+          "first_item_title": "中国垃圾焚烧发电市场预测与投资战略报告（2026版）",
+          "first_item_extraInfoList": [
+            {
+              "image": "time",
+              "text": "32分钟前",
+              "url": ""
+            },
+            {
+              "image": "pv",
+              "text": "0阅读",
+              "url": ""
+            },
+            {
+              "image": "comment",
+              "text": "0评论",
+              "url": ""
+            }
+          ]
+        }
+      },
+      {
+        "mode": "none",
+        "count": 20,
+        "error": null,
+        "diagnostic": {
+          "http_status": 200,
+          "cookie_mode": "none",
+          "payload_code": 0,
+          "data_keys": [
+            "FeedSlideloadAuthor_2_0_pc_1655965929143_data2"
+          ],
+          "node_keys": [
+            "meta",
+            "fixed",
+            "list",
+            "backups",
+            "dataSource",
+            "adExt"
+          ],
+          "node_list_count": 20,
+          "first_item_keys": [
+            "brief",
+            "icon",
+            "columnNewsIds",
+            "label",
+            "title",
+            "url",
+            "cover",
+            "extraInfoList",
+            "tagList",
+            "total",
+            "id",
+            "extraInfo",
+            "resourceType"
+          ],
+          "first_item_id": 1066919674,
+          "first_item_title": "中国垃圾焚烧发电市场预测与投资战略报告（2026版）",
+          "first_item_extraInfoList": [
+            {
+              "image": "time",
+              "text": "32分钟前",
+              "url": ""
+            },
+            {
+              "image": "pv",
+              "text": "0阅读",
+              "url": ""
+            },
+            {
+              "image": "comment",
+              "text": "0评论",
+              "url": ""
+            }
+          ]
+        }
+      }
+    ],
+    "page1_count": 20,
+    "page2_count": 20,
+    "page1_first": {
+      "id": 1066919674,
+      "title": "中国垃圾焚烧发电市场预测与投资战略报告（2026版）",
+      "url": "https://www.sohu.com/a/1066919674_252291",
+      "page": 1,
+      "position": 0
+    },
+    "page1_last": {
+      "id": 1064789895,
+      "title": "中国CPP专用树脂行业调研与发展战略报告（2026版）",
+      "url": "https://www.sohu.com/a/1064789895_252291",
+      "page": 1,
+      "position": 19
+    },
+    "page2_first": {
+      "id": 1064788638,
+      "title": "中国CPP薄膜专用料行业调研与发展战略报告（2026版）",
+      "url": "https://www.sohu.com/a/1064788638_252291",
+      "page": 2,
+      "position": 0
+    },
+    "page2_last": {
+      "id": 1063287409,
+      "title": "全球与中国光通信器件行业市场调研与预测报告（2026版）",
+      "url": "https://www.sohu.com/a/1063287409_252291",
+      "page": 2,
+      "position": 19
+    },
+    "page1_page2_overlap": 0
+  },
+  "odin_pages_requested": 450,
+  "odin_pages_with_items": 13,
+  "odin_max_nonempty_page": 13,
+  "odin_failed_pages": {},
+  "odin_unique_items": 256,
+  "odin_duplicate_ids_seen": 0,
+  "difference_from_profile_count": -8192,
+  "boundary_page": 13,
+  "boundary_samples": {
+    "7": "2026-08-02T13:53:00+08:00",
+    "10": "2026-07-17T20:09:00+08:00",
+    "12": "2026-07-08T16:25:00+08:00",
+    "13": "2026-07-04T21:14:00+08:00"
+  },
+  "boundary_sample_errors": {},
+  "last_candidate_page": 13,
+  "article_date_candidates": 256,
+  "article_date_successes": 256,
+  "article_date_errors_count": 0,
+  "article_date_errors": {},
+  "page_order_violation_count": 0,
+  "page_order_violations": [],
+  "extra_page_items_in_requested_range": 0,
+  "selected_count": 240,
+  "selected_newest_datetime": "2026-08-19T17:08:00+08:00",
+  "selected_oldest_datetime": "2026-06-24T16:21:00+08:00",
+  "range_start": "2025-01-01T00:00:00+08:00",
+  "range_end": "2026-08-19T23:59:59.999999+08:00"
+}
