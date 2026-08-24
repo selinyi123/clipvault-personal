@@ -1,0 +1,27 @@
+name: Build LMCMR Notion Browsers
+
+on:
+  push:
+    paths:
+      - 'tmp/lmcmr_make_notion_browsers.py'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate embedded HTML browsers
+        run: python tmp/lmcmr_make_notion_browsers.py
+      - name: Persist browsers
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tmp/lmcmr-title-export/lmcmr_2026_browser.html tmp/lmcmr-title-export/lmcmr_2025_browser.html
+          git commit -m 'Add LMCMR Notion title browsers' || exit 0
+          git push
