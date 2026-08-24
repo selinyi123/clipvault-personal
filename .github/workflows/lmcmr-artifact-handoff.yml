@@ -1,0 +1,23 @@
+name: LMCMR Artifact Handoff
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/lmcmr-artifact-handoff.yml'
+      - 'tmp/lmcmr-artifact-handoff.txt'
+
+jobs:
+  handoff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify package
+        run: |
+          test -f tmp/lmcmr-title-export/LMCMR_2025_2026_report_titles.zip
+          echo 'd256a4224f6b2a03572607eadea71688da947c045c89f6f6258fe50bf8266a9f  tmp/lmcmr-title-export/LMCMR_2025_2026_report_titles.zip' | sha256sum -c -
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LMCMR_2025_2026_report_titles
+          path: tmp/lmcmr-title-export/LMCMR_2025_2026_report_titles.zip
+          if-no-files-found: error
+          retention-days: 1
