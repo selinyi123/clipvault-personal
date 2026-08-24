@@ -1,3 +1,5 @@
+LMCMR report title export
+
 {
   "current_index_unique_urls": 9800,
   "verified_2026_titles": 9373,
@@ -18,3 +20,5 @@
   "archive_fetch_errors": 0,
   "note": "2025 reconstructed rows are explicitly unverified and must not be merged into the verified set without archival evidence."
 }
+
+The paid full reports are not included. LMCMR states full PDF/Word reports are delivered after contract/payment.
