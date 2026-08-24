@@ -1,0 +1,20 @@
+{
+  "filename": "LMCMR_2025_2026_report_titles.zip",
+  "zip_bytes": 1225242,
+  "sha256": "d256a4224f6b2a03572607eadea71688da947c045c89f6f6258fe50bf8266a9f",
+  "base64_chars": 1633656,
+  "chunk_size_chars": 180000,
+  "chunk_count": 10,
+  "chunks": [
+    "000.txt",
+    "001.txt",
+    "002.txt",
+    "003.txt",
+    "004.txt",
+    "005.txt",
+    "006.txt",
+    "007.txt",
+    "008.txt",
+    "009.txt"
+  ]
+}
