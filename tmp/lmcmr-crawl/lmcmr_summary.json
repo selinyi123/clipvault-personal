@@ -1,5 +1,9 @@
 {
-  "count": 0,
-  "last_page": 0,
-  "oldest_seen": "2019-01-16"
+  "count": 9764,
+  "last_page": 492,
+  "oldest_seen": "2026-02-01",
+  "newest_seen": "2026-02-01",
+  "searchid": "12031",
+  "range_start": "2025-01-01",
+  "range_end": "2026-08-19"
 }
