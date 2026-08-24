@@ -7,7 +7,7 @@ import requests
 ROOT='tmp/lmcmr-title-export'
 os.makedirs(ROOT, exist_ok=True)
 INDEX='tmp/lmcmr-crawl/lmcmr_all_index.json'
-CC_CRAWLS=['CC-MAIN-2025-51','CC-MAIN-2025-47','CC-MAIN-2025-43','CC-MAIN-2025-38','CC-MAIN-2025-33','CC-MAIN-2025-26','CC-MAIN-2025-21','CC-MAIN-2025-13','CC-MAIN-2025-08','CC-MAIN-2025-05']
+CC_CRAWLS=['CC-MAIN-2026-04','CC-MAIN-2026-08','CC-MAIN-2025-51','CC-MAIN-2025-47','CC-MAIN-2025-43','CC-MAIN-2025-38','CC-MAIN-2025-33','CC-MAIN-2025-26','CC-MAIN-2025-21','CC-MAIN-2025-13','CC-MAIN-2025-08','CC-MAIN-2025-05']
 UA='LMCMR-title-archive-research/1.0'
 
 with open(INDEX,encoding='utf-8') as f:
@@ -23,7 +23,6 @@ for x in current:
             'confidence':'verified-current-title'
         })
 ver2026.sort(key=lambda r:(r['title'],r['url']))
-# URL-dedup
 seen=set(); ver2026=[r for r in ver2026 if not (r['url'] in seen or seen.add(r['url']))]
 print('2026_COUNT',len(ver2026),flush=True)
 
@@ -42,7 +41,6 @@ s=requests.Session(); s.headers.update({'User-Agent':UA})
 
 def cc_records(crawl):
     endpoint=f'https://index.commoncrawl.org/{crawl}-index'
-    # Query both bare and www host through domain matching; collapse to one capture per URL in this crawl.
     params={'url':'lmcmr.com','matchType':'domain','output':'json','filter':'status:200','collapse':'urlkey'}
     r=s.get(endpoint,params=params,timeout=120)
     r.raise_for_status()
@@ -69,7 +67,6 @@ def extract_html_from_warc(blob):
             with gzip.GzipFile(fileobj=io.BytesIO(blob)) as g: raw=g.read()
         except Exception:
             raw=blob
-    # WARC headers, then embedded HTTP headers, then body.
     pos=raw.find(b'\r\n\r\n')
     if pos>=0: raw=raw[pos+4:]
     pos=raw.find(b'\r\n\r\n')
@@ -80,7 +77,6 @@ def extract_html_from_warc(blob):
     return raw.decode('utf-8',errors='replace')
 
 def title_from_html(html):
-    # Prefer H1 because LM page <title> may append site name.
     for pat in [r'<h1[^>]*>(.*?)</h1>', r'<title[^>]*>(.*?)</title>']:
         m=re.search(pat,html,re.I|re.S)
         if m:
@@ -106,7 +102,6 @@ def fetch_archived_title(rec,crawl):
             last=repr(e); time.sleep(.4*(a+1))
     return {'url':rec.get('url',''),'title':'','timestamp':rec.get('timestamp',''),'crawl':crawl,'error':last}
 
-# Recover 2025 title snapshots. Stop asking older crawls for a URL once a verified 2025 title is found.
 recovered={}
 archive_errors=[]
 for crawl in CC_CRAWLS:
@@ -119,7 +114,6 @@ for crawl in CC_CRAWLS:
         key=rec.get('url','').replace('http://','https://').replace('https://www.','https://')
         if key in recovered: continue
         todo.append(rec)
-    # Bound concurrency to avoid hammering Common Crawl.
     with ThreadPoolExecutor(max_workers=10) as ex:
         futs={ex.submit(fetch_archived_title,r,crawl):r for r in todo}
         done=0; found=0
@@ -137,14 +131,11 @@ for crawl in CC_CRAWLS:
             if done%500==0:
                 print('CC_WARC_PROGRESS',crawl,done,'found_this_crawl',found,'total_recovered',len(recovered),flush=True)
     print('CC_CRAWL_DONE',crawl,'total_recovered',len(recovered),flush=True)
-    # Once recovery is high, older crawls add diminishing value; still retain all configured crawls when count is modest.
 
 ver2025=sorted(recovered.values(),key=lambda r:(r['title'],r['url']))
 write_csv(f'{ROOT}/lmcmr_2025_titles_verified.csv',ver2025)
 write_json(f'{ROOT}/lmcmr_2025_titles_verified.json',ver2025)
 
-# Also generate a clearly labelled reconstruction for URLs whose current title is 2026 but no archived 2025 title was recovered.
-# This is NOT presented as verified; it is useful only as a candidate cross-check list.
 reconstructed=[]
 verified_norm={r['url'].replace('http://','https://').replace('https://www.','https://') for r in ver2025}
 for r in ver2026:
