@@ -1,10 +1,10 @@
-name: LM / Sohu History Crawl
+name: Sohu Frontend Pagination Probe
 
 on:
   push:
     paths:
       - '.github/workflows/lmcmr-crawl.yml'
-      - 'tmp/sohu_lm_crawl.py'
+      - 'tmp/sohu_frontend_probe.py'
   workflow_dispatch:
 
 concurrency:
@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  crawl:
+  probe:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -21,31 +21,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Mark crawl running
+      - run: python -m pip install --quiet requests
+      - run: python tmp/sohu_frontend_probe.py
+      - name: Persist frontend snippets
         run: |
-          mkdir -p tmp/sohu-lm-crawl
-          printf '{"status":"running","started_at":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > tmp/sohu-lm-crawl/status.json
+          mkdir -p tmp/sohu-frontend-probe
+          cp sohu_frontend_probe.json tmp/sohu-frontend-probe/result.json
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add tmp/sohu-lm-crawl/status.json
-          git commit -m 'Sohu LM crawl running' || true
+          git add tmp/sohu-frontend-probe/result.json
+          git commit -m 'Update Sohu frontend pagination probe' || exit 0
           git push
-      - name: Install dependencies
-        run: python -m pip install --quiet requests beautifulsoup4
-      - name: Crawl public Sohu author history
-        run: python tmp/sohu_lm_crawl.py
-      - name: Persist results
-        run: |
-          cp sohu_summary.json tmp/sohu-lm-crawl/summary.json
-          cp sohu_summary.json tmp/sohu-lm-crawl/status.json
-          cp sohu_all.json tmp/sohu-lm-crawl/all.json
-          cp sohu_selected.json tmp/sohu-lm-crawl/2025-01-01_2026-08-19.json
-          cp sohu_selected.csv tmp/sohu-lm-crawl/2025-01-01_2026-08-19.csv
-          git add tmp/sohu-lm-crawl
-          git commit -m 'Update Sohu LM crawl results' || exit 0
-          git push
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sohu-lm-crawl
-          path: tmp/sohu-lm-crawl/
-          retention-days: 7
