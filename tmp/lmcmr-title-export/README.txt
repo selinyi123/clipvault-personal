@@ -3,9 +3,11 @@ LMCMR report title export
 {
   "current_index_unique_urls": 9800,
   "verified_2026_titles": 9373,
-  "verified_archived_2025_titles": 84,
-  "unverified_2025_reconstructions": 9296,
+  "verified_archived_2025_titles": 91,
+  "unverified_2025_reconstructions": 9291,
   "commoncrawl_crawls_attempted": [
+    "CC-MAIN-2026-04",
+    "CC-MAIN-2026-08",
     "CC-MAIN-2025-51",
     "CC-MAIN-2025-47",
     "CC-MAIN-2025-43",
