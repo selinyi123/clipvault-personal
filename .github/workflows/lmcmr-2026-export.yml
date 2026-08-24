@@ -1,0 +1,32 @@
+name: LMCMR 2026 Export
+
+on:
+  push:
+    paths:
+      - '.github/workflows/lmcmr-2026-export.yml'
+      - 'tmp/lmcmr_2026_only.py'
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tmp/lmcmr_2026_only.py
+      - name: Persist
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tmp/lmcmr-2026-export
+          git commit -m 'Update verified LMCMR 2026 title export' || exit 0
+          git push
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lmcmr-2026-titles
+          path: tmp/lmcmr-2026-export/
+          retention-days: 7
