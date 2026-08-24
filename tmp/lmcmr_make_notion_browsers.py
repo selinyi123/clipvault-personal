@@ -31,3 +31,4 @@ render(v26,'LMCMR 2026 版报告标题','9,373 条，来自当前 LMCMR 全站�
 combined=v25+r25
 render(combined,'LMCMR 2025 版报告标题','绿色/历史快照为已验证；重建项明确标记为未验证候选。','lmcmr_2025_browser.html')
 print('generated',len(v26),len(combined))
+# trigger: 2026-08-24
