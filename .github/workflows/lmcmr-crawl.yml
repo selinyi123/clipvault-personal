@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - '.github/workflows/lmcmr-crawl.yml'
+      - 'tmp/sohu_lm_crawl.py'
   workflow_dispatch:
 
 concurrency:
