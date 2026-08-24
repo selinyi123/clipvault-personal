@@ -39,6 +39,7 @@ jobs:
           max_pages=700
           empty_streak=0
           oldest=None
+          newest=None
           date_re=re.compile(r'\b(20\d{2}-\d{2}-\d{2})\b')
 
           while page < max_pages:
@@ -47,45 +48,34 @@ jobs:
               r.raise_for_status()
               soup=BeautifulSoup(r.text,'html.parser')
               page_rows=[]
-              for h2 in soup.find_all('h2'):
-                  a=h2.find('a',href=True)
+
+              for h2 in soup.select('h2.r'):
+                  a=h2.find('a',class_='l',href=True)
                   if not a:
                       continue
                   title=' '.join(a.get_text(' ',strip=True).split())
                   href=urljoin(BASE,a['href'])
                   if href in seen:
                       continue
-                  # Search the smallest nearby ancestor/sibling text that contains the update date.
-                  candidate_text=''
-                  node=h2
-                  for _ in range(5):
-                      node=node.parent
-                      if node is None:
-                          break
-                      txt=' '.join(node.get_text(' ',strip=True).split())
-                      if date_re.search(txt):
-                          candidate_text=txt
-                          break
-                  if not candidate_text:
-                      parts=[]
-                      sib=h2
-                      for _ in range(8):
-                          sib=sib.next_sibling
-                          if sib is None:
-                              break
-                          try:
-                              parts.append(sib.get_text(' ',strip=True) if hasattr(sib,'get_text') else str(sib))
-                          except Exception:
-                              pass
-                      candidate_text=' '.join(parts)
-                  m=date_re.search(candidate_text)
-                  if not m:
+
+                  table=h2.find_next_sibling('table')
+                  if table is None:
                       continue
-                  dt=datetime.strptime(m.group(1),'%Y-%m-%d')
+                  span=table.find('span',class_='a')
+                  if span is None:
+                      continue
+                  meta=' '.join(span.get_text(' ',strip=True).split())
+                  matches=date_re.findall(meta)
+                  if not matches:
+                      continue
+                  # In LMCMR search results the final YYYY-MM-DD in span.a is the update date;
+                  # the path before it may itself contain a creation-date segment.
+                  update_date=matches[-1]
+                  dt=datetime.strptime(update_date,'%Y-%m-%d')
                   page_rows.append((dt,title,href))
                   seen.add(href)
                   if START <= dt <= END:
-                      rows.append({'date':dt.strftime('%Y-%m-%d'),'title':title,'url':href,'source_page':page})
+                      rows.append({'date':update_date,'title':title,'url':href,'source_page':page})
 
               if not page_rows:
                   empty_streak += 1
@@ -97,10 +87,11 @@ jobs:
                   print(f'page={page} count={len(page_rows)} range={oldest.date()}..{newest.date()} total_kept={len(rows)}',flush=True)
                   if newest < START:
                       break
+
               if empty_streak >= 3:
                   break
               page += 1
-              time.sleep(0.20)
+              time.sleep(0.15)
 
           rows.sort(key=lambda x:(x['date'],x['title']),reverse=True)
           out=[]; keys=set()
@@ -108,17 +99,27 @@ jobs:
               k=(x['url'],x['date'])
               if k in keys:
                   continue
-              keys.add(k); out.append(x)
+              keys.add(k)
+              out.append(x)
 
           with open('lmcmr_2025-01-01_2026-08-19.json','w',encoding='utf-8') as f:
               json.dump(out,f,ensure_ascii=False,indent=2)
           with open('lmcmr_2025-01-01_2026-08-19.csv','w',encoding='utf-8-sig',newline='') as f:
               w=csv.DictWriter(f,fieldnames=['date','title','url','source_page'])
               w.writeheader(); w.writerows(out)
+          summary={
+              'count':len(out),
+              'last_page':page,
+              'oldest_seen':oldest.strftime('%Y-%m-%d') if oldest else None,
+              'newest_seen':newest.strftime('%Y-%m-%d') if newest else None,
+              'searchid':SEARCHID,
+              'range_start':'2025-01-01',
+              'range_end':'2026-08-19'
+          }
           with open('lmcmr_summary.json','w',encoding='utf-8') as f:
-              json.dump({'count':len(out),'last_page':page,'oldest_seen':oldest.strftime('%Y-%m-%d') if oldest else None},f,ensure_ascii=False,indent=2)
+              json.dump(summary,f,ensure_ascii=False,indent=2)
           print('FINAL_COUNT',len(out),flush=True)
-          print('LAST_PAGE',page,'OLDEST',oldest.date() if oldest else None,flush=True)
+          print('LAST_PAGE',page,'OLDEST',oldest.date() if oldest else None,'NEWEST',newest.date() if newest else None,flush=True)
           PY
       - name: Persist results to repository
         run: |
