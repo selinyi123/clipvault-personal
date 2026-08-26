@@ -77,9 +77,9 @@ def _vault_target(vault_path: str | Path, rel_path: str) -> Path:
         raise ValueError(f"vault-relative path required: {rel_path!r}")
 
     root = Path(vault_path).resolve()
-    target = (root / rel_path).resolve()
+    target = Path(vault_path) / rel_path
     try:
-        target.relative_to(root)
+        target.resolve().relative_to(root)
     except ValueError as exc:
         raise ValueError(f"vault-relative path required: {rel_path!r}") from exc
     return target
