@@ -57,9 +57,9 @@ def test_bad_poll_interval(tmp_path):
     [
         "../../tmp/escaped",
         "/tmp/escaped",
-        r"C:\\tmp\\escaped",
-        r"\\\\server\\share\\escaped",
-        r"\\rooted",
+        r"C:\tmp\escaped",
+        r"\\server\share\escaped",
+        r"\rooted",
     ],
 )
 def test_type_dirs_must_stay_relative(tmp_path, bad_dir):
