@@ -104,9 +104,9 @@ def test_a7_collision_gets_suffix(tmp_path):
     [
         "../escaped.md",
         "/tmp/escaped.md",
-        r"C:\\tmp\\escaped.md",
-        r"\\\\server\\share\\escaped.md",
-        r"\\rooted\\escaped.md",
+        r"C:\tmp\escaped.md",
+        r"\\server\share\escaped.md",
+        r"\rooted\escaped.md",
     ],
 )
 def test_write_refuses_paths_outside_vault(tmp_path, rel_path):
