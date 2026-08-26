@@ -7,7 +7,7 @@ testable; write() owns all filesystem concerns.
 import os
 import re
 from datetime import datetime, timezone, tzinfo
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from clipvault.core import origin_metadata, secret_guard
 from clipvault.core.models import Clip
@@ -66,6 +66,25 @@ def _fence(content: str) -> str:
     return "`" * max(3, longest + 1)
 
 
+def _vault_target(vault_path: str | Path, rel_path: str) -> Path:
+    win = PureWindowsPath(rel_path)
+    if (
+        PurePosixPath(rel_path).is_absolute()
+        or win.drive
+        or win.root
+        or ".." in re.split(r"[\\/]", rel_path)
+    ):
+        raise ValueError(f"vault-relative path required: {rel_path!r}")
+
+    root = Path(vault_path).resolve()
+    target = (root / rel_path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"vault-relative path required: {rel_path!r}") from exc
+    return target
+
+
 def render(
     clip: Clip,
     type_dirs: dict[str, str] | None = None,
@@ -113,7 +132,7 @@ def render(
 
 def write(vault_path: str | Path, rel_path: str, content: str) -> Path:
     """Atomic write with collision-suffix; never overwrites."""
-    final = Path(vault_path) / rel_path
+    final = _vault_target(vault_path, rel_path)
     final.parent.mkdir(parents=True, exist_ok=True)
     candidate = final
     n = 0
@@ -146,7 +165,7 @@ def write_clip(
     # ``obsidian_path`` (process crash, disk-full commit, transient DB error).
     # Recover that deterministic file by its stable clip id instead of creating
     # a collision-suffixed duplicate on retry.
-    final = Path(vault_path) / rel_path
+    final = _vault_target(vault_path, rel_path)
     if final.parent.is_dir():
         id_line = f"clipvault_id: {clip.id}"
         # Probe the deterministic path first, then a fixed collision window.
