@@ -77,6 +77,16 @@ def test_type_dirs_must_stay_relative(tmp_path, bad_dir):
     assert path.read_text(encoding="utf-8") == original
 
 
+def test_type_dirs_normalize_safe_legacy_separators(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        VALID.format(vault=tmp_path.as_posix())
+        + "\n[obsidian.type_dirs]\ntext = '00_Inbox\\\\Clipboard//'\n",
+        encoding="utf-8",
+    )
+    assert config_mod.load(path).type_dirs["text"] == "00_Inbox/Clipboard"
+
+
 def test_device_id_generated_and_persisted(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text(VALID.format(vault=tmp_path.as_posix()), encoding="utf-8")
