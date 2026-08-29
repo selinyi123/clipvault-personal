@@ -115,6 +115,20 @@ def test_write_refuses_paths_outside_vault(tmp_path, rel_path):
     assert list(tmp_path.rglob("*")) == []
 
 
+def test_write_refuses_symlink_parent_escape(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    link = tmp_path / "linked"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are not available in this environment")
+
+    with pytest.raises(ValueError, match="vault-relative path required"):
+        writer.write(tmp_path, "linked/escaped.md", "must not be written\n")
+    assert not (outside / "escaped.md").exists()
+
+
 def test_write_clip_rechecks_path_when_config_is_bypassed(tmp_path):
     clip = _clip("adapter boundary", "text", "01ARZ3NDEKTSV4RRFFQ69G5FAV")
     with pytest.raises(ValueError, match="vault-relative path required"):
