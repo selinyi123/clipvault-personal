@@ -66,18 +66,23 @@ def _fence(content: str) -> str:
     return "`" * max(3, longest + 1)
 
 
-def _vault_target(vault_path: str | Path, rel_path: str) -> Path:
-    win = PureWindowsPath(rel_path)
-    if (
-        PurePosixPath(rel_path).is_absolute()
-        or win.drive
-        or win.root
-        or ".." in re.split(r"[\\/]", rel_path)
-    ):
-        raise ValueError(f"vault-relative path required: {rel_path!r}")
+def normalize_vault_relpath(value: str) -> str:
+    """Return one portable vault-relative path form or reject escapes."""
+    text = str(value).replace("\\", "/")
+    win = PureWindowsPath(text)
+    if not text or PurePosixPath(text).is_absolute() or win.drive or win.root:
+        raise ValueError(f"vault-relative path required: {value!r}")
 
+    parts = [part for part in text.split("/") if part not in {"", "."}]
+    if not parts or ".." in parts:
+        raise ValueError(f"vault-relative path required: {value!r}")
+    return "/".join(parts)
+
+
+def _vault_target(vault_path: str | Path, rel_path: str) -> Path:
+    rel_path = normalize_vault_relpath(rel_path)
     root = Path(vault_path).resolve()
-    target = Path(vault_path) / rel_path
+    target = root / rel_path
     try:
         target.resolve().relative_to(root)
     except ValueError as exc:
@@ -154,7 +159,7 @@ def write_clip(
     """Idempotent entry point: a clip that already has an obsidian_path is
     never written again (user deletion of the note is a curation decision)."""
     # Run the independent adapter gate before path construction, directory
-    # probes, or an early obsidian_path return.  Application-layer checks can
+    # probes, or an early obsidian_path return. Application-layer checks can
     # never be the only protection for a direct adapter caller.
     if _requires_quarantine(clip):
         raise SecretWriteRefused(clip.id)
