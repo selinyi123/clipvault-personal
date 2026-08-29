@@ -3,10 +3,10 @@
 import re
 import tomllib
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 
 from clipvault.core import origin_metadata, ulid
-from clipvault.obsidian.writer import DEFAULT_TYPE_DIRS
+from clipvault.obsidian.writer import DEFAULT_TYPE_DIRS, normalize_vault_relpath
 
 TEMPLATE = """[device]
 device_id   = ""            # 留空首次启动自动生成并回写
@@ -84,21 +84,13 @@ class Config:
 
 
 def _type_dir(fieldname: str, value: object) -> str:
-    text = str(value)
-    win = PureWindowsPath(text)
-    parts = re.split(r"[\\/]", text)
-    if (
-        not text
-        or PurePosixPath(text).is_absolute()
-        or win.drive
-        or win.root
-        or any(part in {"", ".."} for part in parts)
-    ):
+    try:
+        return normalize_vault_relpath(str(value))
+    except ValueError as exc:
         raise ConfigError(
             fieldname,
-            "must be a relative path without drive/UNC prefixes, empty segments, or '..'",
-        )
-    return text
+            "must be a path relative to obsidian.vault_path without '..'",
+        ) from exc
 
 
 def load(path: Path) -> Config:
