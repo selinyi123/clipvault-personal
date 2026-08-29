@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from clipvault.core import origin_metadata, ulid
-from clipvault.obsidian.writer import DEFAULT_TYPE_DIRS
+from clipvault.obsidian.writer import DEFAULT_TYPE_DIRS, normalize_vault_relpath
 
 TEMPLATE = """[device]
 device_id   = ""            # 留空首次启动自动生成并回写
@@ -83,6 +83,16 @@ class Config:
         )
 
 
+def _type_dir(fieldname: str, value: object) -> str:
+    try:
+        return normalize_vault_relpath(str(value))
+    except ValueError as exc:
+        raise ConfigError(
+            fieldname,
+            "must be a path relative to obsidian.vault_path without '..'",
+        ) from exc
+
+
 def load(path: Path) -> Config:
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,13 +138,18 @@ def load(path: Path) -> Config:
             "control characters",
         )
 
+    type_dirs = dict(DEFAULT_TYPE_DIRS)
+    type_dirs.update(
+        {
+            k: _type_dir(f"obsidian.type_dirs.{k}", v)
+            for k, v in obsidian.get("type_dirs", {}).items()
+        }
+    )
+
     device_id = str(device.get("device_id", "")).strip()
     if not device_id:
         device_id = ulid.new()
         _persist_device_id(path, device_id)
-
-    type_dirs = dict(DEFAULT_TYPE_DIRS)
-    type_dirs.update({k: str(v) for k, v in data.get("obsidian", {}).get("type_dirs", {}).items()})
 
     sug = data.get("suggest", {})
 

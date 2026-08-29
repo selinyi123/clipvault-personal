@@ -99,6 +99,48 @@ def test_a7_collision_gets_suffix(tmp_path):
     assert len(list(tmp_path.rglob("*.tmp"))) == 0       # atomic: no temp left
 
 
+@pytest.mark.parametrize(
+    "rel_path",
+    [
+        "../escaped.md",
+        "/tmp/escaped.md",
+        r"C:\tmp\escaped.md",
+        r"\\server\share\escaped.md",
+        r"\rooted\escaped.md",
+    ],
+)
+def test_write_refuses_paths_outside_vault(tmp_path, rel_path):
+    with pytest.raises(ValueError, match="vault-relative path required"):
+        writer.write(tmp_path, rel_path, "must not be written\n")
+    assert list(tmp_path.rglob("*")) == []
+
+
+def test_write_refuses_symlink_parent_escape(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    link = tmp_path / "linked"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are not available in this environment")
+
+    with pytest.raises(ValueError, match="vault-relative path required"):
+        writer.write(tmp_path, "linked/escaped.md", "must not be written\n")
+    assert not (outside / "escaped.md").exists()
+
+
+def test_write_clip_rechecks_path_when_config_is_bypassed(tmp_path):
+    clip = _clip("adapter boundary", "text", "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+    with pytest.raises(ValueError, match="vault-relative path required"):
+        writer.write_clip(
+            clip,
+            tmp_path,
+            type_dirs={"text": "../../escaped"},
+            tz=timezone.utc,
+        )
+    assert list(tmp_path.rglob("*")) == []
+
+
 def test_a8_fence_lengthened():
     content = "def x():\n    pass\n```\ninner fence\n```"
     clip = _clip(content, "code", "01ARZ3NDEKTSV4RRFFQ69G5FAV")

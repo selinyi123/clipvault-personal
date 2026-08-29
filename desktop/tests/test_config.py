@@ -52,6 +52,41 @@ def test_bad_poll_interval(tmp_path):
     assert exc.value.field == "watcher.poll_fallback_ms"
 
 
+@pytest.mark.parametrize(
+    "bad_dir",
+    [
+        "../../tmp/escaped",
+        "/tmp/escaped",
+        r"C:\tmp\escaped",
+        r"\\server\share\escaped",
+        r"\rooted",
+    ],
+)
+def test_type_dirs_must_stay_relative(tmp_path, bad_dir):
+    path = tmp_path / "config.toml"
+    original = (
+        VALID.format(vault=tmp_path.as_posix())
+        + f"\n[obsidian.type_dirs]\ntext = '{bad_dir}'\n"
+    )
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(config_mod.ConfigError) as exc:
+        config_mod.load(path)
+
+    assert exc.value.field == "obsidian.type_dirs.text"
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_type_dirs_normalize_safe_legacy_separators(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        VALID.format(vault=tmp_path.as_posix())
+        + "\n[obsidian.type_dirs]\ntext = '00_Inbox\\\\Clipboard//'\n",
+        encoding="utf-8",
+    )
+    assert config_mod.load(path).type_dirs["text"] == "00_Inbox/Clipboard"
+
+
 def test_device_id_generated_and_persisted(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text(VALID.format(vault=tmp_path.as_posix()), encoding="utf-8")

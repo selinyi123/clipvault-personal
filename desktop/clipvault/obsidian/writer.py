@@ -7,7 +7,7 @@ testable; write() owns all filesystem concerns.
 import os
 import re
 from datetime import datetime, timezone, tzinfo
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from clipvault.core import origin_metadata, secret_guard
 from clipvault.core.models import Clip
@@ -66,6 +66,30 @@ def _fence(content: str) -> str:
     return "`" * max(3, longest + 1)
 
 
+def normalize_vault_relpath(value: str) -> str:
+    """Return one portable vault-relative path form or reject escapes."""
+    text = str(value).replace("\\", "/")
+    win = PureWindowsPath(text)
+    if not text or PurePosixPath(text).is_absolute() or win.drive or win.root:
+        raise ValueError(f"vault-relative path required: {value!r}")
+
+    parts = [part for part in text.split("/") if part not in {"", "."}]
+    if not parts or ".." in parts:
+        raise ValueError(f"vault-relative path required: {value!r}")
+    return "/".join(parts)
+
+
+def _vault_target(vault_path: str | Path, rel_path: str) -> Path:
+    rel_path = normalize_vault_relpath(rel_path)
+    root = Path(vault_path).resolve()
+    target = root / rel_path
+    try:
+        target.resolve().relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"vault-relative path required: {rel_path!r}") from exc
+    return target
+
+
 def render(
     clip: Clip,
     type_dirs: dict[str, str] | None = None,
@@ -113,7 +137,7 @@ def render(
 
 def write(vault_path: str | Path, rel_path: str, content: str) -> Path:
     """Atomic write with collision-suffix; never overwrites."""
-    final = Path(vault_path) / rel_path
+    final = _vault_target(vault_path, rel_path)
     final.parent.mkdir(parents=True, exist_ok=True)
     candidate = final
     n = 0
@@ -135,7 +159,7 @@ def write_clip(
     """Idempotent entry point: a clip that already has an obsidian_path is
     never written again (user deletion of the note is a curation decision)."""
     # Run the independent adapter gate before path construction, directory
-    # probes, or an early obsidian_path return.  Application-layer checks can
+    # probes, or an early obsidian_path return. Application-layer checks can
     # never be the only protection for a direct adapter caller.
     if _requires_quarantine(clip):
         raise SecretWriteRefused(clip.id)
@@ -146,7 +170,7 @@ def write_clip(
     # ``obsidian_path`` (process crash, disk-full commit, transient DB error).
     # Recover that deterministic file by its stable clip id instead of creating
     # a collision-suffixed duplicate on retry.
-    final = Path(vault_path) / rel_path
+    final = _vault_target(vault_path, rel_path)
     if final.parent.is_dir():
         id_line = f"clipvault_id: {clip.id}"
         # Probe the deterministic path first, then a fixed collision window.
